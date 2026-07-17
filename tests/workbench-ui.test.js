@@ -572,7 +572,13 @@ test("settings preserve every legacy control in the correct ordered section and 
       "模型名(model 字段)",
     ],
     ["流式输出", "Temperature", "Max Tokens", "继续对话使用的模型", "系统提示词"],
-    ["翻译使用的模型", "划词后自动出现「译」悬浮图标", "翻译目标语言", "翻译附加要求"],
+    [
+      "翻译使用的模型",
+      "划词后自动出现「译」悬浮图标",
+      "翻译目标语言",
+      "翻译分块大小（Unicode 字符）",
+      "翻译附加要求",
+    ],
     [
       "打开 PDF 划词弹窗时自动附带全文摘要",
       "摘要生成用的模型",
@@ -667,6 +673,15 @@ test("settings preserve every legacy control in the correct ordered section and 
   const targetLanguage = controlFor(sections[2], "翻译目标语言", "input");
   targetLanguage.value = " ja ";
   targetLanguage.dispatch("change");
+  const chunkChars = controlFor(sections[2], "翻译分块大小（Unicode 字符）", "input");
+  assert.equal(chunkChars.value, "8000");
+  const chunkSetting = chunkChars.parentElement;
+  assert.match(chunkSetting.getAttribute("data-description"), /长选区.*Unicode.*大于 0 的整数/);
+  chunkChars.value = "4096";
+  chunkChars.dispatch("change");
+  assert.equal(plugin.settings.translation.chunkChars, 4096);
+  chunkChars.value = "12.5";
+  chunkChars.dispatch("change");
   const topK = controlFor(sections[3], "每次检索返回的片段数(Top K)", "input");
   topK.value = "7";
   topK.dispatch("change");
@@ -681,6 +696,7 @@ test("settings preserve every legacy control in the correct ordered section and 
   assert.equal(plugin.settings.translateModelId, "second-model");
   assert.equal(plugin.settings.quickTranslateMarkerEnabled, false);
   assert.equal(plugin.settings.translation.targetLanguage, "ja");
+  assert.equal(plugin.settings.translation.chunkChars, 8000);
   assert.equal(plugin.settings.ragTopK, 7);
   assert.equal(plugin.settings.promptPresets[0].name, "Updated preset");
 });

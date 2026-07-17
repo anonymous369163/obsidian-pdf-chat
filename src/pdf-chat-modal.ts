@@ -744,10 +744,15 @@ export class PDFChatModal extends Modal {
         return;
       }
 
-      const status: ConversationMessage["status"] = result.stoppedEarly ? "stopped" : "complete";
-      if (result.stoppedEarly) {
+      const hasFallbackChunks = result.failedChunkIndexes.length > 0;
+      const isPartial = result.stoppedEarly || hasFallbackChunks;
+      const status: ConversationMessage["status"] = isPartial ? "stopped" : "complete";
+      if (isPartial) {
+        const notices: string[] = [];
+        if (result.stoppedEarly) notices.push("[已停止生成]");
+        if (hasFallbackChunks) notices.push("[部分分块翻译失败，已保留原文]");
         loadingBubble.addClass("is-stopped");
-        loadingBubble.setText(fullText + "\n\n[已停止生成]");
+        loadingBubble.setText(fullText + "\n\n" + notices.join("\n"));
       } else {
         loadingBubble.addClass("is-rendered");
         await renderMarkdownInto(this.app, this.plugin, loadingBubble, fullText);

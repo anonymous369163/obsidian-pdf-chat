@@ -1714,10 +1714,15 @@ ${this.contextText}`;
         loadingBubble.setText("\u7FFB\u8BD1\u672A\u8FD4\u56DE\u5185\u5BB9");
         return;
       }
-      const status = result.stoppedEarly ? "stopped" : "complete";
-      if (result.stoppedEarly) {
+      const hasFallbackChunks = result.failedChunkIndexes.length > 0;
+      const isPartial = result.stoppedEarly || hasFallbackChunks;
+      const status = isPartial ? "stopped" : "complete";
+      if (isPartial) {
+        const notices = [];
+        if (result.stoppedEarly) notices.push("[\u5DF2\u505C\u6B62\u751F\u6210]");
+        if (hasFallbackChunks) notices.push("[\u90E8\u5206\u5206\u5757\u7FFB\u8BD1\u5931\u8D25\uFF0C\u5DF2\u4FDD\u7559\u539F\u6587]");
         loadingBubble.addClass("is-stopped");
-        loadingBubble.setText(fullText + "\n\n[\u5DF2\u505C\u6B62\u751F\u6210]");
+        loadingBubble.setText(fullText + "\n\n" + notices.join("\n"));
       } else {
         loadingBubble.addClass("is-rendered");
         await renderMarkdownInto(this.app, this.plugin, loadingBubble, fullText);
@@ -1925,14 +1930,12 @@ var QuickTranslateMarker = class {
     this.attached.set(doc, { selectionChange, mouseDown, scroll, keyDown });
   }
   hide() {
+    this.cancelPendingUpdate();
     if (this.markerEl) this.markerEl.hidden = true;
   }
   destroy() {
     var _a;
-    if (this.pendingTimer !== null) {
-      this.clearTimer(this.pendingTimer);
-      this.pendingTimer = null;
-    }
+    this.cancelPendingUpdate();
     for (const [doc, listeners] of this.attached) {
       doc.removeEventListener("selectionchange", listeners.selectionChange);
       doc.removeEventListener("mousedown", listeners.mouseDown, true);
@@ -1945,11 +1948,16 @@ var QuickTranslateMarker = class {
     this.markerDocument = null;
   }
   scheduleUpdate(doc) {
-    if (this.pendingTimer !== null) this.clearTimer(this.pendingTimer);
+    this.cancelPendingUpdate();
     this.pendingTimer = this.setTimer(() => {
       this.pendingTimer = null;
       this.updateFromSelection(doc);
     }, SELECTION_DEBOUNCE_MS);
+  }
+  cancelPendingUpdate() {
+    if (this.pendingTimer === null) return;
+    this.clearTimer(this.pendingTimer);
+    this.pendingTimer = null;
   }
   updateFromSelection(doc) {
     if (!this.dependencies.isEnabled() || !this.dependencies.getActivePdfFile()) {
@@ -2262,6 +2270,13 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
     new import_obsidian3.Setting(containerEl).setName("\u7FFB\u8BD1\u76EE\u6807\u8BED\u8A00").setDesc("\u7528\u4E8E\u5F39\u7A97\u4E2D\u7684\u9009\u533A\u7FFB\u8BD1\uFF0C\u4F8B\u5982 zh-CN\u3001en \u6216 ja").addText(
       (text) => text.setValue(this.plugin.settings.translation.targetLanguage).onChange(async (value) => {
         this.plugin.settings.translation.targetLanguage = value.trim() || DEFAULT_SETTINGS.translation.targetLanguage;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian3.Setting(containerEl).setName("\u7FFB\u8BD1\u5206\u5757\u5927\u5C0F\uFF08Unicode \u5B57\u7B26\uFF09").setDesc("\u957F\u9009\u533A\u4F1A\u6309 Unicode \u5B57\u7B26\u6570\u5206\u5757\u53D1\u9001\u3002\u8BF7\u8F93\u5165\u5927\u4E8E 0 \u7684\u6574\u6570\uFF1B\u65E0\u6548\u503C\u6062\u590D\u4E3A 8000\u3002").addText(
+      (text) => text.setValue(String(this.plugin.settings.translation.chunkChars)).onChange(async (value) => {
+        const parsed = Number(value.trim());
+        this.plugin.settings.translation.chunkChars = Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_SETTINGS.translation.chunkChars;
         await this.plugin.saveSettings();
       })
     );

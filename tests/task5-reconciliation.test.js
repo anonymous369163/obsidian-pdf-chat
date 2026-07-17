@@ -431,6 +431,64 @@ test("quick marker is debounced, clamped, selection-safe, disposable, and opens 
   }
 });
 
+function createPendingQuickMarkerHarness() {
+  const { QuickTranslateMarker } = loadBundle();
+  const doc = createSyntheticDocument();
+  const timers = [];
+  const marker = new QuickTranslateMarker({
+    isEnabled: () => true,
+    getActivePdfFile: () => ({ path: "papers/demo.pdf" }),
+    openModal() {},
+    setTimer(callback, delay) {
+      const timer = { callback, delay, cancelled: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer(timer) {
+      timer.cancelled = true;
+    },
+  });
+  doc.setSelection(selectionFor("Alpha beta", [
+    { left: 10, top: 20, right: 40, bottom: 30, width: 30, height: 10 },
+  ]));
+  marker.attach(doc);
+  doc.dispatch("selectionchange");
+  timers.at(-1).callback();
+  const button = doc.appended[0];
+  doc.dispatch("selectionchange");
+  return { button, doc, marker, pendingTimer: timers.at(-1), timers };
+}
+
+for (const [label, dismiss] of [
+  ["outside mousedown", (doc) => doc.dispatch("mousedown", { target: {} })],
+  ["scroll", (doc) => doc.dispatch("scroll")],
+  ["Escape", (doc) => doc.dispatch("keydown", { key: "Escape" })],
+]) {
+  test(`quick marker ${label} cancels pending debounce so it cannot reappear`, () => {
+    const { button, doc, marker, pendingTimer } = createPendingQuickMarkerHarness();
+
+    dismiss(doc);
+
+    assert.equal(pendingTimer.cancelled, true);
+    if (!pendingTimer.cancelled) pendingTimer.callback();
+    assert.equal(button.hidden, true);
+    marker.destroy();
+  });
+}
+
+test("quick marker selection changes cancel and replace the pending debounce", () => {
+  const { button, doc, marker, pendingTimer, timers } = createPendingQuickMarkerHarness();
+
+  doc.dispatch("selectionchange");
+  const replacement = timers.at(-1);
+
+  assert.equal(pendingTimer.cancelled, true);
+  assert.equal(replacement.cancelled, false);
+  replacement.callback();
+  assert.equal(button.hidden, false);
+  marker.destroy();
+});
+
 test("plugin lifecycle wires the marker to the main document and window-open documents", () => {
   const mainSource = fs.readFileSync(path.join(projectRoot, "src", "main.ts"), "utf8");
   assert.match(mainSource, /new QuickTranslateMarker/);

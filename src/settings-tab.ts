@@ -195,6 +195,19 @@ export class PDFChatSettingTab extends PluginSettingTab {
         })
       );
     new Setting(containerEl)
+      .setName("翻译分块大小（Unicode 字符）")
+      .setDesc("长选区会按 Unicode 字符数分块发送。请输入大于 0 的整数；无效值恢复为 8000。")
+      .addText((text) =>
+        text.setValue(String(this.plugin.settings.translation.chunkChars)).onChange(async (value) => {
+          const parsed = Number(value.trim());
+          this.plugin.settings.translation.chunkChars =
+            Number.isInteger(parsed) && parsed > 0
+              ? parsed
+              : DEFAULT_SETTINGS.translation.chunkChars;
+          await this.plugin.saveSettings();
+        })
+      );
+    new Setting(containerEl)
       .setName("翻译附加要求")
       .setDesc("可选。用于补充术语、风格或领域约定；原文由独立翻译任务安全附加。")
       .addTextArea((text) => {

@@ -84,14 +84,12 @@ export class QuickTranslateMarker {
   }
 
   hide(): void {
+    this.cancelPendingUpdate();
     if (this.markerEl) this.markerEl.hidden = true;
   }
 
   destroy(): void {
-    if (this.pendingTimer !== null) {
-      this.clearTimer(this.pendingTimer);
-      this.pendingTimer = null;
-    }
+    this.cancelPendingUpdate();
     for (const [doc, listeners] of this.attached) {
       doc.removeEventListener("selectionchange", listeners.selectionChange);
       doc.removeEventListener("mousedown", listeners.mouseDown, true);
@@ -105,11 +103,17 @@ export class QuickTranslateMarker {
   }
 
   private scheduleUpdate(doc: Document): void {
-    if (this.pendingTimer !== null) this.clearTimer(this.pendingTimer);
+    this.cancelPendingUpdate();
     this.pendingTimer = this.setTimer(() => {
       this.pendingTimer = null;
       this.updateFromSelection(doc);
     }, SELECTION_DEBOUNCE_MS);
+  }
+
+  private cancelPendingUpdate(): void {
+    if (this.pendingTimer === null) return;
+    this.clearTimer(this.pendingTimer);
+    this.pendingTimer = null;
   }
 
   private updateFromSelection(doc: Document): void {

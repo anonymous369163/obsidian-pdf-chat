@@ -540,7 +540,7 @@ test("persists stopped translation separately but drops empty failed translation
   assert.match(failed.bubbles[1].text, /翻译失败/);
 });
 
-test("modal persists fallback translation as complete under the translate key", async () => {
+test("modal marks fallback-containing translation stopped while keeping raw follow-up text", async () => {
   const bundle = loadBundle();
   const serviceOutputs = ["第一段", "", "", "第三段"];
   let serviceCalls = 0;
@@ -551,9 +551,13 @@ test("modal persists fallback translation as complete under the translate key", 
       return output;
     },
   });
+  let taskResult = null;
   const harness = createModalHarness(
     bundle,
-    (request) => service.translate(request),
+    async (request) => {
+      taskResult = await service.translate(request);
+      return taskResult;
+    },
     { source: "AAAA\n\nBBBB\n\nCCCC", translation: { chunkChars: 6 } }
   );
 
@@ -562,12 +566,15 @@ test("modal persists fallback translation as complete under the translate key", 
   const friendlyLabel = `翻译当前选区（${harness.source.length} 字）`;
   const expected = "第一段\n\n[翻译失败，保留原文]\nBBBB\n\n\n\n第三段";
   assert.equal(serviceCalls, 4);
+  assert.equal(taskResult.stoppedEarly, false);
+  assert.deepEqual(plain(taskResult.failedChunkIndexes), [1]);
   assert.deepEqual(plain(harness.modal.transcript), []);
   assert.deepEqual(plain(harness.modal.translateTranscript), [
     { role: "user", content: friendlyLabel, status: "complete" },
-    { role: "assistant", content: expected, status: "complete" },
+    { role: "assistant", content: expected, status: "stopped" },
   ]);
-  assert.equal(harness.bubbles[1].text, expected);
+  assert.ok(harness.bubbles[1].classes.includes("is-stopped"));
+  assert.equal(harness.bubbles[1].text, expected + "\n\n[部分分块翻译失败，已保留原文]");
   assert.deepEqual(plain(harness.modal.messages.slice(-2)), [
     { role: "user", content: friendlyLabel },
     { role: "assistant", content: expected },
