@@ -157,7 +157,7 @@ function byTag(root, tagName) {
   return descendants(root).filter((element) => element.tagName === tagName.toUpperCase());
 }
 
-function loadBundle() {
+function loadBundle(options = {}) {
   const source = fs.readFileSync(path.join(projectRoot, "main.js"), "utf8");
   const settingTabs = [];
 
@@ -277,7 +277,7 @@ function loadBundle() {
   }
 
   const obsidian = {
-    MarkdownRenderer: {
+    MarkdownRenderer: options.markdownRenderer || {
       async render(_app, text, element) {
         element.setText(text);
       },
@@ -312,8 +312,8 @@ function loadBundle() {
   return { bundle: sandbox.module.exports, settingTabs };
 }
 
-function createModalHarness({ transcript = [] } = {}) {
-  const { bundle } = loadBundle();
+function createModalHarness({ transcript = [], markdownRenderer, llmChat } = {}) {
+  const { bundle } = loadBundle({ markdownRenderer });
   const settings = JSON.parse(JSON.stringify(bundle.DEFAULT_SETTINGS));
   settings.autoDocSummary = false;
   settings.autoRag = false;
@@ -339,7 +339,7 @@ function createModalHarness({ transcript = [] } = {}) {
       planRagQueries: async () => [],
       retrieveContext: () => [],
     },
-    llm: { chat: async () => "Answer" },
+    llm: { chat: llmChat || (async () => "Answer") },
     models: { get: () => settings.models[0] },
     actions: { list: () => [], execute: async () => {} },
     translations: { translate: async () => ({ text: "译文", chunkCount: 1 }) },
@@ -411,20 +411,67 @@ test("modal builds the accessible research-workbench regions and interactions", 
   assert.deepEqual(modal.transcript, []);
 });
 
-test("restored history bypasses the empty state and returns the live region to polite", async () => {
+test("restored history keeps the live region off until every Markdown render settles", async () => {
+  const pendingRenders = [];
+  const markdownRenderer = {
+    render(_app, text, element) {
+      let resolve;
+      const promise = new Promise((done) => {
+        resolve = () => {
+          element.setText(text);
+          done();
+        };
+      });
+      pendingRenders.push({ promise, resolve });
+      return promise;
+    },
+  };
   const transcript = [
     { role: "user", content: "Question", status: "complete" },
-    { role: "assistant", content: "Answer", status: "complete" },
+    { role: "assistant", content: "First answer", status: "complete" },
+    { role: "assistant", content: "Second answer", status: "complete" },
   ];
-  const { modal } = createModalHarness({ transcript });
-  await new Promise((resolve) => setImmediate(resolve));
+  const { modal } = createModalHarness({ transcript, markdownRenderer });
 
+  assert.equal(pendingRenders.length, 2);
+  assert.equal(modal.historyEl.getAttribute("aria-live"), "off");
+  pendingRenders[0].resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(modal.historyEl.getAttribute("aria-live"), "off");
+
+  pendingRenders[1].resolve();
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(byClass(modal.historyEl, "pdf-chat-empty-state").length, 0);
   assert.equal(modal.historyEl.getAttribute("aria-live"), "polite");
-  assert.equal(byClass(modal.historyEl, "pdf-chat-bubble").length, 2);
+  assert.equal(byClass(modal.historyEl, "pdf-chat-bubble").length, 3);
 });
 
-test("settings display creates the five ordered visible sections", async () => {
+test("normal submission clears the grown composer and resets its inline height", async () => {
+  const requests = [];
+  const { modal } = createModalHarness({
+    llmChat: async (request) => {
+      requests.push(request);
+      request.onChunk?.("Answer", "Answer");
+      return "Answer";
+    },
+  });
+  modal.inputEl.value = "What is the contribution?";
+  modal.inputEl.scrollHeight = 120;
+  modal.inputEl.dispatch("input");
+  assert.equal(modal.inputEl.style.height, "120px");
+
+  await modal.handleSubmit();
+
+  assert.equal(requests.length, 1);
+  assert.equal(modal.inputEl.value, "");
+  assert.equal(modal.inputEl.style.height, "");
+  assert.deepEqual(JSON.parse(JSON.stringify(modal.transcript)), [
+    { role: "user", content: "What is the contribution?", status: "complete" },
+    { role: "assistant", content: "Answer", status: "complete" },
+  ]);
+});
+
+test("settings preserve every legacy control in the correct ordered section and callbacks", async () => {
   const { bundle, settingTabs } = loadBundle();
   const PluginClass = bundle.default || bundle;
   const plugin = new PluginClass();
@@ -438,6 +485,89 @@ test("settings display creates the five ordered visible sections", async () => {
     ["模型", "聊天", "翻译", "论文上下文", "高级"]
   );
   assert.ok(sections.every((section) => section.tagName === "SECTION"));
+
+  const settingNames = (section) =>
+    byClass(section, "setting-item")
+      .map((setting) => setting.getAttribute("data-name"))
+      .filter(Boolean);
+  const expectedNames = [
+    ["模型 1 · 默认", "Endpoint", "API Key", "模型名(model 字段)"],
+    ["流式输出", "Temperature", "Max Tokens", "系统提示词"],
+    ["翻译目标语言", "翻译附加要求"],
+    [
+      "打开 PDF 划词弹窗时自动附带全文摘要",
+      "摘要生成用的模型",
+      "全文截断字符数上限",
+      "摘要最大输出 token 数",
+      "摘要生成提示词",
+      "清空已缓存的全文摘要",
+      "全文直读的字数阈值",
+      "打开 PDF 划词弹窗时自动建立检索索引",
+      "提问前先让快模型思考检索角度",
+      "检索角度规划提示词",
+      "每次检索返回的片段数(Top K)",
+      "单块最大字符数",
+      "切块重叠字符数",
+      "清空已缓存的检索索引",
+    ],
+    plugin.settings.promptPresets.map((_preset, index) => `预设 ${index + 1}`),
+  ];
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(sections.map(settingNames))),
+    JSON.parse(JSON.stringify(expectedNames))
+  );
+  for (const [sectionIndex, names] of expectedNames.entries()) {
+    for (const name of names) {
+      const setting = byClass(sections[sectionIndex], "setting-item").find(
+        (element) => element.getAttribute("data-name") === name
+      );
+      const controls = ["input", "select", "textarea", "button"].flatMap((tagName) =>
+        byTag(setting, tagName)
+      );
+      assert.ok(controls.length > 0, `missing legacy control for ${name}`);
+    }
+  }
+
+  const buttonTexts = (section) => byTag(section, "button").map((button) => button.textContent);
+  assert.ok(buttonTexts(sections[0]).includes("+ 添加模型"));
+  assert.ok(buttonTexts(sections[4]).includes("+ 添加预设"));
+  assert.equal(byTag(sections[1], "textarea").length, 1);
+  assert.equal(byTag(sections[2], "textarea").length, 1);
+  assert.equal(byTag(sections[3], "textarea").length, 2);
+  assert.equal(byTag(sections[4], "textarea").length, plugin.settings.promptPresets.length);
+  assert.match(descendants(sections[4]).map((element) => element.textContent).join(" "), /Ctrl\+Alt\+Q/);
+
+  const controlFor = (section, name, tagName) => {
+    const setting = byClass(section, "setting-item").find(
+      (element) => element.getAttribute("data-name") === name
+    );
+    assert.ok(setting, `missing setting ${name}`);
+    const control = byTag(setting, tagName)[0];
+    assert.ok(control, `missing ${tagName} control for ${name}`);
+    return control;
+  };
+  const endpoint = controlFor(sections[0], "Endpoint", "input");
+  endpoint.value = "  https://example.invalid/v1/chat/completions  ";
+  endpoint.dispatch("change");
+  const stream = controlFor(sections[1], "流式输出", "input");
+  stream.value = false;
+  stream.dispatch("change");
+  const targetLanguage = controlFor(sections[2], "翻译目标语言", "input");
+  targetLanguage.value = " ja ";
+  targetLanguage.dispatch("change");
+  const topK = controlFor(sections[3], "每次检索返回的片段数(Top K)", "input");
+  topK.value = "7";
+  topK.dispatch("change");
+  const firstPreset = controlFor(sections[4], "预设 1", "input");
+  firstPreset.value = "Updated preset";
+  firstPreset.dispatch("change");
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(plugin.settings.models[0].endpoint, "https://example.invalid/v1/chat/completions");
+  assert.equal(plugin.settings.stream, false);
+  assert.equal(plugin.settings.translation.targetLanguage, "ja");
+  assert.equal(plugin.settings.ragTopK, 7);
+  assert.equal(plugin.settings.promptPresets[0].name, "Updated preset");
 });
 
 test("CSS defines the scoped responsive, readable, selectable workbench contract", () => {
@@ -453,6 +583,25 @@ test("CSS defines the scoped responsive, readable, selectable workbench contract
     assert.match(css, new RegExp(`${customProperty}\\s*:`));
   }
   assert.match(css, /\.pdf-chat-composer[^}]*position:\s*sticky/s);
+  const contextPanelRule = css.match(/\.pdf-chat-context-panel\s*\{([^}]*)\}/s)?.[1] || "";
+  const contextBodyRule = css.match(/\.pdf-chat-context-body\s*\{([^}]*)\}/s)?.[1] || "";
+  const historyRule = css.match(/\.pdf-chat-history\s*\{([^}]*)\}/s)?.[1] || "";
+  assert.match(contextPanelRule, /display:\s*flex/);
+  assert.match(contextPanelRule, /flex-direction:\s*column/);
+  assert.match(contextPanelRule, /min-height:\s*0/);
+  assert.match(contextPanelRule, /max-height:/);
+  assert.match(contextBodyRule, /min-height:\s*0/);
+  assert.match(contextBodyRule, /max-height:/);
+  assert.match(contextBodyRule, /overflow-y:\s*auto/);
+  assert.match(historyRule, /min-height:\s*0/);
+  assert.match(
+    css,
+    /@container\s+pdf-chat-workbench\s*\(max-width:\s*620px\)[\s\S]*?\.pdf-chat-context-panel\s*\{[^}]*max-height:/
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-height:\s*620px\)[\s\S]*?\.pdf-chat-context-panel\s*\{[^}]*max-height:/
+  );
   assert.match(css, /:focus-visible/);
   assert.match(css, /@container|@media\s*\([^)]*max-width/);
   assert.match(css, /\.pdf-chat-bubble[^}]*user-select:\s*text/s);

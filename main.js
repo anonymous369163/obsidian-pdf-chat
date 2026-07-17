@@ -1651,7 +1651,7 @@ ${this.contextText}`;
     this.addBubble("user", question);
     if (!usingOverride) {
       this.inputEl.value = "";
-      if (this.inputEl.style) resizeComposerTextarea(this.inputEl);
+      if (this.inputEl.style) this.inputEl.style.height = "";
     }
     this.setSendingState(true);
     const loadingBubble = this.addBubble("assistant", "\u601D\u8003\u4E2D\u2026", { loading: true });

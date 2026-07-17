@@ -16,7 +16,6 @@ import {
   buildMessageRegion,
   buildWorkbenchHeader,
   labelControl,
-  resizeComposerTextarea,
 } from "./modal-ui";
 import type {
   ConversationMessage,
@@ -745,7 +744,7 @@ export class PDFChatModal extends Modal {
     this.addBubble("user", question);
     if (!usingOverride) {
       this.inputEl.value = "";
-      if (this.inputEl.style) resizeComposerTextarea(this.inputEl);
+      if (this.inputEl.style) this.inputEl.style.height = "";
     }
     this.setSendingState(true);
 
