@@ -678,6 +678,14 @@ function findPreferredBoundary(source, start, hardEnd) {
   }
   return hardEnd;
 }
+function keepSurrogatePairTogether(source, start, end) {
+  if (end <= start || end >= source.length) return end;
+  const previous = source.charCodeAt(end - 1);
+  const next = source.charCodeAt(end);
+  const splitsPair = previous >= 55296 && previous <= 56319 && next >= 56320 && next <= 57343;
+  if (!splitsPair) return end;
+  return end - 1 > start ? end - 1 : end + 1;
+}
 function splitTranslationChunks(source, limit) {
   if (!source) return [];
   if (!Number.isInteger(limit) || limit <= 0) {
@@ -688,7 +696,8 @@ function splitTranslationChunks(source, limit) {
   let start = 0;
   while (start < source.length) {
     const hardEnd = Math.min(start + limit, source.length);
-    const end = hardEnd === source.length ? hardEnd : findPreferredBoundary(source, start, hardEnd);
+    const preferredEnd = hardEnd === source.length ? hardEnd : findPreferredBoundary(source, start, hardEnd);
+    const end = keepSurrogatePairTogether(source, start, preferredEnd);
     chunks.push(source.slice(start, end));
     start = end;
   }
@@ -711,7 +720,13 @@ ${source}
   ];
 }
 function combineTranslations(translations) {
-  return translations.filter((translation) => translation.length > 0).join("\n\n");
+  return translations.filter((translation) => translation.trim().length > 0).join("\n\n");
+}
+function throwIfTranslationAborted(signal) {
+  if (!(signal == null ? void 0 : signal.aborted)) return;
+  const error = new Error("Translation aborted");
+  error.name = "AbortError";
+  throw error;
 }
 var TranslationService = class {
   constructor(llm) {
@@ -723,6 +738,7 @@ var TranslationService = class {
     if (!chunks.length) return { text: "", chunkCount: 0 };
     const completed = [];
     for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+      throwIfTranslationAborted(request.signal);
       let streamedChunk = "";
       const translated = await this.llm.chat({
         messages: buildTranslationMessages(chunks[chunkIndex], request.settings),
@@ -742,7 +758,11 @@ var TranslationService = class {
           });
         }
       });
+      throwIfTranslationAborted(request.signal);
       const finalChunk = translated.trim();
+      if (!finalChunk) {
+        throw new Error(`Empty translation output for chunk ${chunkIndex + 1}/${chunks.length}`);
+      }
       if (finalChunk !== streamedChunk) {
         (_a = request.onChunk) == null ? void 0 : _a.call(request, {
           chunkIndex: chunkIndex + 1,
@@ -753,6 +773,7 @@ var TranslationService = class {
       }
       completed.push(finalChunk);
     }
+    throwIfTranslationAborted(request.signal);
     return { text: combineTranslations(completed), chunkCount: chunks.length };
   }
 };
@@ -1384,7 +1405,7 @@ ${this.contextText}`;
         await this.recordTranscriptTurn(friendlyLabel, fullText, "stopped");
       } else {
         loadingBubble.addClass("is-error");
-        loadingBubble.setText("\u7FFB\u8BD1\u5931\u8D25: " + errorMessage(err));
+        loadingBubble.setText("\u7FFB\u8BD1\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u6A21\u578B\u914D\u7F6E\u6216\u7A0D\u540E\u91CD\u8BD5\u3002");
       }
     } finally {
       this.setSendingState(false);

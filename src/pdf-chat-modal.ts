@@ -698,7 +698,7 @@ export class PDFChatModal extends Modal {
         await this.recordTranscriptTurn(friendlyLabel, fullText, "stopped");
       } else {
         loadingBubble.addClass("is-error");
-        loadingBubble.setText("翻译失败: " + errorMessage(err));
+        loadingBubble.setText("翻译失败，请检查模型配置或稍后重试。");
       }
     } finally {
       this.setSendingState(false);

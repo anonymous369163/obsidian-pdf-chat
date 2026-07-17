@@ -204,6 +204,57 @@ test("splits long translation sources at paragraph boundaries within the charact
   assert.equal(hardSplitChunks.join(""), hardSplitSource);
 });
 
+test("prefers line, sentence, and whitespace boundaries before hard splitting", () => {
+  const { splitTranslationChunks } = loadBundle();
+  const cases = [
+    { source: "alpha line\nbeta", limit: 11, first: "alpha line\n" },
+    { source: "Alpha one. Beta two.", limit: 12, first: "Alpha one. " },
+    { source: "alpha betaGamma", limit: 8, first: "alpha " },
+  ];
+
+  for (const { source, limit, first } of cases) {
+    const chunks = plain(splitTranslationChunks(source, limit));
+    assert.equal(chunks[0], first);
+    assert.equal(chunks.join(""), source);
+    assert.ok(chunks.every((chunk) => chunk.length > 0 && chunk.length <= limit));
+  }
+});
+
+test("keeps supplementary math characters intact in chunks and translation requests", async () => {
+  const { splitTranslationChunks, TranslationService } = loadBundle();
+  const source = "ab𝛼cd";
+  const chunks = plain(splitTranslationChunks(source, 3));
+
+  assert.deepEqual(chunks, ["ab", "𝛼c", "d"]);
+  assert.equal(chunks.join(""), source);
+  assert.ok(chunks.every((chunk) => !/[\uD800-\uDBFF]$/.test(chunk)));
+  assert.ok(chunks.every((chunk) => !/^[\uDC00-\uDFFF]/.test(chunk)));
+
+  const requestedSources = [];
+  const service = new TranslationService({
+    async chat(request) {
+      const wrapped = request.messages[1].content.match(/<source_text>\n([\s\S]*?)\n<\/source_text>/);
+      assert.ok(wrapped);
+      requestedSources.push(wrapped[1]);
+      return "译文";
+    },
+  });
+  await service.translate({
+    source,
+    settings: {
+      targetLanguage: "zh-CN",
+      temperature: 0.1,
+      maxTokens: 4000,
+      chunkChars: 3,
+      additionalInstruction: "",
+    },
+    modelProfile: { id: "model-a", name: "A", endpoint: "", apiKey: "", model: "a" },
+  });
+
+  assert.deepEqual(requestedSources, ["ab", "𝛼c", "d"]);
+  assert.equal(requestedSources.join(""), source);
+});
+
 test("translates chunks sequentially and combines streamed output in source order", async () => {
   const { TranslationService } = loadBundle();
   const calls = [];
@@ -249,9 +300,94 @@ test("translates chunks sequentially and combines streamed output in source orde
   );
 });
 
-function createModalHarness(bundle, translate) {
+test("fails on an empty middle chunk and does not start later chunks", async () => {
+  const { TranslationService } = loadBundle();
+  const calls = [];
+  const updates = [];
+  const outputs = ["第一段", "", "不应调用"];
+  const service = new TranslationService({
+    async chat(request) {
+      calls.push(request.messages[1].content);
+      return outputs[calls.length - 1];
+    },
+  });
+
+  await assert.rejects(
+    service.translate({
+      source: "AAAA\n\nBBBB\n\nCCCC",
+      settings: {
+        targetLanguage: "zh-CN",
+        temperature: 0.1,
+        maxTokens: 4000,
+        chunkChars: 6,
+        additionalInstruction: "",
+      },
+      modelProfile: { id: "model-a", name: "A", endpoint: "", apiKey: "", model: "a" },
+      onChunk: (update) => updates.push(plain(update)),
+    }),
+    /empty translation output/i
+  );
+
+  assert.equal(calls.length, 2);
+  assert.equal(updates.at(-1).combinedText, "第一段");
+});
+
+test("checks cancellation before calls and after an ignoring LLM returns", async () => {
+  const { TranslationService } = loadBundle();
+  const settings = {
+    targetLanguage: "zh-CN",
+    temperature: 0.1,
+    maxTokens: 4000,
+    chunkChars: 6,
+    additionalInstruction: "",
+  };
+  const modelProfile = { id: "model-a", name: "A", endpoint: "", apiKey: "", model: "a" };
+
+  const alreadyAborted = new AbortController();
+  alreadyAborted.abort();
+  let preAbortedCalls = 0;
+  const preAbortedService = new TranslationService({
+    async chat() {
+      preAbortedCalls += 1;
+      return "不应调用";
+    },
+  });
+  await assert.rejects(
+    preAbortedService.translate({
+      source: "AAAA\n\nBBBB",
+      settings,
+      modelProfile,
+      signal: alreadyAborted.signal,
+    }),
+    (error) => error?.name === "AbortError"
+  );
+  assert.equal(preAbortedCalls, 0);
+
+  const abortedAfterFirst = new AbortController();
+  let ignoredSignalCalls = 0;
+  const ignoringService = new TranslationService({
+    async chat(request) {
+      ignoredSignalCalls += 1;
+      request.onChunk?.("第一段", "第一段");
+      abortedAfterFirst.abort();
+      return "第一段";
+    },
+  });
+  await assert.rejects(
+    ignoringService.translate({
+      source: "AAAA\n\nBBBB\n\nCCCC",
+      settings,
+      modelProfile,
+      signal: abortedAfterFirst.signal,
+    }),
+    (error) => error?.name === "AbortError"
+  );
+  assert.equal(ignoredSignalCalls, 1);
+});
+
+function createModalHarness(bundle, translate, options = {}) {
   const PDFChatModal = bundle.PDFChatModal;
-  const source = "Selected source";
+  const source = options.source || "Selected source";
   const persisted = [];
   const plugin = {
     settings: {
@@ -268,6 +404,7 @@ function createModalHarness(bundle, translate) {
         maxTokens: 4000,
         chunkChars: 8000,
         additionalInstruction: "",
+        ...(options.translation || {}),
       },
     },
     saveSettings: async () => {},
@@ -371,7 +508,60 @@ test("persists partial aborted translation but drops empty failed translation", 
   assert.deepEqual(plain(failed.modal.transcript), []);
   assert.deepEqual(plain(failed.modal.messages), originalMessages);
   assert.deepEqual(failed.persisted, []);
-  assert.match(failed.bubbles[1].text, /translation endpoint failed/);
+  assert.equal(failed.bubbles[1].text, "翻译失败，请检查模型配置或稍后重试。");
+});
+
+test("modal persists prior output as stopped when a middle translation chunk is empty", async () => {
+  const bundle = loadBundle();
+  const serviceOutputs = ["第一段", "", "不应调用"];
+  let serviceCalls = 0;
+  const service = new bundle.TranslationService({
+    async chat() {
+      const output = serviceOutputs[serviceCalls];
+      serviceCalls += 1;
+      return output;
+    },
+  });
+  const harness = createModalHarness(
+    bundle,
+    (request) => service.translate(request),
+    { source: "AAAA\n\nBBBB\n\nCCCC", translation: { chunkChars: 6 } }
+  );
+
+  await harness.modal.runTranslation();
+
+  const friendlyLabel = `翻译当前选区（${harness.source.length} 字）`;
+  assert.equal(serviceCalls, 2);
+  assert.deepEqual(plain(harness.modal.transcript), [
+    { role: "user", content: friendlyLabel, status: "complete" },
+    { role: "assistant", content: "第一段", status: "stopped" },
+  ]);
+  assert.equal(harness.bubbles[1].text, "第一段\n\n[已停止生成]");
+  assert.deepEqual(plain(harness.modal.messages.slice(-2)), [
+    { role: "user", content: friendlyLabel },
+    { role: "assistant", content: "第一段" },
+  ]);
+  assert.deepEqual(harness.persisted, [
+    { key: "selection:key", messages: plain(harness.modal.transcript) },
+  ]);
+});
+
+test("modal sanitizes translation endpoint errors that contain internal prompts", async () => {
+  const bundle = loadBundle();
+  const leakedError =
+    "Endpoint rejected system: faithful academic translation; user: <source_text>Selected source</source_text>";
+  const failed = createModalHarness(bundle, async () => {
+    throw new Error(leakedError);
+  });
+  const originalMessages = plain(failed.modal.messages);
+
+  await failed.modal.runTranslation();
+
+  assert.equal(failed.bubbles[1].text, "翻译失败，请检查模型配置或稍后重试。");
+  assert.doesNotMatch(failed.bubbles[1].text, /faithful academic|source_text|Selected source|Endpoint rejected/);
+  assert.deepEqual(plain(failed.modal.transcript), []);
+  assert.deepEqual(plain(failed.modal.messages), originalMessages);
+  assert.deepEqual(failed.persisted, []);
 });
 
 test("completed translation replaces progress in one assistant bubble and stores visible messages", async () => {
