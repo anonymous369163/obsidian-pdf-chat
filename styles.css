@@ -1,0 +1,249 @@
+.pdf-chat-modal.modal {
+  resize: both;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-width: 420px;
+  min-height: 380px;
+  width: 640px;
+  height: 620px;
+  max-width: 95vw;
+  max-height: 92vh;
+}
+
+.pdf-chat-modal .modal-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+.pdf-chat-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: move;
+  flex-shrink: 0;
+}
+
+.pdf-chat-drag-handle {
+  user-select: none;
+}
+
+.pdf-chat-title-row h3 {
+  margin: 0;
+}
+
+.pdf-chat-title-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: default;
+}
+
+.pdf-chat-zoom-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 0.8em;
+  color: var(--text-muted);
+}
+
+.pdf-chat-zoom-btn {
+  font-size: 0.85em;
+  line-height: 1;
+  padding: 2px 7px;
+  cursor: pointer;
+}
+
+.pdf-chat-zoom-label {
+  min-width: 3.2em;
+  text-align: center;
+  cursor: pointer;
+  user-select: none;
+}
+
+.pdf-chat-reset-btn {
+  font-size: 0.8em;
+  cursor: pointer;
+}
+
+.pdf-chat-model-row,
+.pdf-chat-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.pdf-chat-select-label {
+  font-size: 0.85em;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.pdf-chat-select {
+  flex: 1;
+  cursor: pointer;
+}
+
+.pdf-chat-context-wrapper {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  padding: 8px 10px;
+  flex-shrink: 0;
+}
+
+.pdf-chat-context-toggle {
+  cursor: pointer;
+  font-size: 0.85em;
+  color: var(--text-muted);
+  user-select: none;
+  margin: 0;
+}
+
+.pdf-chat-context-text {
+  white-space: pre-wrap;
+  font-size: calc(0.85em * var(--pdf-chat-font-scale, 1));
+  color: var(--text-muted);
+  margin-top: 6px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.pdf-chat-context-text.is-collapsed {
+  display: none;
+}
+
+.pdf-chat-summary-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: 0.85em;
+  color: var(--text-muted);
+}
+
+.pdf-chat-summary-row label {
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pdf-chat-summary-status {
+  flex: 1;
+  font-size: 0.9em;
+  color: var(--text-faint);
+}
+
+.pdf-chat-summary-btn {
+  font-size: 0.8em;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pdf-chat-history {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 60px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 4px;
+  font-size: calc(1em * var(--pdf-chat-font-scale, 1));
+}
+
+.pdf-chat-bubble {
+  padding: 8px 12px;
+  border-radius: 8px;
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
+/* 最终 Markdown 渲染完成后切换到这个状态:去掉 pre-wrap,避免渲染出来的标签
+   (段落/公式/代码块/列表)之间的空白文本节点被当成强制换行,导致排版挤在一起或错位。 */
+.pdf-chat-bubble.is-rendered {
+  white-space: normal;
+}
+
+.pdf-chat-bubble.is-rendered > *:first-child {
+  margin-top: 0;
+}
+
+.pdf-chat-bubble.is-rendered > *:last-child {
+  margin-bottom: 0;
+}
+
+/* 公式(MathJax 输出的 mjx-container)如果很长,允许在气泡内部单独横向滚动,
+   而不是把整个弹窗撑破或被裁掉。 */
+.pdf-chat-bubble mjx-container {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.pdf-chat-bubble mjx-container[display="true"] {
+  display: block;
+  margin: 0.5em 0;
+}
+
+.pdf-chat-bubble.assistant pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.pdf-chat-bubble.user {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  align-self: flex-end;
+  max-width: 85%;
+}
+
+.pdf-chat-bubble.assistant {
+  background: var(--background-secondary);
+  align-self: flex-start;
+  max-width: 100%;
+}
+
+.pdf-chat-bubble.assistant.is-loading {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.pdf-chat-bubble.assistant.is-error {
+  color: var(--text-error);
+}
+
+.pdf-chat-bubble.assistant.is-stopped {
+  color: var(--text-muted);
+}
+
+.pdf-chat-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  flex-shrink: 0;
+}
+
+.pdf-chat-input {
+  flex: 1;
+  resize: none;
+  min-height: 48px;
+  max-height: 160px;
+  font-size: calc(1em * var(--pdf-chat-font-scale, 1));
+}
+
+.pdf-chat-input-row button.is-stop {
+  background-color: var(--background-modifier-error);
+  color: var(--text-on-accent);
+}
+
+.pdf-chat-hint {
+  font-size: 0.75em;
+  color: var(--text-faint);
+  margin: 0;
+  flex-shrink: 0;
+}

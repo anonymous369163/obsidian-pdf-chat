@@ -1,0 +1,24 @@
+# Obsidian local plugin data
+data.json
+
+# Dependencies / build artifacts
+node_modules/
+dist/
+build/
+
+# Local experiments and vault files
+rag-eval/
+.obsidian/
+*.pdf
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Environment / secrets
+.env
+.env.*
+*.key
+*.pem
