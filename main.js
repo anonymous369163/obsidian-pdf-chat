@@ -1,3 +1,4 @@
+// PDF Chat 0.5.0
 var global = globalThis;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;

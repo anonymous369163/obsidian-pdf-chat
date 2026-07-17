@@ -13,7 +13,7 @@ test("TypeScript sources build the Obsidian-compatible root bundle through expli
   assert.equal(pkg.scripts.dev, "node esbuild.config.mjs");
   assert.equal(pkg.scripts.build, "node esbuild.config.mjs production");
   assert.equal(pkg.scripts.typecheck, "tsc --noEmit");
-  assert.equal(pkg.scripts.test, "npm run build && node --test");
+  assert.equal(pkg.scripts.test, "node --test");
 
   for (const relativePath of [
     "src/main.ts",
@@ -36,6 +36,7 @@ test("TypeScript sources build the Obsidian-compatible root bundle through expli
   assert.match(buildConfig, /format:\s*['"]cjs['"]/);
 
   const bundle = fs.readFileSync(path.join(projectRoot, "main.js"), "utf8");
+  assert.match(bundle, /^\/\/ PDF Chat 0\.5\.0$/m);
   assert.match(bundle, /require\(["']obsidian["']\)/);
   assert.doesNotMatch(bundle, /require\(["']typescript["']\)/);
 });

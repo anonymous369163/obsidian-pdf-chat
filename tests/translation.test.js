@@ -75,7 +75,7 @@ test("migrates legacy translation settings without changing unrelated saved data
       id: "private-model",
       name: "Private model",
       endpoint: "https://example.invalid/v1/chat/completions",
-      apiKey: "secret-value",
+      apiKey: "YOUR_API_KEY",
       model: "model-name",
     },
   ];
@@ -142,7 +142,7 @@ test("constructs an isolated translation request with the selected model and tra
     id: "chosen-model",
     name: "Chosen model",
     endpoint: "https://example.invalid/v1/chat/completions",
-    apiKey: "secret-value",
+    apiKey: "YOUR_API_KEY",
     model: "chosen-model-name",
   };
   const source = "A formula uses x_i and cites [12], Figure 3, and Table 2.";
