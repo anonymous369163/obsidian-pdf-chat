@@ -587,7 +587,7 @@ test("handleSubmit persists streamed partial text when generation is stopped", a
   assert.equal(bubbles.at(-1).text, "Partial answer\n\n[已停止生成]");
 });
 
-test("handleTranslate sends the fixed translate instruction without reading the input box, skipping RAG/full-text augmentation", async () => {
+test("handleTranslate uses the dedicated isolated translation pipeline without reading the input box", async () => {
   const PluginClass = loadPluginModule();
   const PDFChatModal = PluginClass.__test.PDFChatModal;
   let apiMessages = [];
@@ -600,7 +600,13 @@ test("handleTranslate sends the fixed translate instruction without reading the 
     models: [{ id: "model-a" }],
     promptPresets: [],
     systemPrompt: "System instructions",
-    translatePrompt: "请把选中的原文片段翻译成中文。",
+    translation: {
+      targetLanguage: "zh-CN",
+      temperature: 0.1,
+      maxTokens: 4000,
+      chunkChars: 8000,
+      additionalInstruction: "",
+    },
   };
   plugin.getModelProfile = () => ({ id: "model-a" });
   plugin.saveConversation = async () => {};
@@ -644,28 +650,27 @@ test("handleTranslate sends the fixed translate instruction without reading the 
   modal.handleTranslate();
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(bubbles[0].text, "请把选中的原文片段翻译成中文。");
-  assert.equal(apiMessages.at(-1).content, "请把选中的原文片段翻译成中文。");
+  assert.equal(bubbles[0].text, "翻译当前选区（9 字）");
+  assert.deepEqual(apiMessages.map((message) => message.role), ["system", "user"]);
+  assert.match(apiMessages[1].content, /<source_text>\nSelection\n<\/source_text>/);
+  assert.equal(JSON.stringify(apiMessages).split("Selection").length - 1, 1);
+  assert.doesNotMatch(JSON.stringify(apiMessages), /System instructions|Some PDF text/);
   assert.equal(modal.inputEl.value, "leave me alone");
 });
 
-test("translate compatibility action falls back to the default instruction when the saved field is empty", async () => {
+test("translate compatibility registry delegates to the dedicated translation task", async () => {
   const PluginClass = loadPluginModule();
   const createRegistry = PluginClass.__test.createCompatibilityActionRegistry;
   const registry = createRegistry("default translation instruction");
-  let submitted = null;
+  let calls = 0;
 
   await registry.execute("translate", {
-    settings: { translatePrompt: "" },
-    async submit(options) {
-      submitted = plain(options);
+    async translate() {
+      calls += 1;
     },
   });
 
-  assert.deepEqual(submitted, {
-    question: "default translation instruction",
-    skipContextAugmentation: true,
-  });
+  assert.equal(calls, 1);
 });
 
 test("non-streaming transport preserves endpoint error text when the JSON body is invalid", async () => {

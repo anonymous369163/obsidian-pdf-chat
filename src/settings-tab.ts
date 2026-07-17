@@ -156,12 +156,23 @@ export class PDFChatSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName("「翻译」按钮的指令")
-      .setDesc("点弹窗里的「翻译」按钮时直接发送的固定指令,不需要在输入框里打字。选中的原文片段已经在系统提示词里,这里只需要描述翻译要求。")
+      .setName("翻译目标语言")
+      .setDesc("用于弹窗中的选区翻译,例如 zh-CN、en 或 ja")
+      .addText((text) => {
+        text.setValue(this.plugin.settings.translation.targetLanguage).onChange(async (value) => {
+          this.plugin.settings.translation.targetLanguage =
+            value.trim() || DEFAULT_SETTINGS.translation.targetLanguage;
+          await this.plugin.saveSettings();
+        });
+      });
+
+    new Setting(containerEl)
+      .setName("翻译附加要求")
+      .setDesc("可选。用于补充术语、风格或领域约定;原文会由独立翻译任务安全附加。")
       .addTextArea((text) => {
         text.inputEl.rows = 4;
-        text.setValue(this.plugin.settings.translatePrompt).onChange(async (value) => {
-          this.plugin.settings.translatePrompt = value;
+        text.setValue(this.plugin.settings.translation.additionalInstruction).onChange(async (value) => {
+          this.plugin.settings.translation.additionalInstruction = value;
           await this.plugin.saveSettings();
         });
       });

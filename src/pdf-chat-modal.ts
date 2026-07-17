@@ -637,14 +637,74 @@ export class PDFChatModal extends Modal {
     this.sendBtn.toggleClass("is-stop", sending);
   }
 
-  // 点「翻译」按钮触发:不读输入框,直接用固定的翻译指令当作这一轮的问题发出去。
-  // 选中的原文片段已经在系统提示词里(见 buildSystemMessage),跳过 RAG/全文检索拼接——
-  // 那是给"回答具体问题"用的,翻译只需要针对已经在上下文里的选中片段,不需要额外找相关内容。
   handleTranslate(): void {
     void this.services.actions.execute("translate", {
-      settings: this.plugin.settings,
-      submit: (options) => this.handleSubmit(options),
+      translate: () => this.runTranslation(),
     });
+  }
+
+  async runTranslation(): Promise<void> {
+    if (!this.contextText || this.isSending) return;
+
+    const friendlyLabel = `翻译当前选区（${this.contextText.length} 字）`;
+    this.addBubble("user", friendlyLabel);
+    this.setSendingState(true);
+    const loadingBubble = this.addBubble("assistant", "正在翻译…", { loading: true });
+    this.abortController = new AbortController();
+    let fullText = "";
+
+    try {
+      const result = await this.services.translations.translate({
+        source: this.contextText,
+        settings: this.plugin.settings.translation,
+        modelProfile: this.services.models.get(this.currentModelId),
+        signal: this.abortController.signal,
+        onChunk: (progress) => {
+          fullText = progress.combinedText;
+          loadingBubble.removeClass("is-loading");
+          const progressText =
+            progress.chunkCount > 1
+              ? `${progress.combinedText}\n\n正在翻译 ${progress.chunkIndex}/${progress.chunkCount}…`
+              : progress.combinedText;
+          loadingBubble.setText(progressText);
+          this.historyEl.scrollTo({ top: this.historyEl.scrollHeight, behavior: "auto" });
+        },
+      });
+      fullText = result.text;
+      loadingBubble.removeClass("is-loading");
+      if (!fullText.trim()) {
+        loadingBubble.addClass("is-error");
+        loadingBubble.setText("翻译未返回内容");
+        return;
+      }
+
+      loadingBubble.addClass("is-rendered");
+      await renderMarkdownInto(this.app, this.plugin, loadingBubble, fullText);
+      this.messages.push(
+        { role: "user", content: friendlyLabel },
+        { role: "assistant", content: fullText }
+      );
+      await this.recordTranscriptTurn(friendlyLabel, fullText, "complete");
+    } catch (err) {
+      loadingBubble.removeClass("is-loading");
+      if (fullText.trim()) {
+        loadingBubble.addClass("is-stopped");
+        if (!isAbortError(err)) loadingBubble.addClass("is-error");
+        loadingBubble.setText(fullText + "\n\n[已停止生成]");
+        this.messages.push(
+          { role: "user", content: friendlyLabel },
+          { role: "assistant", content: fullText }
+        );
+        await this.recordTranscriptTurn(friendlyLabel, fullText, "stopped");
+      } else {
+        loadingBubble.addClass("is-error");
+        loadingBubble.setText("翻译失败: " + errorMessage(err));
+      }
+    } finally {
+      this.setSendingState(false);
+      this.abortController = null;
+      this.inputEl.focus();
+    }
   }
 
   async handleSubmit(options: SubmitOptions = {}): Promise<void> {

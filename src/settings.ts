@@ -1,11 +1,13 @@
 import { normalizeConversationHistories } from "./conversation";
-import { DEFAULT_SETTINGS } from "./default-settings";
-import type { PDFChatSettings } from "./types";
+import { DEFAULT_SETTINGS, LEGACY_0_4_0_TRANSLATE_PROMPT } from "./default-settings";
+import type { PDFChatSettings, TranslationSettings } from "./types";
 
-interface LegacySettings extends Partial<PDFChatSettings> {
+interface LegacySettings extends Omit<Partial<PDFChatSettings>, "translation"> {
   endpoint?: string;
   apiKey?: string;
   model?: string;
+  translatePrompt?: string;
+  translation?: Partial<TranslationSettings>;
 }
 
 export interface SettingsMigrationResult {
@@ -34,6 +36,22 @@ export function migrateSettings(savedValue: unknown, now: () => number = Date.no
   settings.conversationHistories = normalizeConversationHistories(saved && saved.conversationHistories);
 
   let needsSave = false;
+  const hasTranslationObject = Boolean(
+    saved && saved.translation && typeof saved.translation === "object" && !Array.isArray(saved.translation)
+  );
+  if (hasTranslationObject) {
+    settings.translation = { ...DEFAULT_SETTINGS.translation, ...saved!.translation };
+  } else {
+    const legacyInstruction = typeof saved?.translatePrompt === "string" ? saved.translatePrompt : "";
+    settings.translation = {
+      ...DEFAULT_SETTINGS.translation,
+      additionalInstruction:
+        legacyInstruction.trim() && legacyInstruction !== LEGACY_0_4_0_TRANSLATE_PROMPT
+          ? legacyInstruction
+          : "",
+    };
+    needsSave = true;
+  }
   if (saved && (saved.endpoint || saved.apiKey || saved.model) && !(saved.models && saved.models.length)) {
     const migrated = {
       id: "migrated-" + now(),
@@ -60,6 +78,10 @@ export function migrateSettings(savedValue: unknown, now: () => number = Date.no
     delete settings.endpoint;
     delete settings.apiKey;
     delete settings.model;
+    needsSave = true;
+  }
+  if (settings.translatePrompt !== undefined) {
+    delete settings.translatePrompt;
     needsSave = true;
   }
 

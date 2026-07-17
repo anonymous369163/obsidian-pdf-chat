@@ -1,6 +1,6 @@
 import { Notice, Plugin, type TFile } from "obsidian";
 
-import { ActionRegistry, createCompatibilityActionRegistry } from "./actions";
+import { ActionRegistry, createResearchActionRegistry } from "./actions";
 import { DEFAULT_SETTINGS } from "./default-settings";
 import {
   cleanSelectionText,
@@ -14,6 +14,7 @@ import { createPDFChatModalServices } from "./modal-services";
 import { PDFChatModal } from "./pdf-chat-modal";
 import { enqueueSettingsSave, migrateSettings } from "./settings";
 import { PDFChatSettingTab } from "./settings-tab";
+import { TranslationService } from "./translation";
 import type {
   ConversationMessage,
   DocChunksEntry,
@@ -26,11 +27,14 @@ import type {
   PDFChatPluginApi,
   PDFChatSettings,
   PdfChunk,
+  TranslationOperations,
 } from "./types";
 
 export {
   ActionRegistry,
   createCompatibilityActionRegistry,
+  createResearchActionRegistry,
+  ResearchActionRegistry,
 } from "./actions";
 export {
   cleanSelectionText,
@@ -40,7 +44,7 @@ export {
   normalizeConversationMessages,
   stableConversationHash,
 } from "./conversation";
-export { DEFAULT_SETTINGS } from "./default-settings";
+export { DEFAULT_SETTINGS, LEGACY_0_4_0_TRANSLATE_PROMPT } from "./default-settings";
 export { OpenAICompatibleTransport } from "./llm-transport";
 export {
   bm25Retrieve,
@@ -54,6 +58,8 @@ export {
 } from "./paper-context";
 export { createPDFChatModalServices } from "./modal-services";
 export { PDFChatModal } from "./pdf-chat-modal";
+export { migrateSettings } from "./settings";
+export { buildTranslationMessages, splitTranslationChunks, TranslationService } from "./translation";
 export type { LlmRequest, PaperContext, ResearchAction } from "./types";
 
 export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
@@ -62,6 +68,7 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
   conversationStore?: ConversationStore;
   llmTransport?: OpenAICompatibleTransport;
   paperContextService?: PaperContextService;
+  translationService?: TranslationOperations;
   actionRegistry?: ActionRegistry;
   modalServices?: PDFChatModalServices;
 
@@ -83,7 +90,8 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
       this.llmTransport,
       (id) => this.getModelProfile(id)
     );
-    this.actionRegistry = createCompatibilityActionRegistry(DEFAULT_SETTINGS.translatePrompt);
+    this.translationService = new TranslationService(this.llmTransport);
+    this.actionRegistry = createResearchActionRegistry();
     this.modalServices = createPDFChatModalServices(this, {
       conversations: {
         getKey: (file, selectedText) => getConversationKey(file, selectedText),
@@ -104,6 +112,7 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
       llm: { chat: (request) => this.llmTransport!.chat(request) },
       models: { get: (id) => this.getModelProfile(id) },
       actions: this.actionRegistry,
+      translations: this.translationService,
     });
     this.addSettingTab(new PDFChatSettingTab(this.app, this));
 
@@ -223,6 +232,7 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
       modelProfile,
       stream: options.stream,
       maxTokensOverride: options.maxTokensOverride,
+      temperatureOverride: options.temperatureOverride,
     });
   }
 

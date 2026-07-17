@@ -1,6 +1,6 @@
 import type { ResearchAction, ResearchActionContext } from "./types";
 
-export class ActionRegistry {
+export class ResearchActionRegistry {
   private readonly actions = new Map<string, ResearchAction>();
 
   register(action: ResearchAction): this {
@@ -23,17 +23,19 @@ export class ActionRegistry {
   }
 }
 
-export function createCompatibilityActionRegistry(defaultTranslatePrompt: string): ActionRegistry {
-  return new ActionRegistry().register({
+export { ResearchActionRegistry as ActionRegistry };
+
+export function createCompatibilityActionRegistry(defaultTranslatePrompt: string): ResearchActionRegistry {
+  void defaultTranslatePrompt;
+  return createResearchActionRegistry();
+}
+
+export function createResearchActionRegistry(): ResearchActionRegistry {
+  return new ResearchActionRegistry().register({
     id: "translate",
     name: "Translate selection",
-    async execute({ settings, submit }) {
-      const configured = settings.translatePrompt;
-      const instruction = (
-        (typeof configured === "string" ? configured : "") || defaultTranslatePrompt
-      ).trim();
-      if (!instruction) return;
-      await submit({ question: instruction, skipContextAugmentation: true });
+    async execute({ translate }) {
+      await translate();
     },
   });
 }

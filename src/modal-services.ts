@@ -1,7 +1,8 @@
-import { createCompatibilityActionRegistry } from "./actions";
-import { DEFAULT_SETTINGS } from "./default-settings";
+import { createResearchActionRegistry } from "./actions";
 import { bm25RetrieveMulti, expandWithNeighbors, extractPdfFullText } from "./paper-context";
+import { TranslationService } from "./translation";
 import type {
+  LlmOperations,
   PDFChatModalServiceOverrides,
   PDFChatModalServices,
   PDFChatPluginApi,
@@ -11,6 +12,22 @@ export function createPDFChatModalServices(
   plugin: PDFChatPluginApi,
   overrides: PDFChatModalServiceOverrides = {}
 ): PDFChatModalServices {
+  const llm: LlmOperations = {
+    chat: (request) => {
+      if (plugin.llmTransport) return plugin.llmTransport.chat(request);
+      return plugin.chat(
+        request.messages,
+        request.onChunk,
+        request.signal,
+        request.modelProfile,
+        {
+          stream: request.stream,
+          maxTokensOverride: request.maxTokensOverride,
+          temperatureOverride: request.temperatureOverride,
+        }
+      );
+    },
+  };
   const compatibility: PDFChatModalServices = {
     conversations: {
       getKey: (file, selectedText) => plugin.getConversationKey(file, selectedText),
@@ -29,23 +46,12 @@ export function createPDFChatModalServices(
       retrieveContext: (chunks, queries, topK) =>
         expandWithNeighbors(chunks, bm25RetrieveMulti(chunks, queries, topK)),
     },
-    llm: {
-      chat: (request) => {
-        if (plugin.llmTransport) return plugin.llmTransport.chat(request);
-        return plugin.chat(
-          request.messages,
-          request.onChunk,
-          request.signal,
-          request.modelProfile,
-          { stream: request.stream, maxTokensOverride: request.maxTokensOverride }
-        );
-      },
-    },
+    llm,
     models: {
       get: (id) => plugin.getModelProfile(id),
     },
-    actions:
-      plugin.actionRegistry || createCompatibilityActionRegistry(DEFAULT_SETTINGS.translatePrompt),
+    actions: plugin.actionRegistry || createResearchActionRegistry(),
+    translations: plugin.translationService || new TranslationService(llm),
   };
   return {
     ...compatibility,
@@ -55,5 +61,11 @@ export function createPDFChatModalServices(
     llm: { ...compatibility.llm, ...(overrides.llm || {}) },
     models: { ...compatibility.models, ...(overrides.models || {}) },
     actions: overrides.actions || compatibility.actions,
+    translations: {
+      translate: (request) =>
+        overrides.translations?.translate
+          ? overrides.translations.translate(request)
+          : compatibility.translations.translate(request),
+    },
   };
 }

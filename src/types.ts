@@ -21,6 +21,7 @@ export interface LlmRequest {
   signal?: AbortSignal;
   modelProfile?: ModelProfile;
   maxTokensOverride?: number;
+  temperatureOverride?: number;
   stream?: boolean;
 }
 
@@ -57,6 +58,34 @@ export interface DocChunksEntry {
   generatedAt: number;
 }
 
+export interface TranslationSettings {
+  targetLanguage: string;
+  temperature: number;
+  maxTokens: number;
+  chunkChars: number;
+  additionalInstruction: string;
+}
+
+export interface TranslationProgress {
+  chunkIndex: number;
+  chunkCount: number;
+  chunkText: string;
+  combinedText: string;
+}
+
+export interface TranslationTaskRequest {
+  source: string;
+  settings: TranslationSettings;
+  modelProfile: ModelProfile;
+  signal?: AbortSignal;
+  onChunk?: (progress: TranslationProgress) => void;
+}
+
+export interface TranslationTaskResult {
+  text: string;
+  chunkCount: number;
+}
+
 export interface PDFChatSettings {
   models: ModelProfile[];
   activeModelId: string;
@@ -67,7 +96,7 @@ export interface PDFChatSettings {
   lastModelId: string;
   lastPresetId: string;
   systemPrompt: string;
-  translatePrompt: string;
+  translation: TranslationSettings;
   summaryModelId: string;
   autoDocSummary: boolean;
   summaryMaxChars: number;
@@ -94,8 +123,7 @@ export interface PaperContext {
 }
 
 export interface ResearchActionContext {
-  settings: PDFChatSettings;
-  submit: (options: { question: string; skipContextAugmentation?: boolean }) => Promise<void>;
+  translate: () => Promise<void>;
 }
 
 export interface ResearchAction {
@@ -132,6 +160,10 @@ export interface LlmOperations {
   chat(request: LlmRequest): Promise<string>;
 }
 
+export interface TranslationOperations {
+  translate(request: TranslationTaskRequest): Promise<TranslationTaskResult>;
+}
+
 export interface ModelOperations {
   get(id: string): ModelProfile;
 }
@@ -146,6 +178,7 @@ export interface PDFChatModalServices {
   llm: LlmOperations;
   models: ModelOperations;
   actions: ResearchActionOperations;
+  translations: TranslationOperations;
 }
 
 export interface PDFChatModalServiceOverrides {
@@ -154,11 +187,13 @@ export interface PDFChatModalServiceOverrides {
   llm?: Partial<LlmOperations>;
   models?: Partial<ModelOperations>;
   actions?: ResearchActionOperations;
+  translations?: Partial<TranslationOperations>;
 }
 
 export interface LlmCompatibilityOptions {
   stream?: boolean;
   maxTokensOverride?: number;
+  temperatureOverride?: number;
 }
 
 export interface PDFChatPluginApi extends Plugin {
@@ -166,6 +201,7 @@ export interface PDFChatPluginApi extends Plugin {
   actionRegistry?: ResearchActionOperations;
   paperContextService?: PaperContextOperations;
   llmTransport?: LlmOperations;
+  translationService?: TranslationOperations;
   saveSettings(): Promise<void>;
   getConversationKey(file: TFile | null, contextText: string): string;
   getConversation(key: string): ConversationMessage[];

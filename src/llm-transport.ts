@@ -43,9 +43,24 @@ export class OpenAICompatibleTransport {
     const settings = this.getSettings();
     const profile = request.modelProfile || this.getModelProfile(settings.activeModelId);
     const shouldStream = request.stream ?? settings.stream;
-    if (shouldStream) return this.chatStream(request.messages, request.onChunk, request.signal, profile);
+    if (shouldStream) {
+      return this.chatStream(
+        request.messages,
+        request.onChunk,
+        request.signal,
+        profile,
+        request.maxTokensOverride,
+        request.temperatureOverride
+      );
+    }
 
-    const text = await this.chatOnce(request.messages, request.signal, profile, request.maxTokensOverride);
+    const text = await this.chatOnce(
+      request.messages,
+      request.signal,
+      profile,
+      request.maxTokensOverride,
+      request.temperatureOverride
+    );
     request.onChunk?.(text, text);
     return text;
   }
@@ -54,13 +69,14 @@ export class OpenAICompatibleTransport {
     messages: LlmMessage[],
     signal: AbortSignal | undefined,
     profile: ModelProfile,
-    maxTokensOverride?: number
+    maxTokensOverride?: number,
+    temperatureOverride?: number
   ): Promise<string> {
     const settings = this.getSettings();
     const body = {
       model: profile.model,
-      temperature: settings.temperature,
-      max_tokens: maxTokensOverride || settings.maxTokens,
+      temperature: temperatureOverride ?? settings.temperature,
+      max_tokens: maxTokensOverride ?? settings.maxTokens,
       stream: false,
       messages,
     };
@@ -103,7 +119,9 @@ export class OpenAICompatibleTransport {
     messages: LlmMessage[],
     onChunk: LlmRequest["onChunk"],
     signal: AbortSignal | undefined,
-    profile: ModelProfile
+    profile: ModelProfile,
+    maxTokensOverride?: number,
+    temperatureOverride?: number
   ): Promise<string> {
     const settings = this.getSettings();
     const response = await this.fetchRequest(profile.endpoint, {
@@ -114,8 +132,8 @@ export class OpenAICompatibleTransport {
       },
       body: JSON.stringify({
         model: profile.model,
-        temperature: settings.temperature,
-        max_tokens: settings.maxTokens,
+        temperature: temperatureOverride ?? settings.temperature,
+        max_tokens: maxTokensOverride ?? settings.maxTokens,
         stream: true,
         messages,
       }),

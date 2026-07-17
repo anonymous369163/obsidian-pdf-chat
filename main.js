@@ -22,25 +22,32 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
 // src/main.ts
 var main_exports = {};
 __export(main_exports, {
-  ActionRegistry: () => ActionRegistry,
+  ActionRegistry: () => ResearchActionRegistry,
   ConversationStore: () => ConversationStore,
   DEFAULT_SETTINGS: () => DEFAULT_SETTINGS,
+  LEGACY_0_4_0_TRANSLATE_PROMPT: () => LEGACY_0_4_0_TRANSLATE_PROMPT,
   OpenAICompatibleTransport: () => OpenAICompatibleTransport,
   PDFChatModal: () => PDFChatModal,
   PaperContextService: () => PaperContextService,
+  ResearchActionRegistry: () => ResearchActionRegistry,
+  TranslationService: () => TranslationService,
   bm25Retrieve: () => bm25Retrieve,
   bm25RetrieveMulti: () => bm25RetrieveMulti,
+  buildTranslationMessages: () => buildTranslationMessages,
   chunkPdfPages: () => chunkPdfPages,
   cleanSelectionText: () => cleanSelectionText,
   createCompatibilityActionRegistry: () => createCompatibilityActionRegistry,
   createPDFChatModalServices: () => createPDFChatModalServices,
+  createResearchActionRegistry: () => createResearchActionRegistry,
   default: () => PDFChatPlugin,
   expandWithNeighbors: () => expandWithNeighbors,
   extractPdfFullText: () => extractPdfFullText,
   extractPdfPages: () => extractPdfPages,
   getConversationKey: () => getConversationKey,
+  migrateSettings: () => migrateSettings,
   normalizeConversationHistories: () => normalizeConversationHistories,
   normalizeConversationMessages: () => normalizeConversationMessages,
+  splitTranslationChunks: () => splitTranslationChunks,
   stableConversationHash: () => stableConversationHash,
   tokenizeForBM25: () => tokenizeForBM25
 });
@@ -48,7 +55,7 @@ module.exports = __toCommonJS(main_exports);
 var import_obsidian4 = require("obsidian");
 
 // src/actions.ts
-var ActionRegistry = class {
+var ResearchActionRegistry = class {
   constructor() {
     __publicField(this, "actions", /* @__PURE__ */ new Map());
   }
@@ -69,120 +76,18 @@ var ActionRegistry = class {
   }
 };
 function createCompatibilityActionRegistry(defaultTranslatePrompt) {
-  return new ActionRegistry().register({
+  void defaultTranslatePrompt;
+  return createResearchActionRegistry();
+}
+function createResearchActionRegistry() {
+  return new ResearchActionRegistry().register({
     id: "translate",
     name: "Translate selection",
-    async execute({ settings, submit }) {
-      const configured = settings.translatePrompt;
-      const instruction = ((typeof configured === "string" ? configured : "") || defaultTranslatePrompt).trim();
-      if (!instruction) return;
-      await submit({ question: instruction, skipContextAugmentation: true });
+    async execute({ translate }) {
+      await translate();
     }
   });
 }
-
-// src/default-settings.ts
-var DEFAULT_SETTINGS = {
-  models: [
-    {
-      id: "openai-compatible",
-      name: "OpenAI-compatible API",
-      endpoint: "",
-      apiKey: "",
-      model: ""
-    }
-  ],
-  activeModelId: "openai-compatible",
-  temperature: 0.7,
-  maxTokens: 1200,
-  stream: true,
-  // 弹窗里聊天内容(上下文预览/对话气泡/输入框)的字体缩放比例,可在弹窗标题栏用 A-/A+ 调整,会记住上次的值。
-  fontScale: 1,
-  // 记住上一次对话用的模型/阅读模式,下次打开弹窗直接沿用,不用每次重新选。
-  lastModelId: "",
-  lastPresetId: "",
-  systemPrompt: "\u4F60\u662F\u6211\u7684\u9605\u8BFB\u52A9\u624B\u3002\u8BF7\u7ED3\u5408\u4E0B\u9762\u63D0\u4F9B\u7684\u539F\u6587\u7247\u6BB5\u56DE\u7B54\u6211\u7684\u95EE\u9898\u3002\n1. \u4F18\u5148\u57FA\u4E8E\u539F\u6587\u7247\u6BB5\u56DE\u7B54,\u4E0D\u8981\u8131\u79BB\u5B83\u53E6\u8D77\u7089\u7076\u3002\n2. \u5982\u679C\u95EE\u9898\u5728\u539F\u6587\u7247\u6BB5\u4E2D\u627E\u4E0D\u5230\u4F9D\u636E,\u8BF7\u660E\u786E\u8BF4\u660E,\u4E0D\u8981\u7F16\u9020\u3002\n3. \u76F4\u63A5\u8F93\u51FA\u56DE\u7B54\u5185\u5BB9,\u4E0D\u8981\u590D\u8FF0\u89C4\u5219,\u4E0D\u8981\u52A0\u201C\u6839\u636E\u539F\u6587...\u201D\u8FD9\u7C7B\u5957\u8BDD\u5F00\u5934\u3002\n4. \u540E\u7EED\u8FFD\u95EE\u8981\u7ED3\u5408\u4E4B\u524D\u7684\u5BF9\u8BDD\u4E0A\u4E0B\u6587,\u4FDD\u6301\u8FDE\u8D2F\u3002",
-  // “翻译”按钮发送的固定指令。选中的原文片段已经在系统提示词里了(见 buildSystemMessage),
-  // 这里不用再重复贴一遍原文,只描述翻译要求即可。
-  translatePrompt: "\u8BF7\u628A\u3010\u6211\u5F53\u524D\u9009\u4E2D\u5E76\u60F3\u8BA8\u8BBA\u7684\u539F\u6587\u7247\u6BB5\u3011\u5B8C\u6574\u7FFB\u8BD1\u6210\u4E2D\u6587\u3002\n1. \u9010\u6BB5\u5BF9\u5E94\u539F\u6587\u5206\u6BB5,\u4E0D\u8981\u5408\u5E76\u6216\u7701\u7565\u6BB5\u843D\u3002\n2. \u4E13\u4E1A\u672F\u8BED\u53EF\u4FDD\u7559\u82F1\u6587\u539F\u8BCD(\u62EC\u53F7\u6807\u6CE8\u5373\u53EF),\u516C\u5F0F\u3001\u4EE3\u7801\u3001\u53D8\u91CF\u540D\u3001\u56FE\u8868\u7F16\u53F7\u7B49\u4FDD\u6301\u539F\u6837\u4E0D\u7FFB\u8BD1\u3002\n3. \u53EA\u8F93\u51FA\u7FFB\u8BD1\u7ED3\u679C,\u4E0D\u8981\u8F93\u51FA\u539F\u6587\u3001\u4E0D\u8981\u590D\u8FF0\u8981\u6C42\u3001\u4E0D\u8981\u52A0\u989D\u5916\u89E3\u91CA\u6216\u603B\u7ED3\u3002",
-  // 全文摘要(浓缩上下文)相关设置:先用一个快速/便宜的模型把整篇 PDF 浓缩成摘要,
-  // 缓存下来,回答局部选段问题时可以选择性地附带这份摘要作为背景,
-  // 而不是把全文原样塞进上下文导致跑题或超长。
-  summaryModelId: "openai-compatible",
-  // 打开 PDF 划词弹窗时,如果已经缓存过摘要就自动附带、没缓存就自动生成一次,
-  // 不需要每次手动勾选/点击,配合下面的按文件+mtime 缓存,同一篇论文只会真正调用一次摘要模型。
-  autoDocSummary: true,
-  summaryMaxChars: 1e5,
-  // 摘要输出单独限制 token 数,避免和主聊天的 maxTokens 共用同一个上限导致摘要写得又长又碎。
-  summaryMaxTokens: 700,
-  summaryPrompt: "\u4F60\u662F\u4E00\u4E2A\u5B66\u672F\u8BBA\u6587\u63D0\u70BC\u52A9\u624B\u3002\u4E0B\u9762\u4F1A\u7ED9\u4F60\u4E00\u7BC7\u8BBA\u6587\u7684\u5168\u6587(\u53EF\u80FD\u56E0\u7BC7\u5E45\u8FC7\u957F\u88AB\u622A\u65AD)\u3002\n\u8BF7\u63D0\u70BC\u4E00\u4EFD*\u6781\u7B80*\u7684\u80CC\u666F\u6458\u8981\u5361\u7247,\u53EA\u7528\u6765\u7ED9\u6211\u4E4B\u540E\u9488\u5BF9\u8BBA\u6587\u91CC\u67D0\u4E00\u5C0F\u6BB5\u63D0\u95EE\u65F6\u63D0\u4F9B\u80CC\u666F\u53C2\u8003,\u4E0D\u662F\u5B8C\u6574\u6458\u8981,\u6211\u4E0D\u4F1A\u901A\u7BC7\u8BFB\u5B83\u3002\n\u786C\u6027\u8981\u6C42(\u52A1\u5FC5\u9075\u5B88):\n1. \u603B\u5B57\u6570\u4E0D\u8D85\u8FC7400\u5B57,\u5B81\u53EF\u5C11\u5199\u4E5F\u4E0D\u8981\u591A\u5199,\u8FD9\u662F\u786C\u4E0A\u9650,\u4E0D\u8981\u56E0\u4E3A\u539F\u6587\u957F\u5C31\u5199\u66F4\u591A\u3002\n2. \u53EA\u4FDD\u7559:\u7814\u7A76\u4E3B\u9898\u4E0E\u6838\u5FC3\u8D21\u732E(1-2\u53E5)\u3001\u603B\u4F53\u7ED3\u6784(\u6BCF\u8282\u4E00\u53E5\u8BDD\u5E26\u8FC7,\u4E0D\u5C55\u5F00\u7EC6\u8282)\u30013-5\u4E2A\u5173\u952E\u672F\u8BED\u7684\u6781\u7B80\u91CA\u4E49\u3001\u6838\u5FC3\u65B9\u6CD5/\u8BBA\u8BC1\u903B\u8F91(2-3\u53E5)\u3002\n3. \u4E0D\u9010\u6BB5\u590D\u8FF0\u3001\u4E0D\u4E3E\u4F8B\u3001\u4E0D\u5F15\u7528\u539F\u6587\u957F\u53E5\u3001\u4E0D\u5199\u80CC\u666F\u77E5\u8BC6\u79D1\u666E\u6BB5\u843D\u3002\n4. \u76F4\u63A5\u8F93\u51FA\u5185\u5BB9,\u4E0D\u8981\u201C\u597D\u7684,\u4EE5\u4E0B\u662F\u6458\u8981\u201D\u4E4B\u7C7B\u7684\u5F00\u573A\u767D\u6216\u7ED3\u5C3E\u603B\u7ED3\u3002\u7528\u4E2D\u6587,\u4E13\u4E1A\u672F\u8BED\u4FDD\u7559\u82F1\u6587\u539F\u8BCD\u3002",
-  // key 是文件的 vault 相对路径,value 形如 { mtime, summary, generatedAt, fullLength, truncated }
-  docSummaries: {},
-  // RAG 检索(关键词/BM25,不依赖任何 embedding 模型):把全文按页切块,提问时按关键词相关性
-  // 检索出最相关的几块塞进上下文,跟"全文摘要"是互补关系——摘要给全局背景,这个给具体细节定位。
-  autoRag: true,
-  ragChunkSize: 700,
-  ragChunkOverlap: 100,
-  ragTopK: 4,
-  // 实测发现:BM25 关键词检索对"列举类"问题(比如"论文对比了哪些基线算法")天然不擅长——
-  // 真正答案段落里全是专有名词而不是"对比/baseline"这类通用词,反而会被论文里其他大量提到
-  // "对比/baseline"的段落(相关工作、附录补充实验等)挤到检索排名前面,漏掉真正该看的那一块。
-  // 而大部分单篇论文全文并不长,直接把全文原样交给模型远比"猜哪一块"更准。所以全文长度在这个
-  // 阈值以内时,直接读全文回答,只有超过阈值(全文塞不下)时才退回关键词检索。
-  ragFullTextThreshold: 18e4,
-  // BM25 是纯字符匹配,中文问题和英文论文原文之间没有共同字符/词,直接检索基本会全部落空。
-  // 开启后,提问时会先让一个快模型"思考"这个问题该从哪几个角度/说法去检索,输出多组中英双语检索词
-  // (不只是逐字翻译),再拿每一组分别去检索、把结果融合排序,比单一检索词能覆盖更多角度、找得更全。
-  ragQueryTranslate: true,
-  ragQueryPrompt: "\u4F60\u662F\u8BBA\u6587\u68C0\u7D22\u7B56\u7565\u52A9\u624B,\u4EFB\u52A1\u662F\u628A\u6211\u7684\u95EE\u9898\u62C6\u89E3\u6210\u591A\u7EC4\u201C\u68C0\u7D22\u5173\u952E\u8BCD\u201D,\u7528\u4E8E\u5728\u8BBA\u6587\u5168\u6587\u91CC\u505A\u5173\u952E\u8BCD\u68C0\u7D22\u3002\u4F60\u4E0D\u8D1F\u8D23\u56DE\u7B54\u95EE\u9898\u672C\u8EAB\u3002\n\u8BBA\u6587\u539F\u6587\u53EF\u80FD\u662F\u82F1\u6587,\u4E5F\u53EF\u80FD\u662F\u4E2D\u6587,\u4F60\u5E76\u4E0D\u786E\u5B9A,\u6240\u4EE5\u6BCF\u4E00\u7EC4\u5173\u952E\u8BCD\u90FD\u8981\u4E2D\u82F1\u6587\u517C\u987E\u3002\n\u5728\u5FC3\u91CC(\u4E0D\u8981\u8F93\u51FA\u8FC7\u7A0B)\u6309\u8FD9\u4E2A\u601D\u8DEF\u601D\u8003:\n1. \u8FD9\u4E2A\u95EE\u9898\u771F\u6B63\u60F3\u77E5\u9053\u7684\u662F\u4EC0\u4E48?\u6309\u8BBA\u6587\u7684\u5E38\u89C1\u7ED3\u6784,\u7B54\u6848\u5927\u6982\u7387\u4F1A\u51FA\u73B0\u5728\u65B9\u6CD5/\u6570\u636E/\u5B9E\u9A8C\u8BBE\u7F6E/\u7ED3\u679C/\u5C40\u9650/\u76F8\u5173\u5DE5\u4F5C\u91CC\u7684\u54EA\u4E00\u90E8\u5206?\n2. \u8BBA\u6587\u4F5C\u8005\u63CF\u8FF0\u8FD9\u4E2A\u6982\u5FF5\u65F6,\u53EF\u80FD\u4F1A\u7528\u54EA\u4E9B\u4E0D\u540C\u7684\u8BF4\u6CD5(\u540C\u4E49\u8BCD\u3001\u66F4\u5B66\u672F\u5316\u7684\u8868\u8FBE\u3001\u5E38\u89C1\u7F29\u5199\u3001\u5BF9\u5E94\u7684\u516C\u5F0F\u7B26\u53F7\u6216\u53D8\u91CF\u540D)?\n3. \u5982\u679C\u8FD9\u4E2A\u95EE\u9898\u5305\u542B\u591A\u4E2A\u5B50\u95EE\u9898\u6216\u591A\u4E2A\u6982\u5FF5,\u80FD\u4E0D\u80FD\u62C6\u6210\u51E0\u4E2A\u66F4\u5177\u4F53\u3001\u66F4\u5BB9\u6613\u5206\u522B\u547D\u4E2D\u539F\u6587\u7684\u68C0\u7D22\u89D2\u5EA6?\n\u8F93\u51FA\u6070\u597D3\u884C,\u6BCF\u884C\u662F\u4E00\u7EC4\u72EC\u7ACB\u7684\u68C0\u7D22\u5173\u952E\u8BCD/\u77ED\u8BED(\u540C\u4E00\u884C\u5185\u591A\u4E2A\u5173\u952E\u8BCD\u7528\u9017\u53F7\u5206\u9694),3\u884C\u8981\u4EE3\u88683\u4E2A\u4E0D\u540C\u89D2\u5EA6\u6216\u4E0D\u540C\u8BF4\u6CD5\u7684\u68C0\u7D22\u5C1D\u8BD5,\u4E0D\u89813\u884C\u90FD\u662F\u540C\u4E00\u4E2A\u610F\u601D\u7684\u91CD\u590D\u8868\u8FBE\u3002\n\u76F4\u63A5\u8F93\u51FA\u8FD93\u884C,\u4E0D\u8981\u7F16\u53F7\u3001\u4E0D\u8981\u89E3\u91CA\u3001\u4E0D\u8981\u8F93\u51FA\u95EE\u9898\u672C\u8EAB\u3001\u4E0D\u8981\u8F93\u51FA\u8FD93\u884C\u4EE5\u5916\u7684\u4EFB\u4F55\u6587\u5B57\u3002",
-  // key 是文件的 vault 相对路径,value 形如 { mtime, chunks: [{page, text}], generatedAt }
-  docChunks: {},
-  // 每篇 PDF(或精确匹配的非 PDF 选区)只保存一份最近对话。这里只存用户实际看到的问答,
-  // 不保存 system prompt、全文或 RAG 检索片段,避免 data.json 被隐藏上下文快速撑大。
-  conversationHistories: {},
-  promptPresets: [
-    {
-      id: "paper-map",
-      name: "\u8BBA\u6587\u901F\u8BFB\u5730\u56FE",
-      prompt: "\u4F60\u662F\u4E00\u4F4D\u4E13\u4E1A\u7684\u5B66\u672F\u8BBA\u6587\u901F\u8BFB\u52A9\u624B\u3002\u8BBA\u6587\u4E0D\u662F\u6545\u4E8B,\u4E0D\u8981\u4ECE\u5934\u8BFB\u5230\u5C3E\u2014\u2014\u5148\u7ED9\u51FA\u5168\u5C40\u5730\u56FE,\u518D\u51B3\u5B9A\u54EA\u4E9B\u90E8\u5206\u503C\u5F97\u6DF1\u8BFB\u3002\n\u56DE\u7B54\u65F6\u4F18\u5148\u7ED9\u51FA:\u5206\u8282\u901F\u89C8(2-3\u53E5\u8BDD/\u8282)\u3001\u6838\u5FC3\u56E0\u679C\u94FE(A\u2192B\u2192C)\u3001\u503C\u4E0D\u503C\u5F97\u6DF1\u8BFB\u7684\u4F18\u5148\u7EA7\u5224\u65AD(\u9AD8/\u4E2D/\u4F4E)\u3002\u7528\u4E2D\u6587,\u4E13\u4E1A\u672F\u8BED\u4FDD\u7559\u82F1\u6587\u539F\u8BCD\u3002"
-    },
-    {
-      id: "methods-decoder",
-      name: "\u65B9\u6CD5\u8BBA\u89E3\u7801",
-      prompt: "\u4F60\u662F\u4E00\u4F4D\u64C5\u957F\u628A\u590D\u6742\u7814\u7A76\u65B9\u6CD5\u7FFB\u8BD1\u6210\u5927\u767D\u8BDD\u7684\u52A9\u624B,\u540C\u65F6\u662F\u6311\u5254\u7684\u65B9\u6CD5\u8BBA\u5BA1\u67E5\u8005\u3002\n\u56DE\u7B54\u65F6\u8BF4\u660E:\u7814\u7A76\u8BBE\u8BA1\u662F\u4EC0\u4E48(\u7C7B\u6BD4\u8BB2\u89E3)\u3001\u5173\u952E\u8981\u7D20(\u6837\u672C/\u53D8\u91CF/\u5206\u6790\u65B9\u6CD5)\u3001\u8FD9\u4E2A\u8BBE\u8BA1\u5F3A\u5728\u54EA\u3001\u5F31\u5728\u54EA(\u6BCF\u6761\u8BF4\u660E\u4F1A\u5BFC\u81F4\u7ED3\u8BBA\u5728\u4EC0\u4E48\u60C5\u51B5\u4E0B\u4E0D\u6210\u7ACB)\u3002\u7528\u4E2D\u6587,\u4E13\u4E1A\u672F\u8BED\u4FDD\u7559\u82F1\u6587\u539F\u8BCD\u3002"
-    },
-    {
-      id: "limitations",
-      name: "\u5C40\u9650\u4E0E\u5047\u8BBE",
-      prompt: "\u4F60\u662F\u4E00\u4F4D\u4E25\u8C28\u7684\u8BBA\u6587\u8BC4\u5BA1\u8005\u3002\u6BCF\u7BC7\u8BBA\u6587\u90FD\u6709\u5C40\u9650\u2014\u2014\u6709\u4E9B\u4F5C\u8005\u81EA\u5DF1\u627F\u8BA4,\u6709\u4E9B\u85CF\u5728\u8BBE\u8BA1\u91CC\u6CA1\u8BF4\u3002\n\u56DE\u7B54\u65F6\u533A\u5206:\u4F5C\u8005\u660E\u8BF4\u7684\u5C40\u9650 vs \u6CA1\u8BF4\u4F46\u6697\u542B\u7684\u5047\u8BBE(\u6BCF\u6761\u8BF4\u660E\u5047\u8BBE\u4E0D\u6210\u7ACB\u4F1A\u600E\u6837\u5F71\u54CD\u7ED3\u8BBA),\u5E76\u7ED9\u51FA\u7ED3\u8BBA\u53EF\u4FE1\u5EA6\u7684\u6574\u4F53\u5224\u65AD\u3002\u7528\u4E2D\u6587,\u4E13\u4E1A\u672F\u8BED\u4FDD\u7559\u82F1\u6587\u539F\u8BCD\u3002"
-    },
-    {
-      id: "reproducibility",
-      name: "\u590D\u73B0\u6027\u68C0\u67E5",
-      prompt: "\u4F60\u662F\u4E00\u4F4D\u4E13\u6CE8\u4E8E\u53EF\u590D\u73B0\u6027\u7684\u5BA1\u67E5\u8005,\u53C2\u8003 FAIR \u539F\u5219\u7684\u601D\u8DEF,\u4F46\u4F1A\u6309\u8BBA\u6587\u6240\u5C5E\u9886\u57DF\u81EA\u884C\u5224\u65AD\u5408\u7406\u6807\u51C6\u3002\n\u56DE\u7B54\u65F6\u6309:\u6570\u636E\u53EF\u83B7\u5F97\u6027\u3001\u4EE3\u7801\u4E0E\u73AF\u5883\u3001\u6D41\u7A0B\u6B65\u9AA4\u3001\u53C2\u6570\u900F\u660E\u5EA6\u56DB\u4E2A\u7EF4\u5EA6\u8BC4\u4F30,\u6700\u540E\u7ED9\u51FA\u4F4E/\u4E2D/\u9AD8\u590D\u73B0\u6027\u8BC4\u7EA7\u548C\u6700\u7F3A\u7684\u4E09\u6837\u4E1C\u897F\u3002\u7528\u4E2D\u6587,\u4E13\u4E1A\u672F\u8BED\u4FDD\u7559\u82F1\u6587\u539F\u8BCD\u3002"
-    },
-    {
-      id: "math",
-      name: "\u6570\u5B66\u7B26\u53F7\u8BB2\u89E3",
-      prompt: "\u4F60\u662F\u4E00\u4F4D\u64C5\u957F\u628A\u516C\u5F0F\u548C\u7B26\u53F7\u7FFB\u8BD1\u6210\u5927\u767D\u8BDD\u7684\u52A9\u624B,\u5047\u8BBE\u6211\u5177\u5907\u57FA\u7840\u7684\u8BE5\u9886\u57DF\u77E5\u8BC6,\u4F46\u8BB0\u4E0D\u6E05\u5177\u4F53\u7B26\u53F7\u7EA6\u5B9A\u3002\n\u56DE\u7B54\u65F6\u9010\u4E2A\u7B26\u53F7\u8BB2\u89E3\u542B\u4E49\u3001\u8BF4\u660E\u516C\u5F0F\u5728\u7B97\u4EC0\u4E48\u3001\u4E3A\u4EC0\u4E48\u8FD9\u4E2A\u516C\u5F0F\u5BF9\u8BBA\u70B9\u5173\u952E,\u5982\u679C\u53EF\u80FD\u7ED9\u4E00\u4E2A\u6781\u7B80\u6570\u503C\u4F8B\u5B50\u5E2E\u52A9\u5EFA\u7ACB\u76F4\u89C9\u3002\u7528\u4E2D\u6587,\u7B26\u53F7\u672C\u8EAB\u4FDD\u7559\u539F\u6837\u3002"
-    },
-    {
-      id: "critic",
-      name: "\u6279\u5224\u6027\u5BA1\u8BFB",
-      prompt: "\u4F60\u662F\u4E00\u4F4D\u903B\u8F91\u5BA1\u67E5\u8005\u548C\u8FA9\u8BC1\u5206\u6790\u8005\u3002\u4F60\u7684\u4EFB\u52A1\u4E0D\u662F\u540C\u610F\u8BBA\u6587,\u800C\u662F\u63D0\u4F9B\u6709\u4EF7\u503C\u7684\u963B\u529B\u2014\u2014\u5E2E\u6211\u628A\u7406\u89E3\u63A8\u8FDB\u5230\u80FD\u6311\u51FA\u6BDB\u75C5\u3002\n\u56DE\u7B54\u65F6\u53EF\u4EE5\u5305\u542B:\u88AB\u5FFD\u7565\u7684\u66FF\u4EE3\u8DEF\u5F84\u3001\u903B\u8F91\u6F0F\u6D1E(\u8C2C\u8BEF/\u8BED\u4E49\u8DF3\u8DC3)\u3001\u6700\u6709\u529B\u7684\u53CD\u65B9\u8BBA\u8BC1(Steel Man)\u3001\u4F5C\u8005\u7565\u8FC7\u7684\u5173\u952E\u95EE\u9898(\u623F\u95F4\u91CC\u7684\u5927\u8C61)\u3002\u7528\u4E2D\u6587,\u4E13\u4E1A\u672F\u8BED\u4FDD\u7559\u82F1\u6587\u539F\u8BCD,\u4E0D\u8981\u91CD\u590D\u539F\u6587\u5185\u5BB9\u3002"
-    },
-    {
-      id: "scaffold",
-      name: "\u6982\u5FF5\u811A\u624B\u67B6",
-      prompt: "\u4F60\u662F\u4E00\u4F4D\u8BA4\u77E5\u9605\u8BFB\u6559\u7EC3\u3002\u4F60\u7684\u4EFB\u52A1\u4E0D\u662F\u66FF\u6211\u603B\u7ED3\u6587\u5B57,\u800C\u662F\u5E2E\u6211\u642D\u5EFA\u7406\u89E3\u5B83\u6240\u9700\u8981\u7684\u811A\u624B\u67B6\u2014\u2014\u8865\u4E0A\u4F5C\u8005\u9ED8\u8BA4\u6211\u5DF2\u7ECF\u77E5\u9053\u3001\u4F46\u6211\u5B9E\u9645\u4E0A\u4E0D\u77E5\u9053\u7684\u90E8\u5206\u3002\u5047\u8BBE\u6211\u5728\u8FD9\u4E2A\u9886\u57DF\u80CC\u666F\u77E5\u8BC6\u4E3A\u96F6,\u9664\u975E\u660E\u663E\u4E0D\u662F\u8FD9\u6837\u3002\n\u56DE\u7B54\u65F6\u53EF\u4EE5\u5305\u542B:\u80CC\u666F\u77E5\u8BC6\u901F\u89C8\u3001\u672F\u8BED\u8868\u3001\u6697\u542B\u63A8\u7406(\u7EBF\u7D22/\u7A7A\u767D/\u7F6E\u4FE1\u5EA6)\u3001\u5BB9\u6613\u8BFB\u9519\u7684\u5730\u65B9\u3001\u7528\u96F6\u672F\u8BED\u7684\u60C5\u5883\u6A21\u578B\u8BB2\u89E3\u3002\u7528\u4E2D\u6587,\u4E13\u4E1A\u672F\u8BED\u4FDD\u7559\u82F1\u6587\u539F\u8BCD\u3002"
-    },
-    {
-      id: "quiz",
-      name: "\u81EA\u6D4B\u4E94\u95EE",
-      prompt: "\u4F60\u662F\u4E00\u4F4D\u8BFE\u7A0B\u8BBE\u8BA1\u5E08\u548C\u82CF\u683C\u62C9\u5E95\u5F0F\u5F15\u5BFC\u8005\u3002\u4F60\u7684\u4EFB\u52A1\u4E0D\u662F\u66FF\u6211\u89E3\u91CA\u8BBA\u6587,\u800C\u662F\u63D0\u70BC\u51FA\u80FD\u68C0\u9A8C\u6211\u662F\u5426\u771F\u6B63\u7406\u89E3\u6838\u5FC3\u539F\u7406\u7684\u9AD8\u5C42\u6B21\u95EE\u9898\u2014\u2014\u7528\u6765\u8003\u6211,\u4E0D\u662F\u7528\u6765\u8BB2\u7ED9\u6211\u542C\u3002\n\u88AB\u8981\u6C42\u51FA\u9898\u65F6,\u63D0\u70BC\u6070\u597D5\u4E2A\u9AD8\u5C42\u6B21\u95EE\u9898(\u907F\u514D\u662F\u975E\u9898,\u4F18\u5148\u7528\u5982\u4F55/\u4E3A\u4EC0\u4E48/\u5982\u679C...\u4F1A\u600E\u6837),\u6700\u540E\u52A0\u4E00\u4E2A\u5FC5\u987B\u4E32\u8054\u6240\u6709\u4E3B\u9898\u624D\u80FD\u56DE\u7B54\u7684\u7EFC\u5408\u95EE\u9898\u3002\u5176\u4F59\u65F6\u5019\u6B63\u5E38\u56DE\u7B54\u6211\u7684\u95EE\u9898\u3002\u7528\u4E2D\u6587\u3002"
-    }
-  ]
-};
 
 // src/conversation.ts
 function cleanSelectionText(raw) {
@@ -283,17 +188,32 @@ var OpenAICompatibleTransport = class {
     const settings = this.getSettings();
     const profile = request.modelProfile || this.getModelProfile(settings.activeModelId);
     const shouldStream = (_a = request.stream) != null ? _a : settings.stream;
-    if (shouldStream) return this.chatStream(request.messages, request.onChunk, request.signal, profile);
-    const text = await this.chatOnce(request.messages, request.signal, profile, request.maxTokensOverride);
+    if (shouldStream) {
+      return this.chatStream(
+        request.messages,
+        request.onChunk,
+        request.signal,
+        profile,
+        request.maxTokensOverride,
+        request.temperatureOverride
+      );
+    }
+    const text = await this.chatOnce(
+      request.messages,
+      request.signal,
+      profile,
+      request.maxTokensOverride,
+      request.temperatureOverride
+    );
     (_b = request.onChunk) == null ? void 0 : _b.call(request, text, text);
     return text;
   }
-  async chatOnce(messages, signal, profile, maxTokensOverride) {
+  async chatOnce(messages, signal, profile, maxTokensOverride, temperatureOverride) {
     const settings = this.getSettings();
     const body = {
       model: profile.model,
-      temperature: settings.temperature,
-      max_tokens: maxTokensOverride || settings.maxTokens,
+      temperature: temperatureOverride != null ? temperatureOverride : settings.temperature,
+      max_tokens: maxTokensOverride != null ? maxTokensOverride : settings.maxTokens,
       stream: false,
       messages
     };
@@ -327,7 +247,7 @@ var OpenAICompatibleTransport = class {
     if (!content) throw new Error("\u6A21\u578B\u6CA1\u6709\u8FD4\u56DE\u5185\u5BB9,\u539F\u59CB\u54CD\u5E94: " + JSON.stringify(data));
     return String(content).trim();
   }
-  async chatStream(messages, onChunk, signal, profile) {
+  async chatStream(messages, onChunk, signal, profile, maxTokensOverride, temperatureOverride) {
     var _a, _b, _c, _d;
     const settings = this.getSettings();
     const response = await this.fetchRequest(profile.endpoint, {
@@ -338,8 +258,8 @@ var OpenAICompatibleTransport = class {
       },
       body: JSON.stringify({
         model: profile.model,
-        temperature: settings.temperature,
-        max_tokens: settings.maxTokens,
+        temperature: temperatureOverride != null ? temperatureOverride : settings.temperature,
+        max_tokens: maxTokensOverride != null ? maxTokensOverride : settings.maxTokens,
         stream: true,
         messages
       }),
@@ -399,6 +319,114 @@ var OpenAICompatibleTransport = class {
     }
     return full;
   }
+};
+
+// src/default-settings.ts
+var LEGACY_0_4_0_TRANSLATE_PROMPT = "\u8BF7\u628A\u3010\u6211\u5F53\u524D\u9009\u4E2D\u5E76\u60F3\u8BA8\u8BBA\u7684\u539F\u6587\u7247\u6BB5\u3011\u5B8C\u6574\u7FFB\u8BD1\u6210\u4E2D\u6587\u3002\n1. \u9010\u6BB5\u5BF9\u5E94\u539F\u6587\u5206\u6BB5,\u4E0D\u8981\u5408\u5E76\u6216\u7701\u7565\u6BB5\u843D\u3002\n2. \u4E13\u4E1A\u672F\u8BED\u53EF\u4FDD\u7559\u82F1\u6587\u539F\u8BCD(\u62EC\u53F7\u6807\u6CE8\u5373\u53EF),\u516C\u5F0F\u3001\u4EE3\u7801\u3001\u53D8\u91CF\u540D\u3001\u56FE\u8868\u7F16\u53F7\u7B49\u4FDD\u6301\u539F\u6837\u4E0D\u7FFB\u8BD1\u3002\n3. \u53EA\u8F93\u51FA\u7FFB\u8BD1\u7ED3\u679C,\u4E0D\u8981\u8F93\u51FA\u539F\u6587\u3001\u4E0D\u8981\u590D\u8FF0\u8981\u6C42\u3001\u4E0D\u8981\u52A0\u989D\u5916\u89E3\u91CA\u6216\u603B\u7ED3\u3002";
+var DEFAULT_SETTINGS = {
+  models: [
+    {
+      id: "openai-compatible",
+      name: "OpenAI-compatible API",
+      endpoint: "",
+      apiKey: "",
+      model: ""
+    }
+  ],
+  activeModelId: "openai-compatible",
+  temperature: 0.7,
+  maxTokens: 1200,
+  stream: true,
+  // 弹窗里聊天内容(上下文预览/对话气泡/输入框)的字体缩放比例,可在弹窗标题栏用 A-/A+ 调整,会记住上次的值。
+  fontScale: 1,
+  // 记住上一次对话用的模型/阅读模式,下次打开弹窗直接沿用,不用每次重新选。
+  lastModelId: "",
+  lastPresetId: "",
+  systemPrompt: "\u4F60\u662F\u6211\u7684\u9605\u8BFB\u52A9\u624B\u3002\u8BF7\u7ED3\u5408\u4E0B\u9762\u63D0\u4F9B\u7684\u539F\u6587\u7247\u6BB5\u56DE\u7B54\u6211\u7684\u95EE\u9898\u3002\n1. \u4F18\u5148\u57FA\u4E8E\u539F\u6587\u7247\u6BB5\u56DE\u7B54,\u4E0D\u8981\u8131\u79BB\u5B83\u53E6\u8D77\u7089\u7076\u3002\n2. \u5982\u679C\u95EE\u9898\u5728\u539F\u6587\u7247\u6BB5\u4E2D\u627E\u4E0D\u5230\u4F9D\u636E,\u8BF7\u660E\u786E\u8BF4\u660E,\u4E0D\u8981\u7F16\u9020\u3002\n3. \u76F4\u63A5\u8F93\u51FA\u56DE\u7B54\u5185\u5BB9,\u4E0D\u8981\u590D\u8FF0\u89C4\u5219,\u4E0D\u8981\u52A0\u201C\u6839\u636E\u539F\u6587...\u201D\u8FD9\u7C7B\u5957\u8BDD\u5F00\u5934\u3002\n4. \u540E\u7EED\u8FFD\u95EE\u8981\u7ED3\u5408\u4E4B\u524D\u7684\u5BF9\u8BDD\u4E0A\u4E0B\u6587,\u4FDD\u6301\u8FDE\u8D2F\u3002",
+  translation: {
+    targetLanguage: "zh-CN",
+    temperature: 0.1,
+    maxTokens: 4e3,
+    chunkChars: 8e3,
+    additionalInstruction: ""
+  },
+  // 全文摘要(浓缩上下文)相关设置:先用一个快速/便宜的模型把整篇 PDF 浓缩成摘要,
+  // 缓存下来,回答局部选段问题时可以选择性地附带这份摘要作为背景,
+  // 而不是把全文原样塞进上下文导致跑题或超长。
+  summaryModelId: "openai-compatible",
+  // 打开 PDF 划词弹窗时,如果已经缓存过摘要就自动附带、没缓存就自动生成一次,
+  // 不需要每次手动勾选/点击,配合下面的按文件+mtime 缓存,同一篇论文只会真正调用一次摘要模型。
+  autoDocSummary: true,
+  summaryMaxChars: 1e5,
+  // 摘要输出单独限制 token 数,避免和主聊天的 maxTokens 共用同一个上限导致摘要写得又长又碎。
+  summaryMaxTokens: 700,
+  summaryPrompt: "\u4F60\u662F\u4E00\u4E2A\u5B66\u672F\u8BBA\u6587\u63D0\u70BC\u52A9\u624B\u3002\u4E0B\u9762\u4F1A\u7ED9\u4F60\u4E00\u7BC7\u8BBA\u6587\u7684\u5168\u6587(\u53EF\u80FD\u56E0\u7BC7\u5E45\u8FC7\u957F\u88AB\u622A\u65AD)\u3002\n\u8BF7\u63D0\u70BC\u4E00\u4EFD*\u6781\u7B80*\u7684\u80CC\u666F\u6458\u8981\u5361\u7247,\u53EA\u7528\u6765\u7ED9\u6211\u4E4B\u540E\u9488\u5BF9\u8BBA\u6587\u91CC\u67D0\u4E00\u5C0F\u6BB5\u63D0\u95EE\u65F6\u63D0\u4F9B\u80CC\u666F\u53C2\u8003,\u4E0D\u662F\u5B8C\u6574\u6458\u8981,\u6211\u4E0D\u4F1A\u901A\u7BC7\u8BFB\u5B83\u3002\n\u786C\u6027\u8981\u6C42(\u52A1\u5FC5\u9075\u5B88):\n1. \u603B\u5B57\u6570\u4E0D\u8D85\u8FC7400\u5B57,\u5B81\u53EF\u5C11\u5199\u4E5F\u4E0D\u8981\u591A\u5199,\u8FD9\u662F\u786C\u4E0A\u9650,\u4E0D\u8981\u56E0\u4E3A\u539F\u6587\u957F\u5C31\u5199\u66F4\u591A\u3002\n2. \u53EA\u4FDD\u7559:\u7814\u7A76\u4E3B\u9898\u4E0E\u6838\u5FC3\u8D21\u732E(1-2\u53E5)\u3001\u603B\u4F53\u7ED3\u6784(\u6BCF\u8282\u4E00\u53E5\u8BDD\u5E26\u8FC7,\u4E0D\u5C55\u5F00\u7EC6\u8282)\u30013-5\u4E2A\u5173\u952E\u672F\u8BED\u7684\u6781\u7B80\u91CA\u4E49\u3001\u6838\u5FC3\u65B9\u6CD5/\u8BBA\u8BC1\u903B\u8F91(2-3\u53E5)\u3002\n3. \u4E0D\u9010\u6BB5\u590D\u8FF0\u3001\u4E0D\u4E3E\u4F8B\u3001\u4E0D\u5F15\u7528\u539F\u6587\u957F\u53E5\u3001\u4E0D\u5199\u80CC\u666F\u77E5\u8BC6\u79D1\u666E\u6BB5\u843D\u3002\n4. \u76F4\u63A5\u8F93\u51FA\u5185\u5BB9,\u4E0D\u8981\u201C\u597D\u7684,\u4EE5\u4E0B\u662F\u6458\u8981\u201D\u4E4B\u7C7B\u7684\u5F00\u573A\u767D\u6216\u7ED3\u5C3E\u603B\u7ED3\u3002\u7528\u4E2D\u6587,\u4E13\u4E1A\u672F\u8BED\u4FDD\u7559\u82F1\u6587\u539F\u8BCD\u3002",
+  // key 是文件的 vault 相对路径,value 形如 { mtime, summary, generatedAt, fullLength, truncated }
+  docSummaries: {},
+  // RAG 检索(关键词/BM25,不依赖任何 embedding 模型):把全文按页切块,提问时按关键词相关性
+  // 检索出最相关的几块塞进上下文,跟"全文摘要"是互补关系——摘要给全局背景,这个给具体细节定位。
+  autoRag: true,
+  ragChunkSize: 700,
+  ragChunkOverlap: 100,
+  ragTopK: 4,
+  // 实测发现:BM25 关键词检索对"列举类"问题(比如"论文对比了哪些基线算法")天然不擅长——
+  // 真正答案段落里全是专有名词而不是"对比/baseline"这类通用词,反而会被论文里其他大量提到
+  // "对比/baseline"的段落(相关工作、附录补充实验等)挤到检索排名前面,漏掉真正该看的那一块。
+  // 而大部分单篇论文全文并不长,直接把全文原样交给模型远比"猜哪一块"更准。所以全文长度在这个
+  // 阈值以内时,直接读全文回答,只有超过阈值(全文塞不下)时才退回关键词检索。
+  ragFullTextThreshold: 18e4,
+  // BM25 是纯字符匹配,中文问题和英文论文原文之间没有共同字符/词,直接检索基本会全部落空。
+  // 开启后,提问时会先让一个快模型"思考"这个问题该从哪几个角度/说法去检索,输出多组中英双语检索词
+  // (不只是逐字翻译),再拿每一组分别去检索、把结果融合排序,比单一检索词能覆盖更多角度、找得更全。
+  ragQueryTranslate: true,
+  ragQueryPrompt: "\u4F60\u662F\u8BBA\u6587\u68C0\u7D22\u7B56\u7565\u52A9\u624B,\u4EFB\u52A1\u662F\u628A\u6211\u7684\u95EE\u9898\u62C6\u89E3\u6210\u591A\u7EC4\u201C\u68C0\u7D22\u5173\u952E\u8BCD\u201D,\u7528\u4E8E\u5728\u8BBA\u6587\u5168\u6587\u91CC\u505A\u5173\u952E\u8BCD\u68C0\u7D22\u3002\u4F60\u4E0D\u8D1F\u8D23\u56DE\u7B54\u95EE\u9898\u672C\u8EAB\u3002\n\u8BBA\u6587\u539F\u6587\u53EF\u80FD\u662F\u82F1\u6587,\u4E5F\u53EF\u80FD\u662F\u4E2D\u6587,\u4F60\u5E76\u4E0D\u786E\u5B9A,\u6240\u4EE5\u6BCF\u4E00\u7EC4\u5173\u952E\u8BCD\u90FD\u8981\u4E2D\u82F1\u6587\u517C\u987E\u3002\n\u5728\u5FC3\u91CC(\u4E0D\u8981\u8F93\u51FA\u8FC7\u7A0B)\u6309\u8FD9\u4E2A\u601D\u8DEF\u601D\u8003:\n1. \u8FD9\u4E2A\u95EE\u9898\u771F\u6B63\u60F3\u77E5\u9053\u7684\u662F\u4EC0\u4E48?\u6309\u8BBA\u6587\u7684\u5E38\u89C1\u7ED3\u6784,\u7B54\u6848\u5927\u6982\u7387\u4F1A\u51FA\u73B0\u5728\u65B9\u6CD5/\u6570\u636E/\u5B9E\u9A8C\u8BBE\u7F6E/\u7ED3\u679C/\u5C40\u9650/\u76F8\u5173\u5DE5\u4F5C\u91CC\u7684\u54EA\u4E00\u90E8\u5206?\n2. \u8BBA\u6587\u4F5C\u8005\u63CF\u8FF0\u8FD9\u4E2A\u6982\u5FF5\u65F6,\u53EF\u80FD\u4F1A\u7528\u54EA\u4E9B\u4E0D\u540C\u7684\u8BF4\u6CD5(\u540C\u4E49\u8BCD\u3001\u66F4\u5B66\u672F\u5316\u7684\u8868\u8FBE\u3001\u5E38\u89C1\u7F29\u5199\u3001\u5BF9\u5E94\u7684\u516C\u5F0F\u7B26\u53F7\u6216\u53D8\u91CF\u540D)?\n3. \u5982\u679C\u8FD9\u4E2A\u95EE\u9898\u5305\u542B\u591A\u4E2A\u5B50\u95EE\u9898\u6216\u591A\u4E2A\u6982\u5FF5,\u80FD\u4E0D\u80FD\u62C6\u6210\u51E0\u4E2A\u66F4\u5177\u4F53\u3001\u66F4\u5BB9\u6613\u5206\u522B\u547D\u4E2D\u539F\u6587\u7684\u68C0\u7D22\u89D2\u5EA6?\n\u8F93\u51FA\u6070\u597D3\u884C,\u6BCF\u884C\u662F\u4E00\u7EC4\u72EC\u7ACB\u7684\u68C0\u7D22\u5173\u952E\u8BCD/\u77ED\u8BED(\u540C\u4E00\u884C\u5185\u591A\u4E2A\u5173\u952E\u8BCD\u7528\u9017\u53F7\u5206\u9694),3\u884C\u8981\u4EE3\u88683\u4E2A\u4E0D\u540C\u89D2\u5EA6\u6216\u4E0D\u540C\u8BF4\u6CD5\u7684\u68C0\u7D22\u5C1D\u8BD5,\u4E0D\u89813\u884C\u90FD\u662F\u540C\u4E00\u4E2A\u610F\u601D\u7684\u91CD\u590D\u8868\u8FBE\u3002\n\u76F4\u63A5\u8F93\u51FA\u8FD93\u884C,\u4E0D\u8981\u7F16\u53F7\u3001\u4E0D\u8981\u89E3\u91CA\u3001\u4E0D\u8981\u8F93\u51FA\u95EE\u9898\u672C\u8EAB\u3001\u4E0D\u8981\u8F93\u51FA\u8FD93\u884C\u4EE5\u5916\u7684\u4EFB\u4F55\u6587\u5B57\u3002",
+  // key 是文件的 vault 相对路径,value 形如 { mtime, chunks: [{page, text}], generatedAt }
+  docChunks: {},
+  // 每篇 PDF(或精确匹配的非 PDF 选区)只保存一份最近对话。这里只存用户实际看到的问答,
+  // 不保存 system prompt、全文或 RAG 检索片段,避免 data.json 被隐藏上下文快速撑大。
+  conversationHistories: {},
+  promptPresets: [
+    {
+      id: "paper-map",
+      name: "\u8BBA\u6587\u901F\u8BFB\u5730\u56FE",
+      prompt: "\u4F60\u662F\u4E00\u4F4D\u4E13\u4E1A\u7684\u5B66\u672F\u8BBA\u6587\u901F\u8BFB\u52A9\u624B\u3002\u8BBA\u6587\u4E0D\u662F\u6545\u4E8B,\u4E0D\u8981\u4ECE\u5934\u8BFB\u5230\u5C3E\u2014\u2014\u5148\u7ED9\u51FA\u5168\u5C40\u5730\u56FE,\u518D\u51B3\u5B9A\u54EA\u4E9B\u90E8\u5206\u503C\u5F97\u6DF1\u8BFB\u3002\n\u56DE\u7B54\u65F6\u4F18\u5148\u7ED9\u51FA:\u5206\u8282\u901F\u89C8(2-3\u53E5\u8BDD/\u8282)\u3001\u6838\u5FC3\u56E0\u679C\u94FE(A\u2192B\u2192C)\u3001\u503C\u4E0D\u503C\u5F97\u6DF1\u8BFB\u7684\u4F18\u5148\u7EA7\u5224\u65AD(\u9AD8/\u4E2D/\u4F4E)\u3002\u7528\u4E2D\u6587,\u4E13\u4E1A\u672F\u8BED\u4FDD\u7559\u82F1\u6587\u539F\u8BCD\u3002"
+    },
+    {
+      id: "methods-decoder",
+      name: "\u65B9\u6CD5\u8BBA\u89E3\u7801",
+      prompt: "\u4F60\u662F\u4E00\u4F4D\u64C5\u957F\u628A\u590D\u6742\u7814\u7A76\u65B9\u6CD5\u7FFB\u8BD1\u6210\u5927\u767D\u8BDD\u7684\u52A9\u624B,\u540C\u65F6\u662F\u6311\u5254\u7684\u65B9\u6CD5\u8BBA\u5BA1\u67E5\u8005\u3002\n\u56DE\u7B54\u65F6\u8BF4\u660E:\u7814\u7A76\u8BBE\u8BA1\u662F\u4EC0\u4E48(\u7C7B\u6BD4\u8BB2\u89E3)\u3001\u5173\u952E\u8981\u7D20(\u6837\u672C/\u53D8\u91CF/\u5206\u6790\u65B9\u6CD5)\u3001\u8FD9\u4E2A\u8BBE\u8BA1\u5F3A\u5728\u54EA\u3001\u5F31\u5728\u54EA(\u6BCF\u6761\u8BF4\u660E\u4F1A\u5BFC\u81F4\u7ED3\u8BBA\u5728\u4EC0\u4E48\u60C5\u51B5\u4E0B\u4E0D\u6210\u7ACB)\u3002\u7528\u4E2D\u6587,\u4E13\u4E1A\u672F\u8BED\u4FDD\u7559\u82F1\u6587\u539F\u8BCD\u3002"
+    },
+    {
+      id: "limitations",
+      name: "\u5C40\u9650\u4E0E\u5047\u8BBE",
+      prompt: "\u4F60\u662F\u4E00\u4F4D\u4E25\u8C28\u7684\u8BBA\u6587\u8BC4\u5BA1\u8005\u3002\u6BCF\u7BC7\u8BBA\u6587\u90FD\u6709\u5C40\u9650\u2014\u2014\u6709\u4E9B\u4F5C\u8005\u81EA\u5DF1\u627F\u8BA4,\u6709\u4E9B\u85CF\u5728\u8BBE\u8BA1\u91CC\u6CA1\u8BF4\u3002\n\u56DE\u7B54\u65F6\u533A\u5206:\u4F5C\u8005\u660E\u8BF4\u7684\u5C40\u9650 vs \u6CA1\u8BF4\u4F46\u6697\u542B\u7684\u5047\u8BBE(\u6BCF\u6761\u8BF4\u660E\u5047\u8BBE\u4E0D\u6210\u7ACB\u4F1A\u600E\u6837\u5F71\u54CD\u7ED3\u8BBA),\u5E76\u7ED9\u51FA\u7ED3\u8BBA\u53EF\u4FE1\u5EA6\u7684\u6574\u4F53\u5224\u65AD\u3002\u7528\u4E2D\u6587,\u4E13\u4E1A\u672F\u8BED\u4FDD\u7559\u82F1\u6587\u539F\u8BCD\u3002"
+    },
+    {
+      id: "reproducibility",
+      name: "\u590D\u73B0\u6027\u68C0\u67E5",
+      prompt: "\u4F60\u662F\u4E00\u4F4D\u4E13\u6CE8\u4E8E\u53EF\u590D\u73B0\u6027\u7684\u5BA1\u67E5\u8005,\u53C2\u8003 FAIR \u539F\u5219\u7684\u601D\u8DEF,\u4F46\u4F1A\u6309\u8BBA\u6587\u6240\u5C5E\u9886\u57DF\u81EA\u884C\u5224\u65AD\u5408\u7406\u6807\u51C6\u3002\n\u56DE\u7B54\u65F6\u6309:\u6570\u636E\u53EF\u83B7\u5F97\u6027\u3001\u4EE3\u7801\u4E0E\u73AF\u5883\u3001\u6D41\u7A0B\u6B65\u9AA4\u3001\u53C2\u6570\u900F\u660E\u5EA6\u56DB\u4E2A\u7EF4\u5EA6\u8BC4\u4F30,\u6700\u540E\u7ED9\u51FA\u4F4E/\u4E2D/\u9AD8\u590D\u73B0\u6027\u8BC4\u7EA7\u548C\u6700\u7F3A\u7684\u4E09\u6837\u4E1C\u897F\u3002\u7528\u4E2D\u6587,\u4E13\u4E1A\u672F\u8BED\u4FDD\u7559\u82F1\u6587\u539F\u8BCD\u3002"
+    },
+    {
+      id: "math",
+      name: "\u6570\u5B66\u7B26\u53F7\u8BB2\u89E3",
+      prompt: "\u4F60\u662F\u4E00\u4F4D\u64C5\u957F\u628A\u516C\u5F0F\u548C\u7B26\u53F7\u7FFB\u8BD1\u6210\u5927\u767D\u8BDD\u7684\u52A9\u624B,\u5047\u8BBE\u6211\u5177\u5907\u57FA\u7840\u7684\u8BE5\u9886\u57DF\u77E5\u8BC6,\u4F46\u8BB0\u4E0D\u6E05\u5177\u4F53\u7B26\u53F7\u7EA6\u5B9A\u3002\n\u56DE\u7B54\u65F6\u9010\u4E2A\u7B26\u53F7\u8BB2\u89E3\u542B\u4E49\u3001\u8BF4\u660E\u516C\u5F0F\u5728\u7B97\u4EC0\u4E48\u3001\u4E3A\u4EC0\u4E48\u8FD9\u4E2A\u516C\u5F0F\u5BF9\u8BBA\u70B9\u5173\u952E,\u5982\u679C\u53EF\u80FD\u7ED9\u4E00\u4E2A\u6781\u7B80\u6570\u503C\u4F8B\u5B50\u5E2E\u52A9\u5EFA\u7ACB\u76F4\u89C9\u3002\u7528\u4E2D\u6587,\u7B26\u53F7\u672C\u8EAB\u4FDD\u7559\u539F\u6837\u3002"
+    },
+    {
+      id: "critic",
+      name: "\u6279\u5224\u6027\u5BA1\u8BFB",
+      prompt: "\u4F60\u662F\u4E00\u4F4D\u903B\u8F91\u5BA1\u67E5\u8005\u548C\u8FA9\u8BC1\u5206\u6790\u8005\u3002\u4F60\u7684\u4EFB\u52A1\u4E0D\u662F\u540C\u610F\u8BBA\u6587,\u800C\u662F\u63D0\u4F9B\u6709\u4EF7\u503C\u7684\u963B\u529B\u2014\u2014\u5E2E\u6211\u628A\u7406\u89E3\u63A8\u8FDB\u5230\u80FD\u6311\u51FA\u6BDB\u75C5\u3002\n\u56DE\u7B54\u65F6\u53EF\u4EE5\u5305\u542B:\u88AB\u5FFD\u7565\u7684\u66FF\u4EE3\u8DEF\u5F84\u3001\u903B\u8F91\u6F0F\u6D1E(\u8C2C\u8BEF/\u8BED\u4E49\u8DF3\u8DC3)\u3001\u6700\u6709\u529B\u7684\u53CD\u65B9\u8BBA\u8BC1(Steel Man)\u3001\u4F5C\u8005\u7565\u8FC7\u7684\u5173\u952E\u95EE\u9898(\u623F\u95F4\u91CC\u7684\u5927\u8C61)\u3002\u7528\u4E2D\u6587,\u4E13\u4E1A\u672F\u8BED\u4FDD\u7559\u82F1\u6587\u539F\u8BCD,\u4E0D\u8981\u91CD\u590D\u539F\u6587\u5185\u5BB9\u3002"
+    },
+    {
+      id: "scaffold",
+      name: "\u6982\u5FF5\u811A\u624B\u67B6",
+      prompt: "\u4F60\u662F\u4E00\u4F4D\u8BA4\u77E5\u9605\u8BFB\u6559\u7EC3\u3002\u4F60\u7684\u4EFB\u52A1\u4E0D\u662F\u66FF\u6211\u603B\u7ED3\u6587\u5B57,\u800C\u662F\u5E2E\u6211\u642D\u5EFA\u7406\u89E3\u5B83\u6240\u9700\u8981\u7684\u811A\u624B\u67B6\u2014\u2014\u8865\u4E0A\u4F5C\u8005\u9ED8\u8BA4\u6211\u5DF2\u7ECF\u77E5\u9053\u3001\u4F46\u6211\u5B9E\u9645\u4E0A\u4E0D\u77E5\u9053\u7684\u90E8\u5206\u3002\u5047\u8BBE\u6211\u5728\u8FD9\u4E2A\u9886\u57DF\u80CC\u666F\u77E5\u8BC6\u4E3A\u96F6,\u9664\u975E\u660E\u663E\u4E0D\u662F\u8FD9\u6837\u3002\n\u56DE\u7B54\u65F6\u53EF\u4EE5\u5305\u542B:\u80CC\u666F\u77E5\u8BC6\u901F\u89C8\u3001\u672F\u8BED\u8868\u3001\u6697\u542B\u63A8\u7406(\u7EBF\u7D22/\u7A7A\u767D/\u7F6E\u4FE1\u5EA6)\u3001\u5BB9\u6613\u8BFB\u9519\u7684\u5730\u65B9\u3001\u7528\u96F6\u672F\u8BED\u7684\u60C5\u5883\u6A21\u578B\u8BB2\u89E3\u3002\u7528\u4E2D\u6587,\u4E13\u4E1A\u672F\u8BED\u4FDD\u7559\u82F1\u6587\u539F\u8BCD\u3002"
+    },
+    {
+      id: "quiz",
+      name: "\u81EA\u6D4B\u4E94\u95EE",
+      prompt: "\u4F60\u662F\u4E00\u4F4D\u8BFE\u7A0B\u8BBE\u8BA1\u5E08\u548C\u82CF\u683C\u62C9\u5E95\u5F0F\u5F15\u5BFC\u8005\u3002\u4F60\u7684\u4EFB\u52A1\u4E0D\u662F\u66FF\u6211\u89E3\u91CA\u8BBA\u6587,\u800C\u662F\u63D0\u70BC\u51FA\u80FD\u68C0\u9A8C\u6211\u662F\u5426\u771F\u6B63\u7406\u89E3\u6838\u5FC3\u539F\u7406\u7684\u9AD8\u5C42\u6B21\u95EE\u9898\u2014\u2014\u7528\u6765\u8003\u6211,\u4E0D\u662F\u7528\u6765\u8BB2\u7ED9\u6211\u542C\u3002\n\u88AB\u8981\u6C42\u51FA\u9898\u65F6,\u63D0\u70BC\u6070\u597D5\u4E2A\u9AD8\u5C42\u6B21\u95EE\u9898(\u907F\u514D\u662F\u975E\u9898,\u4F18\u5148\u7528\u5982\u4F55/\u4E3A\u4EC0\u4E48/\u5982\u679C...\u4F1A\u600E\u6837),\u6700\u540E\u52A0\u4E00\u4E2A\u5FC5\u987B\u4E32\u8054\u6240\u6709\u4E3B\u9898\u624D\u80FD\u56DE\u7B54\u7684\u7EFC\u5408\u95EE\u9898\u3002\u5176\u4F59\u65F6\u5019\u6B63\u5E38\u56DE\u7B54\u6211\u7684\u95EE\u9898\u3002\u7528\u4E2D\u6587\u3002"
+    }
+  ]
 };
 
 // src/paper-context.ts
@@ -620,8 +648,133 @@ var PaperContextService = class {
   }
 };
 
+// src/translation.ts
+function lastRegexBoundary(text, start, end, pattern) {
+  pattern.lastIndex = start;
+  let boundary = -1;
+  let match;
+  while ((match = pattern.exec(text)) !== null) {
+    const candidate = match.index + match[0].length;
+    if (candidate > end) break;
+    if (candidate > start) boundary = candidate;
+    if (match[0].length === 0) pattern.lastIndex += 1;
+  }
+  return boundary;
+}
+function findPreferredBoundary(source, start, hardEnd) {
+  const paragraph = source.lastIndexOf("\n\n", hardEnd - 2);
+  if (paragraph >= start) return paragraph + 2;
+  const line = source.lastIndexOf("\n", hardEnd - 1);
+  if (line >= start) return line + 1;
+  const sentence = lastRegexBoundary(
+    source,
+    start,
+    hardEnd,
+    /[.!?。！？](?:["'”’）\]]*)\s+/g
+  );
+  if (sentence > start) return sentence;
+  for (let index = hardEnd - 1; index >= start; index -= 1) {
+    if (/\s/.test(source[index])) return index + 1;
+  }
+  return hardEnd;
+}
+function splitTranslationChunks(source, limit) {
+  if (!source) return [];
+  if (!Number.isInteger(limit) || limit <= 0) {
+    throw new RangeError("Translation chunk limit must be a positive integer");
+  }
+  if (source.length <= limit) return [source];
+  const chunks = [];
+  let start = 0;
+  while (start < source.length) {
+    const hardEnd = Math.min(start + limit, source.length);
+    const end = hardEnd === source.length ? hardEnd : findPreferredBoundary(source, start, hardEnd);
+    chunks.push(source.slice(start, end));
+    start = end;
+  }
+  return chunks;
+}
+function buildTranslationMessages(source, settings) {
+  const system = `You are an expert academic translator. Produce a faithful academic translation into ${settings.targetLanguage}. Preserve paragraph boundaries and paragraph order. Preserve formulas, code, variables, citations, and figure and table numbers exactly. Output only the translated text.`;
+  const additional = settings.additionalInstruction ? `Additional instruction:
+${settings.additionalInstruction}
+
+` : "";
+  return [
+    { role: "system", content: system },
+    {
+      role: "user",
+      content: `${additional}<source_text>
+${source}
+</source_text>`
+    }
+  ];
+}
+function combineTranslations(translations) {
+  return translations.filter((translation) => translation.length > 0).join("\n\n");
+}
+var TranslationService = class {
+  constructor(llm) {
+    this.llm = llm;
+  }
+  async translate(request) {
+    var _a;
+    const chunks = splitTranslationChunks(request.source, request.settings.chunkChars);
+    if (!chunks.length) return { text: "", chunkCount: 0 };
+    const completed = [];
+    for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+      let streamedChunk = "";
+      const translated = await this.llm.chat({
+        messages: buildTranslationMessages(chunks[chunkIndex], request.settings),
+        modelProfile: request.modelProfile,
+        signal: request.signal,
+        stream: true,
+        temperatureOverride: request.settings.temperature,
+        maxTokensOverride: request.settings.maxTokens,
+        onChunk: (_piece, accumulatedText) => {
+          var _a2;
+          streamedChunk = accumulatedText;
+          (_a2 = request.onChunk) == null ? void 0 : _a2.call(request, {
+            chunkIndex: chunkIndex + 1,
+            chunkCount: chunks.length,
+            chunkText: accumulatedText,
+            combinedText: combineTranslations([...completed, accumulatedText])
+          });
+        }
+      });
+      const finalChunk = translated.trim();
+      if (finalChunk !== streamedChunk) {
+        (_a = request.onChunk) == null ? void 0 : _a.call(request, {
+          chunkIndex: chunkIndex + 1,
+          chunkCount: chunks.length,
+          chunkText: finalChunk,
+          combinedText: combineTranslations([...completed, finalChunk])
+        });
+      }
+      completed.push(finalChunk);
+    }
+    return { text: combineTranslations(completed), chunkCount: chunks.length };
+  }
+};
+
 // src/modal-services.ts
 function createPDFChatModalServices(plugin, overrides = {}) {
+  const llm = {
+    chat: (request) => {
+      if (plugin.llmTransport) return plugin.llmTransport.chat(request);
+      return plugin.chat(
+        request.messages,
+        request.onChunk,
+        request.signal,
+        request.modelProfile,
+        {
+          stream: request.stream,
+          maxTokensOverride: request.maxTokensOverride,
+          temperatureOverride: request.temperatureOverride
+        }
+      );
+    }
+  };
   const compatibility = {
     conversations: {
       getKey: (file, selectedText) => plugin.getConversationKey(file, selectedText),
@@ -636,22 +789,12 @@ function createPDFChatModalServices(plugin, overrides = {}) {
       planRagQueries: (question) => plugin.planRagQueries(question),
       retrieveContext: (chunks, queries, topK) => expandWithNeighbors(chunks, bm25RetrieveMulti(chunks, queries, topK))
     },
-    llm: {
-      chat: (request) => {
-        if (plugin.llmTransport) return plugin.llmTransport.chat(request);
-        return plugin.chat(
-          request.messages,
-          request.onChunk,
-          request.signal,
-          request.modelProfile,
-          { stream: request.stream, maxTokensOverride: request.maxTokensOverride }
-        );
-      }
-    },
+    llm,
     models: {
       get: (id) => plugin.getModelProfile(id)
     },
-    actions: plugin.actionRegistry || createCompatibilityActionRegistry(DEFAULT_SETTINGS.translatePrompt)
+    actions: plugin.actionRegistry || createResearchActionRegistry(),
+    translations: plugin.translationService || new TranslationService(llm)
   };
   return {
     ...compatibility,
@@ -660,7 +803,13 @@ function createPDFChatModalServices(plugin, overrides = {}) {
     papers: { ...compatibility.papers, ...overrides.papers || {} },
     llm: { ...compatibility.llm, ...overrides.llm || {} },
     models: { ...compatibility.models, ...overrides.models || {} },
-    actions: overrides.actions || compatibility.actions
+    actions: overrides.actions || compatibility.actions,
+    translations: {
+      translate: (request) => {
+        var _a;
+        return ((_a = overrides.translations) == null ? void 0 : _a.translate) ? overrides.translations.translate(request) : compatibility.translations.translate(request);
+      }
+    }
   };
 }
 
@@ -1179,14 +1328,69 @@ ${this.contextText}`;
     this.sendBtn.setText(sending ? "\u505C\u6B62" : "\u53D1\u9001");
     this.sendBtn.toggleClass("is-stop", sending);
   }
-  // 点「翻译」按钮触发:不读输入框,直接用固定的翻译指令当作这一轮的问题发出去。
-  // 选中的原文片段已经在系统提示词里(见 buildSystemMessage),跳过 RAG/全文检索拼接——
-  // 那是给"回答具体问题"用的,翻译只需要针对已经在上下文里的选中片段,不需要额外找相关内容。
   handleTranslate() {
     void this.services.actions.execute("translate", {
-      settings: this.plugin.settings,
-      submit: (options) => this.handleSubmit(options)
+      translate: () => this.runTranslation()
     });
+  }
+  async runTranslation() {
+    if (!this.contextText || this.isSending) return;
+    const friendlyLabel = `\u7FFB\u8BD1\u5F53\u524D\u9009\u533A\uFF08${this.contextText.length} \u5B57\uFF09`;
+    this.addBubble("user", friendlyLabel);
+    this.setSendingState(true);
+    const loadingBubble = this.addBubble("assistant", "\u6B63\u5728\u7FFB\u8BD1\u2026", { loading: true });
+    this.abortController = new AbortController();
+    let fullText = "";
+    try {
+      const result = await this.services.translations.translate({
+        source: this.contextText,
+        settings: this.plugin.settings.translation,
+        modelProfile: this.services.models.get(this.currentModelId),
+        signal: this.abortController.signal,
+        onChunk: (progress) => {
+          fullText = progress.combinedText;
+          loadingBubble.removeClass("is-loading");
+          const progressText = progress.chunkCount > 1 ? `${progress.combinedText}
+
+\u6B63\u5728\u7FFB\u8BD1 ${progress.chunkIndex}/${progress.chunkCount}\u2026` : progress.combinedText;
+          loadingBubble.setText(progressText);
+          this.historyEl.scrollTo({ top: this.historyEl.scrollHeight, behavior: "auto" });
+        }
+      });
+      fullText = result.text;
+      loadingBubble.removeClass("is-loading");
+      if (!fullText.trim()) {
+        loadingBubble.addClass("is-error");
+        loadingBubble.setText("\u7FFB\u8BD1\u672A\u8FD4\u56DE\u5185\u5BB9");
+        return;
+      }
+      loadingBubble.addClass("is-rendered");
+      await renderMarkdownInto(this.app, this.plugin, loadingBubble, fullText);
+      this.messages.push(
+        { role: "user", content: friendlyLabel },
+        { role: "assistant", content: fullText }
+      );
+      await this.recordTranscriptTurn(friendlyLabel, fullText, "complete");
+    } catch (err) {
+      loadingBubble.removeClass("is-loading");
+      if (fullText.trim()) {
+        loadingBubble.addClass("is-stopped");
+        if (!isAbortError(err)) loadingBubble.addClass("is-error");
+        loadingBubble.setText(fullText + "\n\n[\u5DF2\u505C\u6B62\u751F\u6210]");
+        this.messages.push(
+          { role: "user", content: friendlyLabel },
+          { role: "assistant", content: fullText }
+        );
+        await this.recordTranscriptTurn(friendlyLabel, fullText, "stopped");
+      } else {
+        loadingBubble.addClass("is-error");
+        loadingBubble.setText("\u7FFB\u8BD1\u5931\u8D25: " + errorMessage(err));
+      }
+    } finally {
+      this.setSendingState(false);
+      this.abortController = null;
+      this.inputEl.focus();
+    }
   }
   async handleSubmit(options = {}) {
     const opts = options || {};
@@ -1311,6 +1515,19 @@ function migrateSettings(savedValue, now = Date.now) {
   settings.docChunks = saved && saved.docChunks && typeof saved.docChunks === "object" ? { ...saved.docChunks } : {};
   settings.conversationHistories = normalizeConversationHistories(saved && saved.conversationHistories);
   let needsSave = false;
+  const hasTranslationObject = Boolean(
+    saved && saved.translation && typeof saved.translation === "object" && !Array.isArray(saved.translation)
+  );
+  if (hasTranslationObject) {
+    settings.translation = { ...DEFAULT_SETTINGS.translation, ...saved.translation };
+  } else {
+    const legacyInstruction = typeof (saved == null ? void 0 : saved.translatePrompt) === "string" ? saved.translatePrompt : "";
+    settings.translation = {
+      ...DEFAULT_SETTINGS.translation,
+      additionalInstruction: legacyInstruction.trim() && legacyInstruction !== LEGACY_0_4_0_TRANSLATE_PROMPT ? legacyInstruction : ""
+    };
+    needsSave = true;
+  }
   if (saved && (saved.endpoint || saved.apiKey || saved.model) && !(saved.models && saved.models.length)) {
     const migrated = {
       id: "migrated-" + now(),
@@ -1335,6 +1552,10 @@ function migrateSettings(savedValue, now = Date.now) {
     delete settings.endpoint;
     delete settings.apiKey;
     delete settings.model;
+    needsSave = true;
+  }
+  if (settings.translatePrompt !== void 0) {
+    delete settings.translatePrompt;
     needsSave = true;
   }
   return { settings, needsSave };
@@ -1456,10 +1677,16 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian3.Setting(containerEl).setName("\u300C\u7FFB\u8BD1\u300D\u6309\u94AE\u7684\u6307\u4EE4").setDesc("\u70B9\u5F39\u7A97\u91CC\u7684\u300C\u7FFB\u8BD1\u300D\u6309\u94AE\u65F6\u76F4\u63A5\u53D1\u9001\u7684\u56FA\u5B9A\u6307\u4EE4,\u4E0D\u9700\u8981\u5728\u8F93\u5165\u6846\u91CC\u6253\u5B57\u3002\u9009\u4E2D\u7684\u539F\u6587\u7247\u6BB5\u5DF2\u7ECF\u5728\u7CFB\u7EDF\u63D0\u793A\u8BCD\u91CC,\u8FD9\u91CC\u53EA\u9700\u8981\u63CF\u8FF0\u7FFB\u8BD1\u8981\u6C42\u3002").addTextArea((text) => {
+    new import_obsidian3.Setting(containerEl).setName("\u7FFB\u8BD1\u76EE\u6807\u8BED\u8A00").setDesc("\u7528\u4E8E\u5F39\u7A97\u4E2D\u7684\u9009\u533A\u7FFB\u8BD1,\u4F8B\u5982 zh-CN\u3001en \u6216 ja").addText((text) => {
+      text.setValue(this.plugin.settings.translation.targetLanguage).onChange(async (value) => {
+        this.plugin.settings.translation.targetLanguage = value.trim() || DEFAULT_SETTINGS.translation.targetLanguage;
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian3.Setting(containerEl).setName("\u7FFB\u8BD1\u9644\u52A0\u8981\u6C42").setDesc("\u53EF\u9009\u3002\u7528\u4E8E\u8865\u5145\u672F\u8BED\u3001\u98CE\u683C\u6216\u9886\u57DF\u7EA6\u5B9A;\u539F\u6587\u4F1A\u7531\u72EC\u7ACB\u7FFB\u8BD1\u4EFB\u52A1\u5B89\u5168\u9644\u52A0\u3002").addTextArea((text) => {
       text.inputEl.rows = 4;
-      text.setValue(this.plugin.settings.translatePrompt).onChange(async (value) => {
-        this.plugin.settings.translatePrompt = value;
+      text.setValue(this.plugin.settings.translation.additionalInstruction).onChange(async (value) => {
+        this.plugin.settings.translation.additionalInstruction = value;
         await this.plugin.saveSettings();
       });
     });
@@ -1638,6 +1865,7 @@ var PDFChatPlugin = class extends import_obsidian4.Plugin {
     __publicField(this, "conversationStore");
     __publicField(this, "llmTransport");
     __publicField(this, "paperContextService");
+    __publicField(this, "translationService");
     __publicField(this, "actionRegistry");
     __publicField(this, "modalServices");
   }
@@ -1659,7 +1887,8 @@ var PDFChatPlugin = class extends import_obsidian4.Plugin {
       this.llmTransport,
       (id) => this.getModelProfile(id)
     );
-    this.actionRegistry = createCompatibilityActionRegistry(DEFAULT_SETTINGS.translatePrompt);
+    this.translationService = new TranslationService(this.llmTransport);
+    this.actionRegistry = createResearchActionRegistry();
     this.modalServices = createPDFChatModalServices(this, {
       conversations: {
         getKey: (file, selectedText) => getConversationKey(file, selectedText),
@@ -1676,7 +1905,8 @@ var PDFChatPlugin = class extends import_obsidian4.Plugin {
       },
       llm: { chat: (request) => this.llmTransport.chat(request) },
       models: { get: (id) => this.getModelProfile(id) },
-      actions: this.actionRegistry
+      actions: this.actionRegistry,
+      translations: this.translationService
     });
     this.addSettingTab(new PDFChatSettingTab(this.app, this));
     this.addCommand({
@@ -1769,7 +1999,8 @@ var PDFChatPlugin = class extends import_obsidian4.Plugin {
       signal,
       modelProfile,
       stream: options.stream,
-      maxTokensOverride: options.maxTokensOverride
+      maxTokensOverride: options.maxTokensOverride,
+      temperatureOverride: options.temperatureOverride
     });
   }
   async chatOnce(messages, signal, profile, maxTokensOverride) {
