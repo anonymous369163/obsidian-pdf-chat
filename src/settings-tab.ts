@@ -1,5 +1,6 @@
 import { Notice, PluginSettingTab, Setting, type App } from "obsidian";
 import { DEFAULT_SETTINGS } from "./default-settings";
+import { normalizeRagChunkSettings } from "./settings";
 import { createSettingsSection } from "./settings-ui";
 import type { PDFChatPluginApi } from "./types";
 
@@ -335,17 +336,23 @@ export class PDFChatSettingTab extends PluginSettingTab {
     );
     new Setting(containerEl).setName("单块最大字符数").addText((text) =>
       text.setValue(String(this.plugin.settings.ragChunkSize)).onChange(async (value) => {
-        const parsed = parseInt(value, 10);
-        this.plugin.settings.ragChunkSize = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.ragChunkSize;
+        const normalized = normalizeRagChunkSettings(
+          Number(value.trim()),
+          this.plugin.settings.ragChunkOverlap
+        );
+        this.plugin.settings.ragChunkSize = normalized.ragChunkSize;
+        this.plugin.settings.ragChunkOverlap = normalized.ragChunkOverlap;
         await this.plugin.saveSettings();
       })
     );
     new Setting(containerEl).setName("切块重叠字符数").addText((text) =>
       text.setValue(String(this.plugin.settings.ragChunkOverlap)).onChange(async (value) => {
-        const parsed = parseInt(value, 10);
-        this.plugin.settings.ragChunkOverlap = Number.isFinite(parsed)
-          ? parsed
-          : DEFAULT_SETTINGS.ragChunkOverlap;
+        const normalized = normalizeRagChunkSettings(
+          this.plugin.settings.ragChunkSize,
+          Number(value.trim())
+        );
+        this.plugin.settings.ragChunkSize = normalized.ragChunkSize;
+        this.plugin.settings.ragChunkOverlap = normalized.ragChunkOverlap;
         await this.plugin.saveSettings();
       })
     );

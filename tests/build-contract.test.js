@@ -52,3 +52,9 @@ test("every TypeScript source participates in typechecking without file-wide sup
 
   assert.deepEqual(suppressed, []);
 });
+
+test("the npm and CI TypeScript configuration enables full strict mode", () => {
+  const tsconfig = JSON.parse(fs.readFileSync(path.join(projectRoot, "tsconfig.json"), "utf8"));
+
+  assert.equal(tsconfig.compilerOptions.strict, true);
+});

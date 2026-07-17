@@ -66,7 +66,7 @@ export {
 export { createPDFChatModalServices } from "./modal-services";
 export { PDFChatModal } from "./pdf-chat-modal";
 export { QuickTranslateMarker } from "./quick-translate-marker";
-export { migrateSettings } from "./settings";
+export { migrateSettings, normalizeRagChunkSettings } from "./settings";
 export { buildTranslationMessages, splitTranslationChunks, TranslationService } from "./translation";
 export type { LlmRequest, PaperContext, ResearchAction } from "./types";
 

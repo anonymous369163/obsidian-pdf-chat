@@ -685,6 +685,20 @@ test("settings preserve every legacy control in the correct ordered section and 
   const topK = controlFor(sections[3], "每次检索返回的片段数(Top K)", "input");
   topK.value = "7";
   topK.dispatch("change");
+  const ragOverlap = controlFor(sections[3], "切块重叠字符数", "input");
+  ragOverlap.value = "699";
+  ragOverlap.dispatch("change");
+  assert.equal(plugin.settings.ragChunkOverlap, 699);
+  const ragSize = controlFor(sections[3], "单块最大字符数", "input");
+  ragSize.value = "50";
+  ragSize.dispatch("change");
+  assert.equal(plugin.settings.ragChunkSize, 50);
+  assert.equal(plugin.settings.ragChunkOverlap, 49);
+  ragOverlap.value = "0";
+  ragOverlap.dispatch("change");
+  assert.equal(plugin.settings.ragChunkOverlap, 0);
+  ragOverlap.value = "50";
+  ragOverlap.dispatch("change");
   const firstPreset = controlFor(sections[4], "预设 1", "input");
   firstPreset.value = "Updated preset";
   firstPreset.dispatch("change");
@@ -698,6 +712,8 @@ test("settings preserve every legacy control in the correct ordered section and 
   assert.equal(plugin.settings.translation.targetLanguage, "ja");
   assert.equal(plugin.settings.translation.chunkChars, 8000);
   assert.equal(plugin.settings.ragTopK, 7);
+  assert.equal(plugin.settings.ragChunkSize, 50);
+  assert.equal(plugin.settings.ragChunkOverlap, 49);
   assert.equal(plugin.settings.promptPresets[0].name, "Updated preset");
 });
 

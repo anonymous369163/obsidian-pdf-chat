@@ -70,6 +70,12 @@ export async function extractPdfFullText(app: App, file: TFile): Promise<string>
 }
 
 export function chunkPdfPages(pages: PdfPageText[], chunkSize: number, overlap: number): PdfChunk[] {
+  if (!Number.isInteger(chunkSize) || chunkSize <= 0) {
+    throw new RangeError("chunkSize must be a positive integer");
+  }
+  if (!Number.isInteger(overlap) || overlap < 0 || overlap >= chunkSize) {
+    throw new RangeError("overlap must be an integer between 0 and chunkSize - 1");
+  }
   const chunks: PdfChunk[] = [];
   for (const page of pages) {
     const text = (page.text || "").replace(/\s+/g, " ").trim();
@@ -83,7 +89,9 @@ export function chunkPdfPages(pages: PdfPageText[], chunkSize: number, overlap: 
       const end = Math.min(start + chunkSize, text.length);
       chunks.push({ page: page.page, text: text.slice(start, end) });
       if (end >= text.length) break;
-      start = end - overlap;
+      const nextStart = end - overlap;
+      if (nextStart <= start) throw new RangeError("chunk settings must advance the cursor");
+      start = nextStart;
     }
   }
   chunks.forEach((chunk, index) => (chunk.idx = index));
@@ -254,8 +262,8 @@ export class PaperContextService {
     const pages = await extractPdfPages(this.app, file);
     const chunks = chunkPdfPages(
       pages,
-      settings.ragChunkSize || DEFAULT_SETTINGS.ragChunkSize,
-      settings.ragChunkOverlap || DEFAULT_SETTINGS.ragChunkOverlap
+      settings.ragChunkSize,
+      settings.ragChunkOverlap
     );
     const fullTextLength = pages.reduce((total, page) => total + (page.text ? page.text.length : 0), 0);
     return { chunks, fullTextLength };

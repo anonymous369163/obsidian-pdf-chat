@@ -101,6 +101,77 @@ test("Task 5 settings preserve legacy chunk size while keeping credential-free 0
   }).settings;
   assert.equal(missingNestedChunkUsesLegacy.translation.chunkChars, 3000);
   assert.equal(missingNestedChunkUsesLegacy.translation.targetLanguage, "ja");
+
+  const fractionalLegacy = migrateSettings({ translateChunkMaxChars: 3000.5 });
+  assert.equal(fractionalLegacy.settings.translation.chunkChars, 8000);
+  const fractionalNested = migrateSettings({ translation: { chunkChars: 6123.5 } });
+  assert.equal(fractionalNested.settings.translation.chunkChars, 8000);
+});
+
+test("RAG settings normalization preserves valid boundaries and repairs invalid persisted pairs", () => {
+  const { migrateSettings, normalizeRagChunkSettings } = loadBundle();
+
+  assert.deepEqual(plain(normalizeRagChunkSettings(8, 0)), {
+    ragChunkSize: 8,
+    ragChunkOverlap: 0,
+    changed: false,
+  });
+  assert.deepEqual(plain(normalizeRagChunkSettings(8, 7)), {
+    ragChunkSize: 8,
+    ragChunkOverlap: 7,
+    changed: false,
+  });
+  assert.deepEqual(plain(normalizeRagChunkSettings(4, 4)), {
+    ragChunkSize: 4,
+    ragChunkOverlap: 3,
+    changed: true,
+  });
+
+  const invalidSize = migrateSettings({
+    translation: {},
+    ragChunkSize: -1,
+    ragChunkOverlap: 999,
+  });
+  assert.equal(invalidSize.settings.ragChunkSize, 700);
+  assert.equal(invalidSize.settings.ragChunkOverlap, 100);
+  assert.equal(invalidSize.needsSave, true);
+
+  const invalidOverlap = migrateSettings({
+    translation: {},
+    ragChunkSize: 50,
+    ragChunkOverlap: 50,
+  });
+  assert.equal(invalidOverlap.settings.ragChunkSize, 50);
+  assert.equal(invalidOverlap.settings.ragChunkOverlap, 49);
+  assert.equal(invalidOverlap.needsSave, true);
+});
+
+test("PDF chunking is lossless at overlap boundaries and rejects invalid invariants", () => {
+  const { chunkPdfPages } = loadBundle();
+  const source = "ABCDEFGHIJKL";
+  const pages = [{ page: 1, text: source }];
+  const reconstruct = (chunks, overlap) =>
+    chunks[0].text + chunks.slice(1).map((chunk) => chunk.text.slice(overlap)).join("");
+
+  const noOverlap = chunkPdfPages(pages, 4, 0);
+  assert.equal(noOverlap.map((chunk) => chunk.text).join(""), source);
+  const maximumOverlap = chunkPdfPages(pages, 4, 3);
+  assert.equal(reconstruct(maximumOverlap, 3), source);
+
+  for (const [size, overlap] of [
+    [0, 0],
+    [-1, 0],
+    [4.5, 0],
+    [4, -1],
+    [4, 1.5],
+    [4, 4],
+    [4, 5],
+  ]) {
+    assert.throws(
+      () => chunkPdfPages([], size, overlap),
+      (error) => error?.name === "RangeError"
+    );
+  }
 });
 
 test("translation and continue model routing are explicit, keyword-based, and independent", () => {

@@ -16,6 +16,35 @@ export interface SettingsMigrationResult {
   needsSave: boolean;
 }
 
+export interface NormalizedRagChunkSettings {
+  ragChunkSize: number;
+  ragChunkOverlap: number;
+  changed: boolean;
+}
+
+export function normalizeRagChunkSettings(
+  chunkSize: unknown,
+  chunkOverlap: unknown
+): NormalizedRagChunkSettings {
+  const ragChunkSize =
+    typeof chunkSize === "number" && Number.isInteger(chunkSize) && chunkSize > 0
+      ? chunkSize
+      : DEFAULT_SETTINGS.ragChunkSize;
+  const fallbackOverlap = Math.min(DEFAULT_SETTINGS.ragChunkOverlap, ragChunkSize - 1);
+  const ragChunkOverlap =
+    typeof chunkOverlap === "number" &&
+    Number.isInteger(chunkOverlap) &&
+    chunkOverlap >= 0 &&
+    chunkOverlap < ragChunkSize
+      ? chunkOverlap
+      : fallbackOverlap;
+  return {
+    ragChunkSize,
+    ragChunkOverlap,
+    changed: chunkSize !== ragChunkSize || chunkOverlap !== ragChunkOverlap,
+  };
+}
+
 export function migrateSettings(savedValue: unknown, now: () => number = Date.now): SettingsMigrationResult {
   const saved =
     savedValue && typeof savedValue === "object" && !Array.isArray(savedValue)
@@ -37,19 +66,24 @@ export function migrateSettings(savedValue: unknown, now: () => number = Date.no
   settings.conversationHistories = normalizeConversationHistories(saved && saved.conversationHistories);
 
   let needsSave = false;
+  const normalizedRag = normalizeRagChunkSettings(settings.ragChunkSize, settings.ragChunkOverlap);
+  settings.ragChunkSize = normalizedRag.ragChunkSize;
+  settings.ragChunkOverlap = normalizedRag.ragChunkOverlap;
+  if (normalizedRag.changed) needsSave = true;
   const hasTranslationObject = Boolean(
     saved && saved.translation && typeof saved.translation === "object" && !Array.isArray(saved.translation)
   );
   const nestedChunkChars = saved?.translation?.chunkChars;
   const validNestedChunkChars =
-    typeof nestedChunkChars === "number" && Number.isFinite(nestedChunkChars) && nestedChunkChars > 0
+    typeof nestedChunkChars === "number" && Number.isInteger(nestedChunkChars) && nestedChunkChars > 0
       ? nestedChunkChars
       : null;
   const legacyChunkChars = saved?.translateChunkMaxChars;
   const validLegacyChunkChars =
-    typeof legacyChunkChars === "number" && Number.isFinite(legacyChunkChars) && legacyChunkChars > 0
+    typeof legacyChunkChars === "number" && Number.isInteger(legacyChunkChars) && legacyChunkChars > 0
       ? legacyChunkChars
       : null;
+  if (nestedChunkChars !== undefined && validNestedChunkChars === null) needsSave = true;
   if (hasTranslationObject) {
     settings.translation = {
       ...DEFAULT_SETTINGS.translation,

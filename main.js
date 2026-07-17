@@ -1,5 +1,6 @@
 // PDF Chat 0.7.0
 var global = globalThis;
+"use strict";
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -49,6 +50,7 @@ __export(main_exports, {
   migrateSettings: () => migrateSettings,
   normalizeConversationHistories: () => normalizeConversationHistories,
   normalizeConversationMessages: () => normalizeConversationMessages,
+  normalizeRagChunkSettings: () => normalizeRagChunkSettings,
   resolveContinueModelId: () => resolveContinueModelId,
   resolveTranslateModelId: () => resolveTranslateModelId,
   splitTranslationChunks: () => splitTranslationChunks,
@@ -499,6 +501,12 @@ async function extractPdfFullText(app, file) {
 ${page.text}`).join("\n\n").trim();
 }
 function chunkPdfPages(pages, chunkSize, overlap) {
+  if (!Number.isInteger(chunkSize) || chunkSize <= 0) {
+    throw new RangeError("chunkSize must be a positive integer");
+  }
+  if (!Number.isInteger(overlap) || overlap < 0 || overlap >= chunkSize) {
+    throw new RangeError("overlap must be an integer between 0 and chunkSize - 1");
+  }
   const chunks = [];
   for (const page of pages) {
     const text = (page.text || "").replace(/\s+/g, " ").trim();
@@ -512,7 +520,9 @@ function chunkPdfPages(pages, chunkSize, overlap) {
       const end = Math.min(start + chunkSize, text.length);
       chunks.push({ page: page.page, text: text.slice(start, end) });
       if (end >= text.length) break;
-      start = end - overlap;
+      const nextStart = end - overlap;
+      if (nextStart <= start) throw new RangeError("chunk settings must advance the cursor");
+      start = nextStart;
     }
   }
   chunks.forEach((chunk, index) => chunk.idx = index);
@@ -645,8 +655,8 @@ var PaperContextService = class {
     const pages = await extractPdfPages(this.app, file);
     const chunks = chunkPdfPages(
       pages,
-      settings.ragChunkSize || DEFAULT_SETTINGS.ragChunkSize,
-      settings.ragChunkOverlap || DEFAULT_SETTINGS.ragChunkOverlap
+      settings.ragChunkSize,
+      settings.ragChunkOverlap
     );
     const fullTextLength = pages.reduce((total, page) => total + (page.text ? page.text.length : 0), 0);
     return { chunks, fullTextLength };
@@ -2031,6 +2041,16 @@ var QuickTranslateMarker = class {
 };
 
 // src/settings.ts
+function normalizeRagChunkSettings(chunkSize, chunkOverlap) {
+  const ragChunkSize = typeof chunkSize === "number" && Number.isInteger(chunkSize) && chunkSize > 0 ? chunkSize : DEFAULT_SETTINGS.ragChunkSize;
+  const fallbackOverlap = Math.min(DEFAULT_SETTINGS.ragChunkOverlap, ragChunkSize - 1);
+  const ragChunkOverlap = typeof chunkOverlap === "number" && Number.isInteger(chunkOverlap) && chunkOverlap >= 0 && chunkOverlap < ragChunkSize ? chunkOverlap : fallbackOverlap;
+  return {
+    ragChunkSize,
+    ragChunkOverlap,
+    changed: chunkSize !== ragChunkSize || chunkOverlap !== ragChunkOverlap
+  };
+}
 function migrateSettings(savedValue, now = Date.now) {
   var _a, _b;
   const saved = savedValue && typeof savedValue === "object" && !Array.isArray(savedValue) ? savedValue : null;
@@ -2041,13 +2061,18 @@ function migrateSettings(savedValue, now = Date.now) {
   settings.docChunks = saved && saved.docChunks && typeof saved.docChunks === "object" ? { ...saved.docChunks } : {};
   settings.conversationHistories = normalizeConversationHistories(saved && saved.conversationHistories);
   let needsSave = false;
+  const normalizedRag = normalizeRagChunkSettings(settings.ragChunkSize, settings.ragChunkOverlap);
+  settings.ragChunkSize = normalizedRag.ragChunkSize;
+  settings.ragChunkOverlap = normalizedRag.ragChunkOverlap;
+  if (normalizedRag.changed) needsSave = true;
   const hasTranslationObject = Boolean(
     saved && saved.translation && typeof saved.translation === "object" && !Array.isArray(saved.translation)
   );
   const nestedChunkChars = (_a = saved == null ? void 0 : saved.translation) == null ? void 0 : _a.chunkChars;
-  const validNestedChunkChars = typeof nestedChunkChars === "number" && Number.isFinite(nestedChunkChars) && nestedChunkChars > 0 ? nestedChunkChars : null;
+  const validNestedChunkChars = typeof nestedChunkChars === "number" && Number.isInteger(nestedChunkChars) && nestedChunkChars > 0 ? nestedChunkChars : null;
   const legacyChunkChars = saved == null ? void 0 : saved.translateChunkMaxChars;
-  const validLegacyChunkChars = typeof legacyChunkChars === "number" && Number.isFinite(legacyChunkChars) && legacyChunkChars > 0 ? legacyChunkChars : null;
+  const validLegacyChunkChars = typeof legacyChunkChars === "number" && Number.isInteger(legacyChunkChars) && legacyChunkChars > 0 ? legacyChunkChars : null;
+  if (nestedChunkChars !== void 0 && validNestedChunkChars === null) needsSave = true;
   if (hasTranslationObject) {
     settings.translation = {
       ...DEFAULT_SETTINGS.translation,
@@ -2378,15 +2403,23 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
     );
     new import_obsidian3.Setting(containerEl).setName("\u5355\u5757\u6700\u5927\u5B57\u7B26\u6570").addText(
       (text) => text.setValue(String(this.plugin.settings.ragChunkSize)).onChange(async (value) => {
-        const parsed = parseInt(value, 10);
-        this.plugin.settings.ragChunkSize = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.ragChunkSize;
+        const normalized = normalizeRagChunkSettings(
+          Number(value.trim()),
+          this.plugin.settings.ragChunkOverlap
+        );
+        this.plugin.settings.ragChunkSize = normalized.ragChunkSize;
+        this.plugin.settings.ragChunkOverlap = normalized.ragChunkOverlap;
         await this.plugin.saveSettings();
       })
     );
     new import_obsidian3.Setting(containerEl).setName("\u5207\u5757\u91CD\u53E0\u5B57\u7B26\u6570").addText(
       (text) => text.setValue(String(this.plugin.settings.ragChunkOverlap)).onChange(async (value) => {
-        const parsed = parseInt(value, 10);
-        this.plugin.settings.ragChunkOverlap = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.ragChunkOverlap;
+        const normalized = normalizeRagChunkSettings(
+          this.plugin.settings.ragChunkSize,
+          Number(value.trim())
+        );
+        this.plugin.settings.ragChunkSize = normalized.ragChunkSize;
+        this.plugin.settings.ragChunkOverlap = normalized.ragChunkOverlap;
         await this.plugin.saveSettings();
       })
     );
