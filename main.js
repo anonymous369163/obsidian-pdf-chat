@@ -1473,7 +1473,6 @@ function buildMessageRegion(parent, restoringHistory) {
     cls: "pdf-chat-history",
     attr: {
       role: "log",
-      "aria-label": "PDF Chat \u5BF9\u8BDD\u8BB0\u5F55",
       "aria-live": restoringHistory ? "off" : "polite",
       "aria-relevant": "additions",
       "aria-atomic": "false"
@@ -1483,7 +1482,7 @@ function buildMessageRegion(parent, restoringHistory) {
 function buildEmptyState(history) {
   return history.createDiv({
     cls: "pdf-chat-empty-state",
-    text: "\u9009\u533A\u5DF2\u5C31\u7EEA\u3002\u4F60\u53EF\u4EE5\u76F4\u63A5\u63D0\u95EE\uFF0C\u6216\u70B9\u51FB\u201C\u7FFB\u8BD1\u9009\u533A\u201D\u3002",
+    text: "\u9009\u533A\u5DF2\u5C31\u7EEA\u3002\u4F60\u53EF\u4EE5\u76F4\u63A5\u63D0\u95EE\uFF0C\u4E5F\u53EF\u4EE5\u8F93\u5165 @ \u5F15\u7528\u5176\u4ED6 PDF \u4E00\u8D77\u6BD4\u8F83\u3002",
     attr: { role: "status" }
   });
 }
@@ -1516,12 +1515,6 @@ function buildComposer(parent) {
     cls: "pdf-chat-hint",
     text: "Enter \u53D1\u9001 \xB7 Shift+Enter \u6362\u884C"
   });
-  const translateButton = actions.createEl("button", {
-    text: "\u7FFB\u8BD1\u9009\u533A",
-    cls: "pdf-chat-translate-btn",
-    attr: { type: "button" }
-  });
-  setElementLabel(translateButton, "\u7FFB\u8BD1\u5F53\u524D\u9009\u533A");
   const sendButton = actions.createEl("button", {
     text: "\u2191",
     cls: "mod-cta pdf-chat-send-btn",
@@ -1529,7 +1522,7 @@ function buildComposer(parent) {
   });
   setElementLabel(sendButton, "\u53D1\u9001\u95EE\u9898");
   input.addEventListener("input", () => resizeComposerTextarea(input));
-  return { root, card, status, input, actions, translateButton, sendButton, hint };
+  return { root, card, status, input, actions, sendButton, hint };
 }
 function buildFollowupSuggestions(parent, suggestions) {
   var _a;
@@ -1669,11 +1662,6 @@ var PDFChatModal = class extends import_obsidian3.Modal {
     __publicField(this, "ragStatusEl");
     __publicField(this, "ragRefreshBtn");
     __publicField(this, "referencedPdfFiles", []);
-    __publicField(this, "pdfReferenceChipsEl");
-    __publicField(this, "pdfSearchInputEl");
-    __publicField(this, "pdfSearchResultsEl");
-    __publicField(this, "ordinaryCompareBtn");
-    __publicField(this, "codexDeepAnalyzeBtn");
     __publicField(this, "multiPaperStatusEl");
     __publicField(this, "historyEl");
     __publicField(this, "emptyStateEl");
@@ -1683,7 +1671,6 @@ var PDFChatModal = class extends import_obsidian3.Modal {
     __publicField(this, "composerMentionSuggestionsEl");
     __publicField(this, "composerMentionRange");
     __publicField(this, "inputEl");
-    __publicField(this, "translateBtn");
     __publicField(this, "sendBtn");
     this.plugin = plugin;
     this.services = services || createPDFChatModalServices(plugin);
@@ -1771,7 +1758,6 @@ ${this.contextText}`;
     this.ragStatusEl = contextPanel.ragStatus;
     if (this.pdfFile) this.buildPaperContextControls(contextPanel.tools);
     this.renderResearchActions(contextPanel.researchActions);
-    this.buildMultiPaperActionBar(contentEl);
     const restoringHistory = this.transcript.length > 0;
     this.historyEl = buildMessageRegion(contentEl, restoringHistory);
     if (!restoringHistory) this.showEmptyState();
@@ -1779,7 +1765,6 @@ ${this.contextText}`;
     this.composerCardEl = composer.card;
     this.composerStatusEl = composer.status;
     this.inputEl = composer.input;
-    this.translateBtn = composer.translateButton;
     this.sendBtn = composer.sendButton;
     this.updateComposerContextStatus();
     const submit = () => this.handleSubmit();
@@ -1789,9 +1774,6 @@ ${this.contextText}`;
       } else {
         submit();
       }
-    });
-    this.translateBtn.addEventListener("click", () => {
-      if (!this.isSending) this.handleTranslate();
     });
     this.inputEl.addEventListener("keydown", (evt) => {
       if (evt.key === "Enter" && !evt.shiftKey) {
@@ -1901,69 +1883,6 @@ ${this.contextText}`;
         this.updateComposerContextStatus();
       });
     }
-    this.buildMultiPaperControls(container);
-  }
-  buildMultiPaperControls(container) {
-    const section = container.createDiv({ cls: "pdf-chat-multi-paper" });
-    section.createEl("h4", { text: "\u6DFB\u52A0\u5BF9\u6BD4\u8BBA\u6587", cls: "pdf-chat-context-heading" });
-    section.createDiv({
-      text: "\u8FD9\u91CC\u63D0\u4F9B\u5C55\u5F00\u540E\u7684\u8BE6\u7EC6\u641C\u7D22\u5165\u53E3\uFF1B\u66F4\u5FEB\u7684\u65B9\u5F0F\u662F\u5728\u5E95\u90E8\u8F93\u5165\u6846\u76F4\u63A5\u8F93\u5165 @\u3002",
-      cls: "pdf-chat-context-help"
-    });
-    const searchRow = section.createDiv({ cls: "pdf-chat-pdf-search-row" });
-    this.pdfSearchInputEl = searchRow.createEl("input", {
-      cls: "pdf-chat-pdf-search-input",
-      attr: {
-        type: "text",
-        placeholder: "@ \u641C\u7D22 PDF \u6587\u4EF6\u540D\u6216\u8DEF\u5F84",
-        "aria-label": "@ \u641C\u7D22 vault \u5185 PDF"
-      }
-    });
-    this.pdfSearchResultsEl = section.createDiv({ cls: "pdf-chat-pdf-search-results" });
-    this.pdfSearchInputEl.addEventListener("input", () => {
-      var _a;
-      this.renderPdfSearchResults(((_a = this.pdfSearchInputEl) == null ? void 0 : _a.value) || "");
-    });
-    this.pdfSearchInputEl.addEventListener("focus", () => {
-      var _a;
-      this.renderPdfSearchResults(((_a = this.pdfSearchInputEl) == null ? void 0 : _a.value) || "");
-    });
-  }
-  buildMultiPaperActionBar(parent) {
-    const bar = parent.createEl("section", {
-      cls: "pdf-chat-multi-paper-bar",
-      attr: { "aria-label": "\u591A\u8BBA\u6587\u5BF9\u6BD4\u64CD\u4F5C" }
-    });
-    const info = bar.createDiv({ cls: "pdf-chat-multi-paper-bar-info" });
-    info.createEl("span", { text: "\u591A\u8BBA\u6587", cls: "pdf-chat-multi-paper-bar-title" });
-    this.pdfReferenceChipsEl = info.createDiv({
-      cls: "pdf-chat-pdf-reference-chips",
-      attr: { "aria-label": "\u5DF2\u5F15\u7528 PDF" }
-    });
-    const actions = bar.createDiv({ cls: "pdf-chat-multi-paper-actions" });
-    this.ordinaryCompareBtn = actions.createEl("button", {
-      text: "\u666E\u901A\u5BF9\u6BD4",
-      cls: "pdf-chat-research-action-btn pdf-chat-ordinary-compare-btn",
-      attr: { type: "button" }
-    });
-    labelControl(this.ordinaryCompareBtn, "\u4F7F\u7528\u5F53\u524D\u6A21\u578B\u5FEB\u901F\u5BF9\u6BD4\u5DF2\u5F15\u7528\u8BBA\u6587");
-    this.codexDeepAnalyzeBtn = actions.createEl("button", {
-      text: "Codex \u6DF1\u5EA6\u5206\u6790",
-      cls: "pdf-chat-research-action-btn pdf-chat-codex-analysis-btn",
-      attr: { type: "button" }
-    });
-    labelControl(this.codexDeepAnalyzeBtn, "\u4F7F\u7528 Codex CLI \u6DF1\u5EA6\u5206\u6790\u5F53\u524D\u8BBA\u6587\u548C\u5DF2\u5F15\u7528\u8BBA\u6587");
-    this.multiPaperStatusEl = bar.createDiv({
-      text: this.plugin.settings.codexDeepAnalysis.enabled ? "Codex CLI \u5DF2\u542F\u7528" : "Codex \u9ED8\u8BA4\u5173\u95ED",
-      cls: "pdf-chat-multi-paper-status"
-    });
-    this.ordinaryCompareBtn.addEventListener("click", () => {
-      void this.runOrdinaryMultiPaperCompare();
-    });
-    this.codexDeepAnalyzeBtn.addEventListener("click", () => {
-      void this.runCodexDeepAnalysis();
-    });
-    this.updateReferencedPdfChips();
   }
   isPdfLikeFile(file) {
     const candidate = file;
@@ -1991,70 +1910,7 @@ ${this.contextText}`;
       return;
     }
     this.referencedPdfFiles.push(file);
-    this.updateReferencedPdfChips();
-    if (this.pdfSearchInputEl) this.pdfSearchInputEl.value = "";
-    this.renderPdfSearchResults("");
-  }
-  removeReferencedPdf(path) {
-    var _a;
-    this.referencedPdfFiles = this.referencedPdfFiles.filter((file) => file.path !== path);
-    this.updateReferencedPdfChips();
-    this.renderPdfSearchResults(((_a = this.pdfSearchInputEl) == null ? void 0 : _a.value) || "");
-  }
-  updateReferencedPdfChips() {
-    if (!this.pdfReferenceChipsEl) return;
-    this.pdfReferenceChipsEl.empty();
-    if (!this.referencedPdfFiles.length) {
-      this.pdfReferenceChipsEl.createDiv({
-        text: "\u5C1A\u672A\u5F15\u7528\u5176\u4ED6 PDF",
-        cls: "pdf-chat-reference-empty"
-      });
-      return;
-    }
-    for (const file of this.referencedPdfFiles) {
-      const chip = this.pdfReferenceChipsEl.createDiv({ cls: "pdf-chat-reference-chip" });
-      chip.createEl("span", { text: file.name || file.path });
-      const remove = chip.createEl("button", {
-        text: "\xD7",
-        cls: "pdf-chat-reference-remove",
-        attr: { type: "button" }
-      });
-      labelControl(remove, `\u79FB\u9664 ${file.name || file.path}`);
-      remove.addEventListener("click", () => this.removeReferencedPdf(file.path));
-    }
-  }
-  renderPdfSearchResults(query) {
-    if (!this.pdfSearchResultsEl) return;
-    this.pdfSearchResultsEl.empty();
-    const trimmed = (query || "").replace(/^@/, "").trim();
-    if (!trimmed) return;
-    const excludePaths = new Set(this.referencedPdfFiles.map((file) => file.path));
-    if (this.pdfFile) excludePaths.add(this.pdfFile.path);
-    const cachedPaths = /* @__PURE__ */ new Set([
-      ...Object.keys(this.plugin.settings.docSummaries || {}),
-      ...Object.keys(this.plugin.settings.docChunks || {})
-    ]);
-    const results = searchPdfFiles(this.app, trimmed, { limit: 6, excludePaths, cachedPaths });
-    if (!results.length) {
-      this.pdfSearchResultsEl.createDiv({ text: "\u672A\u627E\u5230\u5339\u914D\u7684 PDF", cls: "pdf-chat-search-empty" });
-      return;
-    }
-    for (const candidate of results) {
-      const button = this.pdfSearchResultsEl.createEl("button", {
-        cls: "pdf-chat-pdf-search-result",
-        attr: { type: "button" }
-      });
-      button.createEl("span", { text: candidate.name, cls: "pdf-chat-pdf-search-name" });
-      button.createEl("span", {
-        text: `${candidate.path}${candidate.cached ? " \xB7 \u5DF2\u6709\u7F13\u5B58" : ""}`,
-        cls: "pdf-chat-pdf-search-path"
-      });
-      labelControl(button, `\u5F15\u7528 ${candidate.name}`);
-      button.addEventListener("click", () => {
-        const file = this.findPdfFileByPath(candidate.path);
-        if (file) this.addReferencedPdf(file);
-      });
-    }
+    this.updateComposerContextStatus();
   }
   getComposerMentionRange() {
     if (!this.inputEl) return null;
@@ -2180,18 +2036,19 @@ ${this.contextText}`;
   }
   updateComposerContextStatus() {
     if (!this.composerStatusEl) return;
+    const referenceSuffix = this.referencedPdfFiles.length ? ` \xB7 \u5DF2\u5F15\u7528 ${this.referencedPdfFiles.length} \u7BC7\u8BBA\u6587` : "";
     if (!this.pdfFile) {
-      this.composerStatusEl.setText("\u9009\u533A\u4E0A\u4E0B\u6587\u5DF2\u542F\u7528");
+      this.composerStatusEl.setText("\u9009\u533A\u4E0A\u4E0B\u6587\u5DF2\u542F\u7528" + referenceSuffix);
       return;
     }
     if (this.useRag && this.useFullTextMode) {
-      this.composerStatusEl.setText("\u5168\u6587\u4E0A\u4E0B\u6587\u5DF2\u542F\u7528");
+      this.composerStatusEl.setText("\u5168\u6587\u4E0A\u4E0B\u6587\u5DF2\u542F\u7528" + referenceSuffix);
     } else if (this.useRag) {
-      this.composerStatusEl.setText("RAG \u68C0\u7D22\u5DF2\u542F\u7528");
+      this.composerStatusEl.setText("RAG \u68C0\u7D22\u5DF2\u542F\u7528" + referenceSuffix);
     } else if (this.useDocSummary) {
-      this.composerStatusEl.setText("\u6458\u8981\u80CC\u666F\u5DF2\u542F\u7528");
+      this.composerStatusEl.setText("\u6458\u8981\u80CC\u666F\u5DF2\u542F\u7528" + referenceSuffix);
     } else {
-      this.composerStatusEl.setText("\u5F53\u524D\u9009\u533A\u4E0A\u4E0B\u6587\u5DF2\u542F\u7528");
+      this.composerStatusEl.setText("\u5F53\u524D\u9009\u533A\u4E0A\u4E0B\u6587\u5DF2\u542F\u7528" + referenceSuffix);
     }
   }
   followupSuggestions() {
@@ -2491,6 +2348,21 @@ ${this.contextText}`;
 
 \u5F15\u7528\u8BBA\u6587\uFF1A${refs}` : `\u591A\u8BBA\u6587\u5206\u6790\uFF1A${question}`;
   }
+  shouldOfferCodexDeepAnalysis(question) {
+    if (!this.pdfFile || !this.referencedPdfFiles.length) return false;
+    return /(深度分析|深度阅读|深入分析|深入阅读|Codex|codex|CLI|cli)/.test(question);
+  }
+  confirmCodexDeepAnalysis() {
+    var _a;
+    const message = "\u68C0\u6D4B\u5230\u4F60\u60F3\u505A\u591A\u8BBA\u6587\u6DF1\u5EA6\u5206\u6790\u3002\u662F\u5426\u4F7F\u7528 Codex CLI \u8BFB\u53D6\u5F53\u524D\u8BBA\u6587\u548C @ \u5F15\u7528\u8BBA\u6587\uFF1F\n\n\u9009\u62E9\u201C\u53D6\u6D88\u201D\u4F1A\u7EE7\u7EED\u4F7F\u7528\u5F53\u524D\u6A21\u578B\u505A\u666E\u901A\u591A\u8BBA\u6587\u56DE\u7B54\u3002";
+    const candidateWindow = ((_a = this.contentEl) == null ? void 0 : _a.ownerDocument) ? this.contentEl.ownerDocument.defaultView : null;
+    const confirmFn = candidateWindow && typeof candidateWindow.confirm === "function" && candidateWindow.confirm.bind(candidateWindow) || typeof window !== "undefined" && typeof window.confirm === "function" && window.confirm.bind(window) || typeof confirm === "function" && confirm;
+    if (!confirmFn) {
+      new import_obsidian3.Notice("\u68C0\u6D4B\u5230\u6DF1\u5EA6\u5206\u6790\u610F\u56FE\uFF0C\u4F46\u5F53\u524D\u73AF\u5883\u65E0\u6CD5\u5F39\u51FA\u786E\u8BA4\u6846\uFF0C\u5DF2\u6539\u7528\u666E\u901A\u591A\u8BBA\u6587\u56DE\u7B54\u3002");
+      return false;
+    }
+    return confirmFn(message);
+  }
   async buildApiMultiPaperContext(question, progress) {
     const papers = this.selectedPaperFiles();
     const parts = [];
@@ -2760,11 +2632,6 @@ ${chunk.text}`;
     this.sendBtn.setText(sending ? "\u505C\u6B62" : "\u2191");
     this.sendBtn.toggleClass("is-stop", sending);
     labelControl(this.sendBtn, sending ? "\u505C\u6B62\u751F\u6210" : "\u53D1\u9001\u95EE\u9898");
-    if (this.translateBtn) {
-      this.translateBtn.disabled = sending;
-      this.translateBtn.setAttr("aria-disabled", String(sending));
-      labelControl(this.translateBtn, sending ? "\u751F\u6210\u671F\u95F4\u65E0\u6CD5\u7FFB\u8BD1\u9009\u533A" : "\u7FFB\u8BD1\u5F53\u524D\u9009\u533A");
-    }
   }
   handleTranslate() {
     void this.services.actions.execute("translate", {
@@ -2904,6 +2771,10 @@ ${chunk.text}`;
     }
     if (this.activeComposerKind === "translate" && this.translateTranscript.length) {
       await this.handleTranslateFollowup(question, usingOverride);
+      return;
+    }
+    if (!usingOverride && !opts.outgoingContentOverride && !opts.skipContextAugmentation && this.shouldOfferCodexDeepAnalysis(question) && this.confirmCodexDeepAnalysis()) {
+      await this.runCodexDeepAnalysis();
       return;
     }
     this.activeComposerKind = "chat";

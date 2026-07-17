@@ -256,7 +256,6 @@ export function buildMessageRegion(parent: HTMLElement, restoringHistory: boolea
     cls: "pdf-chat-history",
     attr: {
       role: "log",
-      "aria-label": "PDF Chat 对话记录",
       "aria-live": restoringHistory ? "off" : "polite",
       "aria-relevant": "additions",
       "aria-atomic": "false",
@@ -267,7 +266,7 @@ export function buildMessageRegion(parent: HTMLElement, restoringHistory: boolea
 export function buildEmptyState(history: HTMLElement): HTMLDivElement {
   return history.createDiv({
     cls: "pdf-chat-empty-state",
-    text: "选区已就绪。你可以直接提问，或点击“翻译选区”。",
+    text: "选区已就绪。你可以直接提问，也可以输入 @ 引用其他 PDF 一起比较。",
     attr: { role: "status" },
   });
 }
@@ -278,7 +277,6 @@ export interface ComposerElements {
   status: HTMLElement;
   input: HTMLTextAreaElement;
   actions: HTMLElement;
-  translateButton: HTMLButtonElement;
   sendButton: HTMLButtonElement;
   hint: HTMLElement;
 }
@@ -313,12 +311,6 @@ export function buildComposer(parent: HTMLElement): ComposerElements {
     cls: "pdf-chat-hint",
     text: "Enter 发送 · Shift+Enter 换行",
   });
-  const translateButton = actions.createEl("button", {
-    text: "翻译选区",
-    cls: "pdf-chat-translate-btn",
-    attr: { type: "button" },
-  });
-  setElementLabel(translateButton, "翻译当前选区");
   const sendButton = actions.createEl("button", {
     text: "↑",
     cls: "mod-cta pdf-chat-send-btn",
@@ -326,7 +318,7 @@ export function buildComposer(parent: HTMLElement): ComposerElements {
   });
   setElementLabel(sendButton, "发送问题");
   input.addEventListener("input", () => resizeComposerTextarea(input));
-  return { root, card, status, input, actions, translateButton, sendButton, hint };
+  return { root, card, status, input, actions, sendButton, hint };
 }
 
 export function buildFollowupSuggestions(parent: HTMLElement, suggestions: string[]): HTMLElement {

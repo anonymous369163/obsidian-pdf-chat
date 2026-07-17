@@ -189,11 +189,6 @@ export class PDFChatModal extends Modal {
   ragStatusEl?: HTMLSpanElement;
   ragRefreshBtn?: HTMLButtonElement;
   referencedPdfFiles: TFile[] = [];
-  pdfReferenceChipsEl?: HTMLElement;
-  pdfSearchInputEl?: HTMLInputElement;
-  pdfSearchResultsEl?: HTMLElement;
-  ordinaryCompareBtn?: HTMLButtonElement;
-  codexDeepAnalyzeBtn?: HTMLButtonElement;
   multiPaperStatusEl?: HTMLElement;
   historyEl!: HTMLElement;
   emptyStateEl?: HTMLDivElement;
@@ -203,7 +198,6 @@ export class PDFChatModal extends Modal {
   composerMentionSuggestionsEl?: HTMLElement;
   composerMentionRange?: ComposerMentionRange;
   inputEl!: HTMLTextAreaElement;
-  translateBtn!: HTMLButtonElement;
   sendBtn!: HTMLButtonElement;
 
   constructor(
@@ -325,7 +319,6 @@ export class PDFChatModal extends Modal {
     this.ragStatusEl = contextPanel.ragStatus;
     if (this.pdfFile) this.buildPaperContextControls(contextPanel.tools);
     this.renderResearchActions(contextPanel.researchActions);
-    this.buildMultiPaperActionBar(contentEl);
 
     const restoringHistory = this.transcript.length > 0;
     this.historyEl = buildMessageRegion(contentEl, restoringHistory);
@@ -335,7 +328,6 @@ export class PDFChatModal extends Modal {
     this.composerCardEl = composer.card;
     this.composerStatusEl = composer.status;
     this.inputEl = composer.input;
-    this.translateBtn = composer.translateButton;
     this.sendBtn = composer.sendButton;
     this.updateComposerContextStatus();
     const submit = () => this.handleSubmit();
@@ -345,9 +337,6 @@ export class PDFChatModal extends Modal {
       } else {
         submit();
       }
-    });
-    this.translateBtn.addEventListener("click", () => {
-      if (!this.isSending) this.handleTranslate();
     });
     this.inputEl.addEventListener("keydown", (evt) => {
       if (evt.key === "Enter" && !evt.shiftKey) {
@@ -464,74 +453,6 @@ export class PDFChatModal extends Modal {
         this.updateComposerContextStatus();
       });
     }
-
-    this.buildMultiPaperControls(container);
-  }
-
-  private buildMultiPaperControls(container: HTMLElement): void {
-    const section = container.createDiv({ cls: "pdf-chat-multi-paper" });
-    section.createEl("h4", { text: "添加对比论文", cls: "pdf-chat-context-heading" });
-    section.createDiv({
-      text: "这里提供展开后的详细搜索入口；更快的方式是在底部输入框直接输入 @。",
-      cls: "pdf-chat-context-help",
-    });
-
-    const searchRow = section.createDiv({ cls: "pdf-chat-pdf-search-row" });
-    this.pdfSearchInputEl = searchRow.createEl("input", {
-      cls: "pdf-chat-pdf-search-input",
-      attr: {
-        type: "text",
-        placeholder: "@ 搜索 PDF 文件名或路径",
-        "aria-label": "@ 搜索 vault 内 PDF",
-      },
-    });
-    this.pdfSearchResultsEl = section.createDiv({ cls: "pdf-chat-pdf-search-results" });
-
-    this.pdfSearchInputEl.addEventListener("input", () => {
-      this.renderPdfSearchResults(this.pdfSearchInputEl?.value || "");
-    });
-    this.pdfSearchInputEl.addEventListener("focus", () => {
-      this.renderPdfSearchResults(this.pdfSearchInputEl?.value || "");
-    });
-  }
-
-  private buildMultiPaperActionBar(parent: HTMLElement): void {
-    const bar = parent.createEl("section", {
-      cls: "pdf-chat-multi-paper-bar",
-      attr: { "aria-label": "多论文对比操作" },
-    });
-    const info = bar.createDiv({ cls: "pdf-chat-multi-paper-bar-info" });
-    info.createEl("span", { text: "多论文", cls: "pdf-chat-multi-paper-bar-title" });
-    this.pdfReferenceChipsEl = info.createDiv({
-      cls: "pdf-chat-pdf-reference-chips",
-      attr: { "aria-label": "已引用 PDF" },
-    });
-    const actions = bar.createDiv({ cls: "pdf-chat-multi-paper-actions" });
-    this.ordinaryCompareBtn = actions.createEl("button", {
-      text: "普通对比",
-      cls: "pdf-chat-research-action-btn pdf-chat-ordinary-compare-btn",
-      attr: { type: "button" },
-    });
-    labelControl(this.ordinaryCompareBtn, "使用当前模型快速对比已引用论文");
-    this.codexDeepAnalyzeBtn = actions.createEl("button", {
-      text: "Codex 深度分析",
-      cls: "pdf-chat-research-action-btn pdf-chat-codex-analysis-btn",
-      attr: { type: "button" },
-    });
-    labelControl(this.codexDeepAnalyzeBtn, "使用 Codex CLI 深度分析当前论文和已引用论文");
-    this.multiPaperStatusEl = bar.createDiv({
-      text: this.plugin.settings.codexDeepAnalysis.enabled
-        ? "Codex CLI 已启用"
-        : "Codex 默认关闭",
-      cls: "pdf-chat-multi-paper-status",
-    });
-    this.ordinaryCompareBtn.addEventListener("click", () => {
-      void this.runOrdinaryMultiPaperCompare();
-    });
-    this.codexDeepAnalyzeBtn.addEventListener("click", () => {
-      void this.runCodexDeepAnalysis();
-    });
-    this.updateReferencedPdfChips();
   }
 
   private isPdfLikeFile(file: unknown): file is TFile {
@@ -561,72 +482,7 @@ export class PDFChatModal extends Modal {
       return;
     }
     this.referencedPdfFiles.push(file);
-    this.updateReferencedPdfChips();
-    if (this.pdfSearchInputEl) this.pdfSearchInputEl.value = "";
-    this.renderPdfSearchResults("");
-  }
-
-  private removeReferencedPdf(path: string): void {
-    this.referencedPdfFiles = this.referencedPdfFiles.filter((file) => file.path !== path);
-    this.updateReferencedPdfChips();
-    this.renderPdfSearchResults(this.pdfSearchInputEl?.value || "");
-  }
-
-  private updateReferencedPdfChips(): void {
-    if (!this.pdfReferenceChipsEl) return;
-    this.pdfReferenceChipsEl.empty();
-    if (!this.referencedPdfFiles.length) {
-      this.pdfReferenceChipsEl.createDiv({
-        text: "尚未引用其他 PDF",
-        cls: "pdf-chat-reference-empty",
-      });
-      return;
-    }
-    for (const file of this.referencedPdfFiles) {
-      const chip = this.pdfReferenceChipsEl.createDiv({ cls: "pdf-chat-reference-chip" });
-      chip.createEl("span", { text: file.name || file.path });
-      const remove = chip.createEl("button", {
-        text: "×",
-        cls: "pdf-chat-reference-remove",
-        attr: { type: "button" },
-      });
-      labelControl(remove, `移除 ${file.name || file.path}`);
-      remove.addEventListener("click", () => this.removeReferencedPdf(file.path));
-    }
-  }
-
-  private renderPdfSearchResults(query: string): void {
-    if (!this.pdfSearchResultsEl) return;
-    this.pdfSearchResultsEl.empty();
-    const trimmed = (query || "").replace(/^@/, "").trim();
-    if (!trimmed) return;
-    const excludePaths = new Set(this.referencedPdfFiles.map((file) => file.path));
-    if (this.pdfFile) excludePaths.add(this.pdfFile.path);
-    const cachedPaths = new Set([
-      ...Object.keys(this.plugin.settings.docSummaries || {}),
-      ...Object.keys(this.plugin.settings.docChunks || {}),
-    ]);
-    const results = searchPdfFiles(this.app, trimmed, { limit: 6, excludePaths, cachedPaths });
-    if (!results.length) {
-      this.pdfSearchResultsEl.createDiv({ text: "未找到匹配的 PDF", cls: "pdf-chat-search-empty" });
-      return;
-    }
-    for (const candidate of results) {
-      const button = this.pdfSearchResultsEl.createEl("button", {
-        cls: "pdf-chat-pdf-search-result",
-        attr: { type: "button" },
-      });
-      button.createEl("span", { text: candidate.name, cls: "pdf-chat-pdf-search-name" });
-      button.createEl("span", {
-        text: `${candidate.path}${candidate.cached ? " · 已有缓存" : ""}`,
-        cls: "pdf-chat-pdf-search-path",
-      });
-      labelControl(button, `引用 ${candidate.name}`);
-      button.addEventListener("click", () => {
-        const file = this.findPdfFileByPath(candidate.path);
-        if (file) this.addReferencedPdf(file);
-      });
-    }
+    this.updateComposerContextStatus();
   }
 
   private getComposerMentionRange(): ComposerMentionRange | null {
@@ -768,18 +624,21 @@ export class PDFChatModal extends Modal {
 
   updateComposerContextStatus(): void {
     if (!this.composerStatusEl) return;
+    const referenceSuffix = this.referencedPdfFiles.length
+      ? ` · 已引用 ${this.referencedPdfFiles.length} 篇论文`
+      : "";
     if (!this.pdfFile) {
-      this.composerStatusEl.setText("选区上下文已启用");
+      this.composerStatusEl.setText("选区上下文已启用" + referenceSuffix);
       return;
     }
     if (this.useRag && this.useFullTextMode) {
-      this.composerStatusEl.setText("全文上下文已启用");
+      this.composerStatusEl.setText("全文上下文已启用" + referenceSuffix);
     } else if (this.useRag) {
-      this.composerStatusEl.setText("RAG 检索已启用");
+      this.composerStatusEl.setText("RAG 检索已启用" + referenceSuffix);
     } else if (this.useDocSummary) {
-      this.composerStatusEl.setText("摘要背景已启用");
+      this.composerStatusEl.setText("摘要背景已启用" + referenceSuffix);
     } else {
-      this.composerStatusEl.setText("当前选区上下文已启用");
+      this.composerStatusEl.setText("当前选区上下文已启用" + referenceSuffix);
     }
   }
 
@@ -1107,6 +966,28 @@ export class PDFChatModal extends Modal {
     return refs ? `多论文分析：${question}\n\n引用论文：${refs}` : `多论文分析：${question}`;
   }
 
+  private shouldOfferCodexDeepAnalysis(question: string): boolean {
+    if (!this.pdfFile || !this.referencedPdfFiles.length) return false;
+    return /(深度分析|深度阅读|深入分析|深入阅读|Codex|codex|CLI|cli)/.test(question);
+  }
+
+  private confirmCodexDeepAnalysis(): boolean {
+    const message =
+      "检测到你想做多论文深度分析。是否使用 Codex CLI 读取当前论文和 @ 引用论文？\n\n选择“取消”会继续使用当前模型做普通多论文回答。";
+    const candidateWindow = this.contentEl?.ownerDocument
+      ? (this.contentEl.ownerDocument as Document & { defaultView?: Window | null }).defaultView
+      : null;
+    const confirmFn =
+      (candidateWindow && typeof candidateWindow.confirm === "function" && candidateWindow.confirm.bind(candidateWindow)) ||
+      (typeof window !== "undefined" && typeof window.confirm === "function" && window.confirm.bind(window)) ||
+      (typeof confirm === "function" && confirm);
+    if (!confirmFn) {
+      new Notice("检测到深度分析意图，但当前环境无法弹出确认框，已改用普通多论文回答。");
+      return false;
+    }
+    return confirmFn(message);
+  }
+
   private async buildApiMultiPaperContext(question: string, progress?: (message: string) => void): Promise<string> {
     const papers = this.selectedPaperFiles();
     const parts: string[] = [];
@@ -1387,11 +1268,6 @@ export class PDFChatModal extends Modal {
     this.sendBtn.setText(sending ? "停止" : "↑");
     this.sendBtn.toggleClass("is-stop", sending);
     labelControl(this.sendBtn, sending ? "停止生成" : "发送问题");
-    if (this.translateBtn) {
-      this.translateBtn.disabled = sending;
-      this.translateBtn.setAttr("aria-disabled", String(sending));
-      labelControl(this.translateBtn, sending ? "生成期间无法翻译选区" : "翻译当前选区");
-    }
   }
 
   handleTranslate(): void {
@@ -1543,6 +1419,17 @@ export class PDFChatModal extends Modal {
 
     if (this.activeComposerKind === "translate" && this.translateTranscript.length) {
       await this.handleTranslateFollowup(question, usingOverride);
+      return;
+    }
+
+    if (
+      !usingOverride &&
+      !opts.outgoingContentOverride &&
+      !opts.skipContextAugmentation &&
+      this.shouldOfferCodexDeepAnalysis(question) &&
+      this.confirmCodexDeepAnalysis()
+    ) {
+      await this.runCodexDeepAnalysis();
       return;
     }
 

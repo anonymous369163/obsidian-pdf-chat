@@ -343,7 +343,10 @@ function loadBundle(options = {}) {
       throw new Error(`Unexpected require: ${request}`);
     },
     setTimeout,
-    window: {},
+    confirm: options.confirm || (() => false),
+    window: {
+      confirm: options.confirm || (() => false),
+    },
   };
   sandbox.exports = sandbox.module.exports;
   vm.runInNewContext(source, sandbox, { filename: path.join(projectRoot, "main.js") });
@@ -359,8 +362,9 @@ function createModalHarness({
   autoTranslateOnOpen = false,
   startFresh = false,
   app = {},
+  confirm,
 } = {}) {
-  const { bundle } = loadBundle({ markdownRenderer });
+  const { bundle } = loadBundle({ markdownRenderer, confirm });
   const settings = JSON.parse(JSON.stringify(bundle.DEFAULT_SETTINGS));
   settings.autoDocSummary = false;
   settings.autoRag = false;
@@ -451,7 +455,6 @@ test("modal builds the accessible research-workbench regions and interactions", 
   assert.deepEqual(regionClasses, [
     "pdf-chat-workbench-header pdf-chat-drag-handle",
     "pdf-chat-context-panel",
-    "pdf-chat-multi-paper-bar",
     "pdf-chat-history",
     "pdf-chat-composer",
   ]);
@@ -508,6 +511,7 @@ test("modal builds the accessible research-workbench regions and interactions", 
   assert.equal(contextBody.hasClass("is-collapsed"), true);
 
   assert.equal(modal.historyEl.getAttribute("role"), "log");
+  assert.equal(modal.historyEl.getAttribute("aria-label"), null);
   assert.equal(modal.historyEl.getAttribute("aria-live"), "polite");
   assert.equal(byClass(modal.historyEl, "pdf-chat-empty-state").length, 1);
   assert.match(byClass(modal.historyEl, "pdf-chat-empty-state")[0].textContent, /选区已就绪/);
@@ -524,7 +528,13 @@ test("modal builds the accessible research-workbench regions and interactions", 
   assert.equal(byClass(composer, "pdf-chat-composer-footer").length, 1);
   assert.match(byClass(composer, "pdf-chat-composer-status")[0].textContent, /选区上下文|当前选区/);
   assert.equal(byClass(composer, "pdf-chat-hint").length, 1);
-  assert.equal(modal.translateBtn.textContent, "翻译选区");
+  assert.equal(byClass(composer, "pdf-chat-translate-btn").length, 0);
+  assert.equal(byClass(modal.contentEl, "pdf-chat-multi-paper").length, 0);
+  assert.equal(byClass(modal.contentEl, "pdf-chat-multi-paper-bar").length, 0);
+  assert.equal(byClass(modal.contentEl, "pdf-chat-ordinary-compare-btn").length, 0);
+  assert.equal(byClass(modal.contentEl, "pdf-chat-codex-analysis-btn").length, 0);
+  assert.equal(byClass(modal.contentEl, "pdf-chat-pdf-search-input").length, 0);
+  assert.doesNotMatch(descendants(modal.contentEl).map((el) => el.textContent).join(" "), /翻译选区|添加对比论文|普通对比|Codex 深度分析/);
   assert.match(modal.inputEl.getAttribute("aria-label"), /提问/);
   assert.match(modal.sendBtn.getAttribute("aria-label"), /发送/);
   assert.equal(modal.sendBtn.textContent, "↑");
@@ -540,11 +550,9 @@ test("modal builds the accessible research-workbench regions and interactions", 
   assert.equal(modal.inputEl.style.height, "120px");
 
   modal.setSendingState(true);
-  assert.equal(modal.translateBtn.disabled, true);
   assert.equal(modal.sendBtn.textContent, "停止");
   assert.match(modal.sendBtn.getAttribute("aria-label"), /停止/);
   modal.setSendingState(false);
-  assert.equal(modal.translateBtn.disabled, false);
   assert.equal(modal.sendBtn.textContent, "↑");
 
   const bubble = modal.addBubble("user", "Question");
@@ -561,7 +569,7 @@ test("modal builds the accessible research-workbench regions and interactions", 
   assert.deepEqual(modal.transcript, []);
 });
 
-test("multi-paper panel searches PDFs, renders reference chips, and caps external references", () => {
+test("multi-paper references are added only from composer @ mentions and capped at three", () => {
   const files = [
     { name: "demo.pdf", path: "papers/demo.pdf", extension: "pdf", stat: { mtime: 1 } },
     { name: "Alpha Paper.pdf", path: "papers/Alpha Paper.pdf", extension: "pdf", stat: { mtime: 2 } },
@@ -577,45 +585,28 @@ test("multi-paper panel searches PDFs, renders reference chips, and caps externa
     },
   };
   const { modal } = createModalHarness({ app });
-  const searchInput = byClass(modal.contentEl, "pdf-chat-pdf-search-input")[0];
-  const results = byClass(modal.contentEl, "pdf-chat-pdf-search-results")[0];
-  assert.ok(searchInput, "missing @ PDF search input");
-  assert.equal(byClass(modal.contentEl, "pdf-chat-codex-analysis-btn").length, 1);
-  assert.equal(byClass(modal.contentEl, "pdf-chat-ordinary-compare-btn").length, 1);
 
-  searchInput.value = "Paper";
-  searchInput.dispatch("input");
-  assert.equal(byClass(results, "pdf-chat-pdf-search-result").length, 4);
-  assert.doesNotMatch(descendants(results).map((element) => element.textContent).join(" "), /demo\.pdf|Alpha Note/);
+  for (const query of ["@Alpha", "@Beta", "@Gamma", "@Delta"]) {
+    modal.inputEl.value = query;
+    modal.inputEl.selectionStart = modal.inputEl.value.length;
+    modal.inputEl.dispatch("input");
+    const suggestions = byClass(modal.contentEl, "pdf-chat-composer-mention-suggestions");
+    assert.equal(suggestions.length, 1);
+    byClass(suggestions[0], "pdf-chat-composer-mention-option")[0].dispatch("click");
+  }
 
-  byClass(results, "pdf-chat-pdf-search-result")[0].dispatch("click");
-  assert.equal(modal.referencedPdfFiles.length, 1);
-  assert.equal(byClass(modal.contentEl, "pdf-chat-reference-chip").length, 1);
-  searchInput.value = "Paper";
-  searchInput.dispatch("input");
-  byClass(results, "pdf-chat-pdf-search-result")[0].dispatch("click");
-  searchInput.value = "Paper";
-  searchInput.dispatch("input");
-  byClass(results, "pdf-chat-pdf-search-result")[0].dispatch("click");
-  searchInput.value = "Paper";
-  searchInput.dispatch("input");
-  byClass(results, "pdf-chat-pdf-search-result")[0].dispatch("click");
   assert.equal(modal.referencedPdfFiles.length, 3);
-  assert.equal(byClass(modal.contentEl, "pdf-chat-reference-chip").length, 3);
-  byClass(modal.contentEl, "pdf-chat-reference-remove")[0].dispatch("click");
-  assert.equal(modal.referencedPdfFiles.length, 2);
+  assert.match(byClass(modal.contentEl, "pdf-chat-composer-status")[0].textContent, /已引用 3 篇论文/);
+  assert.equal(byClass(modal.contentEl, "pdf-chat-reference-chip").length, 0);
 });
 
-test("multi-paper compare actions stay outside the collapsible context body", () => {
+test("multi-paper compare actions are not persistent toolbar buttons", () => {
   const { modal } = createModalHarness();
-  const externalBar = byClass(modal.contentEl, "pdf-chat-multi-paper-bar")[0];
-  assert.ok(externalBar, "missing always-visible multi-paper action bar");
-  assert.equal(byClass(externalBar, "pdf-chat-ordinary-compare-btn").length, 1);
-  assert.equal(byClass(externalBar, "pdf-chat-codex-analysis-btn").length, 1);
   const contextBody = byClass(modal.contentEl, "pdf-chat-context-body")[0];
+  assert.equal(byClass(modal.contentEl, "pdf-chat-multi-paper-bar").length, 0);
   assert.equal(byClass(contextBody, "pdf-chat-ordinary-compare-btn").length, 0);
   assert.equal(byClass(contextBody, "pdf-chat-codex-analysis-btn").length, 0);
-  assert.equal(modal.contentEl.children[2], externalBar);
+  assert.doesNotMatch(descendants(modal.contentEl).map((element) => element.textContent).join(" "), /普通对比|Codex 深度分析/);
 });
 
 test("typing @ in the composer opens PDF mention suggestions and selecting one references it", () => {
@@ -688,6 +679,35 @@ test("sending with referenced PDFs augments the request with multi-paper context
     { role: "user", content: "这两篇论文有什么不同？", status: "complete" },
     { role: "assistant", content: "Answer", status: "complete" },
   ]);
+});
+
+test("deep-analysis wording asks for Codex CLI instead of using a persistent button", async () => {
+  const referenced = { name: "Alpha Paper.pdf", path: "papers/Alpha Paper.pdf", extension: "pdf", stat: { mtime: 2 } };
+  const requests = [];
+  let confirmMessage = "";
+  let codexCalls = 0;
+  const { modal, plugin } = createModalHarness({
+    confirm: (message) => {
+      confirmMessage = String(message);
+      return true;
+    },
+    llmChat: async (request) => {
+      requests.push(request);
+      return "Unexpected normal answer";
+    },
+  });
+  plugin.settings.codexDeepAnalysis.enabled = true;
+  modal.referencedPdfFiles = [referenced];
+  modal.runCodexDeepAnalysis = async () => {
+    codexCalls += 1;
+  };
+  modal.inputEl.value = "请使用深度分析比较这两篇论文";
+
+  await modal.handleSubmit();
+
+  assert.equal(codexCalls, 1);
+  assert.equal(requests.length, 0);
+  assert.match(confirmMessage, /Codex CLI|深度分析/);
 });
 
 test("restored history keeps the live region off until every Markdown render settles", async () => {

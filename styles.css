@@ -331,87 +331,11 @@
   display: none;
 }
 
-.pdf-chat-multi-paper {
-  display: grid;
-  gap: var(--pdf-chat-space-small);
-  padding: var(--pdf-chat-space-small) 0 0;
-  border-top: 1px solid color-mix(in srgb, var(--interactive-accent) 10%, var(--background-modifier-border));
-}
-
-.pdf-chat-multi-paper-bar {
-  flex: 0 0 auto;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: var(--pdf-chat-space-small);
-  min-height: 40px;
-  padding: 7px 10px;
-  border: 1px solid color-mix(in srgb, var(--interactive-accent) 12%, var(--background-modifier-border));
-  border-radius: var(--pdf-chat-radius-md);
-  background: color-mix(in srgb, var(--interactive-accent) 4%, var(--background-secondary));
-}
-
-.pdf-chat-multi-paper-bar-info {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: var(--pdf-chat-space-small);
-}
-
-.pdf-chat-multi-paper-bar-title {
-  flex: 0 0 auto;
-  color: var(--text-muted);
-  font-size: 0.76rem;
-  font-weight: var(--font-semibold);
-}
-
 .pdf-chat-context-help,
-.pdf-chat-multi-paper-status,
-.pdf-chat-reference-empty,
 .pdf-chat-search-empty {
   color: var(--text-muted);
   font-size: 0.76rem;
   line-height: 1.45;
-}
-
-.pdf-chat-pdf-search-row {
-  display: flex;
-  gap: var(--pdf-chat-space-small);
-}
-
-.pdf-chat-pdf-search-input {
-  width: 100%;
-  min-height: 34px;
-  border-radius: var(--pdf-chat-radius-sm);
-}
-
-.pdf-chat-pdf-search-results {
-  display: grid;
-  gap: 4px;
-}
-
-.pdf-chat-pdf-search-result {
-  display: grid;
-  align-items: start;
-  gap: 2px;
-  width: 100%;
-  height: auto;
-  min-height: 0;
-  padding: 7px 9px;
-  border: 1px solid transparent;
-  border-radius: var(--pdf-chat-radius-sm);
-  background: color-mix(in srgb, var(--background-primary) 72%, var(--background-secondary));
-  color: var(--text-normal);
-  line-height: 1.25;
-  text-align: left;
-  white-space: normal;
-  cursor: pointer;
-}
-
-.pdf-chat-pdf-search-result:hover,
-.pdf-chat-pdf-search-result:focus-visible {
-  border-color: var(--pdf-chat-accent-border);
-  background: var(--pdf-chat-accent-soft);
 }
 
 .pdf-chat-pdf-search-name {
@@ -433,60 +357,6 @@
   line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.pdf-chat-pdf-reference-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--pdf-chat-space-small);
-}
-
-.pdf-chat-reference-chip {
-  display: inline-flex;
-  max-width: 100%;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 6px 4px 9px;
-  border: 1px solid var(--pdf-chat-accent-border);
-  border-radius: 999px;
-  background: var(--pdf-chat-accent-soft);
-  color: var(--text-normal);
-  font-size: 0.74rem;
-}
-
-.pdf-chat-reference-chip span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pdf-chat-reference-remove {
-  display: inline-flex;
-  width: 20px;
-  height: 20px;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border-radius: 50%;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
-.pdf-chat-reference-remove:hover,
-.pdf-chat-reference-remove:focus-visible {
-  color: var(--text-normal);
-  background: color-mix(in srgb, var(--interactive-accent) 16%, transparent);
-}
-
-.pdf-chat-multi-paper-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--pdf-chat-space-small);
-}
-
-.pdf-chat-codex-analysis-btn {
-  border-color: var(--pdf-chat-accent-border);
-  color: var(--pdf-chat-accent-muted);
 }
 
 .pdf-chat-history {
@@ -827,12 +697,6 @@
   white-space: nowrap;
 }
 
-.pdf-chat-translate-btn {
-  border-radius: var(--pdf-chat-radius-sm);
-  background: var(--pdf-chat-accent-soft);
-  color: var(--pdf-chat-accent-muted);
-}
-
 .pdf-chat-send-btn {
   min-width: 38px;
   min-height: 38px;
@@ -903,16 +767,6 @@
 
   .pdf-chat-context-toggle {
     flex-wrap: wrap;
-  }
-
-  .pdf-chat-multi-paper-bar {
-    grid-template-columns: 1fr;
-    align-items: stretch;
-  }
-
-  .pdf-chat-multi-paper-bar-info,
-  .pdf-chat-multi-paper-actions {
-    justify-content: flex-start;
   }
 
   .pdf-chat-context-panel.is-expanded {
