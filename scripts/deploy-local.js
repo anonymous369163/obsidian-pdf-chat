@@ -47,10 +47,10 @@ function assertRegularUnlinked(filePath, label, allowMissing = false) {
   const stats = lstatIfExists(filePath);
   if (!stats) {
     if (allowMissing) return false;
-    throw new Error(`${label} must be a regular file and not a link`);
+    throw new Error(`${label} must be a regular single-link file`);
   }
-  if (stats.isSymbolicLink() || !stats.isFile()) {
-    throw new Error(`${label} must be a regular file and not a link`);
+  if (stats.isSymbolicLink() || !stats.isFile() || stats.nlink !== 1) {
+    throw new Error(`${label} must be a regular single-link file`);
   }
   return true;
 }
@@ -136,7 +136,21 @@ function createFileOps(overrides = {}) {
       ((source, destination) => fs.cpSync(source, destination, { errorOnExist: true, recursive: true })),
     hashFile: overrides.hashFile || sha256File,
     removeFile: overrides.removeFile || ((filePath) => fs.rmSync(filePath, { force: true })),
+    removeTree:
+      overrides.removeTree ||
+      ((directory) => fs.rmSync(directory, { force: true, recursive: true })),
   };
+}
+
+function validateReleaseSnapshot(directory, label) {
+  for (const filename of RELEASE_FILES) {
+    assertRegularUnlinked(
+      path.join(directory, filename),
+      `${label} ${filename}`,
+      filename !== "manifest.json"
+    );
+  }
+  assertRegularUnlinked(path.join(directory, "data.json"), `${label} data.json`, true);
 }
 
 function rollbackReleaseFiles(targetDir, backupDir, fileOps) {
@@ -145,8 +159,18 @@ function rollbackReleaseFiles(targetDir, backupDir, fileOps) {
     const backupPath = path.join(backupDir, filename);
     const targetPath = path.join(targetDir, filename);
     try {
-      if (lstatIfExists(backupPath)) fileOps.copyFile(backupPath, targetPath);
-      else fileOps.removeFile(targetPath);
+      const backupExists = assertRegularUnlinked(
+        backupPath,
+        `rollback backup ${filename}`,
+        true
+      );
+      assertRegularUnlinked(targetPath, `rollback target ${filename}`, true);
+      if (backupExists) {
+        fileOps.copyFile(backupPath, targetPath);
+        assertRegularUnlinked(targetPath, `restored target ${filename}`);
+      } else {
+        fileOps.removeFile(targetPath);
+      }
     } catch (error) {
       failures.push(`${filename}: ${error instanceof Error ? error.message : "rollback failed"}`);
     }
@@ -190,11 +214,14 @@ function deployRelease(options) {
   fs.mkdirSync(backupRoot, { recursive: true });
   try {
     fileOps.copyTree(targetDir, backupDir);
+    validateReleaseSnapshot(backupDir, "backup");
   } catch (error) {
     throw deploymentFailure(error, backupDir, []);
   }
 
   let stageDir = null;
+  let result = null;
+  let primaryError = null;
   try {
     const dataHashBefore = fs.existsSync(dataPath) ? fileOps.hashFile(dataPath) : null;
     stageDir = fs.mkdtempSync(path.join(backupRoot, ".pdf-chat-stage-"));
@@ -203,6 +230,7 @@ function deployRelease(options) {
       const sourcePath = path.join(sourceRoot, filename);
       const stagePath = path.join(stageDir, filename);
       fileOps.copyFile(sourcePath, stagePath);
+      assertRegularUnlinked(stagePath, `staged ${filename}`);
       const sourceHash = fileOps.hashFile(sourcePath);
       const stagedHash = fileOps.hashFile(stagePath);
       if (sourceHash !== stagedHash) throw new Error(`staging hash verification failed for ${filename}`);
@@ -213,6 +241,7 @@ function deployRelease(options) {
     for (const staged of stagedFiles) {
       const targetPath = path.join(targetDir, staged.filename);
       fileOps.copyFile(staged.stagePath, targetPath);
+      assertRegularUnlinked(targetPath, `deployed target ${staged.filename}`);
       const targetHash = fileOps.hashFile(targetPath);
       if (staged.sourceHash !== targetHash) {
         throw new Error(`hash verification failed for ${staged.filename}`);
@@ -228,17 +257,35 @@ function deployRelease(options) {
     const dataHashAfter = fs.existsSync(dataPath) ? fileOps.hashFile(dataPath) : null;
     if (dataHashBefore !== dataHashAfter) throw new Error("data.json changed during deployment");
 
-    return {
+    result = {
       backupDir,
       dataStatus: dataHashBefore === null ? "absent" : "preserved",
       files,
     };
   } catch (error) {
-    const rollbackFailures = rollbackReleaseFiles(targetDir, backupDir, fileOps);
-    throw deploymentFailure(error, backupDir, rollbackFailures);
-  } finally {
-    if (stageDir) fs.rmSync(stageDir, { force: true, recursive: true });
+    primaryError = error;
   }
+
+  let cleanupError = null;
+  if (stageDir) {
+    try {
+      fileOps.removeTree(stageDir);
+    } catch (error) {
+      cleanupError = error;
+    }
+  }
+
+  if (!primaryError && !cleanupError) return result;
+
+  let failure = primaryError || cleanupError;
+  if (primaryError && cleanupError) {
+    const primaryReason = primaryError instanceof Error ? primaryError.message : "local deployment failed";
+    const cleanupReason = cleanupError instanceof Error ? cleanupError.message : "staging cleanup failed";
+    failure = new Error(`${primaryReason}; staging cleanup also failed: ${cleanupReason}`);
+    failure.cause = primaryError;
+  }
+  const rollbackFailures = rollbackReleaseFiles(targetDir, backupDir, fileOps);
+  throw deploymentFailure(failure, backupDir, rollbackFailures);
 }
 
 function parseTarget(argv, environment) {

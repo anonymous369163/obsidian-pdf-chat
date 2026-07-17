@@ -36,16 +36,132 @@ function lineNumberAt(text, index) {
   return line;
 }
 
-function isPackageLockDependencyVersion(file, fieldName, value) {
+const DEPENDENCY_FIELDS = new Set([
+  "dependencies",
+  "devDependencies",
+  "optionalDependencies",
+  "peerDependencies",
+]);
+
+function isSemverDependency(value) {
+  return /^[~^]?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(value.trim());
+}
+
+function isExplicitCredentialField(fieldName) {
+  const words = fieldName
+    .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+    .toLowerCase()
+    .split(/[-_$]+/)
+    .filter(Boolean);
+  if (words.some((word) => ["key", "token", "secret", "password", "credential"].includes(word))) {
+    return true;
+  }
+  return ["apikey", "accesskey", "authkey", "clientkey", "privatekey", "publickey", "signingkey"].includes(
+    fieldName.replace(/[-_$]/g, "").toLowerCase()
+  );
+}
+
+function packageLockDependencyVersions(text, file) {
+  const versions = new Set();
+  if (path.basename(file).toLowerCase() !== "package-lock.json") return versions;
+  try {
+    JSON.parse(text);
+  } catch {
+    return versions;
+  }
+
+  let cursor = 0;
+
+  function skipWhitespace() {
+    while (/\s/.test(text[cursor] || "")) cursor += 1;
+  }
+
+  function readString() {
+    const start = cursor;
+    cursor += 1;
+    while (cursor < text.length) {
+      if (text[cursor] === "\\") cursor += 2;
+      else if (text[cursor] === '"') {
+        cursor += 1;
+        break;
+      } else cursor += 1;
+    }
+    return { contentStart: start + 1, value: JSON.parse(text.slice(start, cursor)) };
+  }
+
+  function parseValue(jsonPath, property) {
+    skipWhitespace();
+    if (text[cursor] === "{") {
+      parseObject(jsonPath);
+      return;
+    }
+    if (text[cursor] === "[") {
+      parseArray(jsonPath);
+      return;
+    }
+    if (text[cursor] === '"') {
+      const value = readString().value;
+      if (
+        property &&
+        jsonPath.length === 4 &&
+        jsonPath[0] === "packages" &&
+        DEPENDENCY_FIELDS.has(jsonPath[2]) &&
+        isSemverDependency(value)
+      ) {
+        versions.add(`${property.contentStart}\0${jsonPath[3]}\0${value.trim()}`);
+      }
+      return;
+    }
+    while (cursor < text.length && !/[\s,}\]]/.test(text[cursor])) cursor += 1;
+  }
+
+  function parseObject(jsonPath) {
+    cursor += 1;
+    skipWhitespace();
+    while (cursor < text.length && text[cursor] !== "}") {
+      const property = readString();
+      skipWhitespace();
+      cursor += 1;
+      parseValue([...jsonPath, property.value], property);
+      skipWhitespace();
+      if (text[cursor] === ",") {
+        cursor += 1;
+        skipWhitespace();
+      }
+    }
+    cursor += 1;
+  }
+
+  function parseArray(jsonPath) {
+    cursor += 1;
+    skipWhitespace();
+    let index = 0;
+    while (cursor < text.length && text[cursor] !== "]") {
+      parseValue([...jsonPath, String(index)], null);
+      index += 1;
+      skipWhitespace();
+      if (text[cursor] === ",") {
+        cursor += 1;
+        skipWhitespace();
+      }
+    }
+    cursor += 1;
+  }
+
+  parseValue([], null);
+  return versions;
+}
+
+function isPackageLockDependencyVersion(dependencyVersions, fieldIndex, fieldName, value) {
   return (
-    path.basename(file).toLowerCase() === "package-lock.json" &&
-    fieldName.includes("-") &&
-    /^[~^]?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(value.trim())
+    !isExplicitCredentialField(fieldName) &&
+    dependencyVersions.has(`${fieldIndex}\0${fieldName}\0${value.trim()}`)
   );
 }
 
 function scanText(text, filePath) {
   const file = normalizeFilePath(filePath);
+  const dependencyVersions = packageLockDependencyVersions(text, file);
   const findings = [];
   const seen = new Set();
 
@@ -60,13 +176,17 @@ function scanText(text, filePath) {
   const literalPattern =
     /(?:^|[^\w$-])(?:["'`]\s*)?([A-Za-z_$][A-Za-z0-9_$-]*(?:key|token|secret|password|credential)[A-Za-z0-9_$-]*)(?:\s*["'`])?\s*[:=]\s*(["'`])([^"'`\r\n]*)\2/gim;
   for (const match of text.matchAll(literalPattern)) {
-    if (!isPlaceholder(match[3]) && !isPackageLockDependencyVersion(file, match[1], match[3])) {
-      addFinding(match.index + match[0].indexOf(match[1]), "secret.api-key-literal");
+    const fieldIndex = match.index + match[0].indexOf(match[1]);
+    if (
+      !isPlaceholder(match[3]) &&
+      !isPackageLockDependencyVersion(dependencyVersions, fieldIndex, match[1], match[3])
+    ) {
+      addFinding(fieldIndex, "secret.api-key-literal");
     }
   }
 
   const bearerPattern =
-    /\bBearer[ \t]+([A-Za-z0-9._~+/=-]{11,}[A-Za-z0-9_=])(?=$|[\s"'`,;)\]}])/gim;
+    /\bBearer[ \t]+([A-Za-z0-9._~+/=-]{12,})(?=$|[\s"'`,;)\]}])/gim;
   for (const match of text.matchAll(bearerPattern)) {
     if (!isPlaceholder(match[1])) addFinding(match.index, "secret.bearer-token");
   }

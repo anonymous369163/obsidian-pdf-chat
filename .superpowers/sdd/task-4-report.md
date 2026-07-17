@@ -17,7 +17,7 @@ All contract tests were written and run before the corresponding scripts, docume
 
 - `forbidden.file`: rejects tracked `data.json`, `.env` variants, `.key`, and `.pem` paths.
 - `secret.api-key-literal`: rejects non-empty API-key/token/secret string literals, including quoted object fields.
-- `secret.bearer-token`: rejects real-looking Bearer credentials.
+- `secret.bearer-token`: rejects real-looking authorization-header values.
 - `secret.provider-token`: rejects common provider shapes, including the `sk-` family.
 - `secret.private-key`: rejects private-key block headers.
 - Empty values and explicit placeholders such as `YOUR_API_KEY` and `REPLACE_ME` are accepted.
@@ -139,3 +139,39 @@ CI fetches full history and passes the pull-request base SHA or push-before SHA.
 - `scripts/deploy-local.js` SHA-256: `375bebade6878dd611786fc53c0898e8ace16b9588404028e00e62a0bafb0cc5`
 - `scripts/secret-scan.js` SHA-256: `4bd5f46006572f3dafef0bfd3af0d507ae9017bf17fc32755b92506389137c1f`
 - `scripts/verify.js` SHA-256: `58edc16eb418e1b866af196e79eb44da9883c4f280083f37fd1015d2f8c8d025`
+
+## Second review-fix follow-up
+
+### Second-round RED evidence
+
+- `node --test tests/release-tooling.test.js tests/verify-tooling.test.js` initially exited 1 with 30 passed and 13 failed. The failures reproduced the package-lock credential-field exemption, trailing-hyphen authorization miss, source/target/private-data/staging hardlinks, ignored staging-cleanup failures, direct-verifier `npm.cmd` fallback, missing bundle restoration, and raw whitespace source lines in exception/CLI output.
+- A later self-review test, `node --test --test-name-pattern "introduced while copying" tests/release-tooling.test.js`, exited 1 because a hardlink introduced during the target copy was accepted. It passed only after every copied target artifact was revalidated as a single-link regular file.
+- Synthetic credential-shaped values are assembled only at runtime. Redaction assertions compare booleans before checking diagnostic structure, so neither a successful run nor a failing assertion prints the constructed value.
+
+### Hardlink and rollback safety
+
+Every trusted release path now requires `lstat().isFile()` and exactly one filesystem link. This covers the source release files, all three target destinations, optional private `data.json`, staged files, backup snapshot files, target files after copying, and both backup and target paths immediately before rollback. Rollback also validates each restored destination after copying.
+
+The Windows test run created real NTFS hardlinks with `fs.linkSync`. Tests prove that pre-existing hardlinks for `main.js`, `manifest.json`, `styles.css`, and `data.json` are rejected before writes and that the external inode bytes remain unchanged. Separate injected tests cover hardlinks introduced in staging, target copy, backup creation, and rollback substitution. All hardlink tests ran; none were skipped.
+
+Staging cleanup now participates in deployment success. A cleanup-only failure triggers full release rollback, retains and reports the backup path, and leaves synthetic private-data bytes unchanged. When both deployment and cleanup fail, the original deployment error remains primary and the cleanup failure is appended; deterministic tests prove the complete target snapshot is restored.
+
+### Scanner and verifier hardening
+
+Package-lock semver exemptions are now tied to the exact JSON source position under `packages[*]` dependency maps. Credential-like names are never exempted, and a duplicate name/value outside that structure is still reported. Authorization values of 12 or more legal characters are detected even when the final character is `-`.
+
+Whitespace verification converts `git diff --check` output into redacted `file:line [category]` entries plus a count; raw source lines are never placed in thrown errors or CLI output. Direct verification resolves `npm-cli.js` from the Node installation and always launches it with `process.execPath`, without a Windows command-shim fallback. Bundle freshness verification restores prior `main.js` bytes after deletion/failure and removes partial artifacts when the bundle was initially absent.
+
+### Second-round GREEN evidence
+
+- Focused release/security and verifier tooling: 48 passed, 0 failed, 0 skipped.
+- Direct Windows `node scripts/verify.js` with `npm_execpath` and `npm_node_execpath` removed: exit 0; the full 96-test verification completed through the resolved JavaScript npm CLI.
+- Fresh staged `npm run verify`: exit 0; 96 tests passed, 0 failed, 0 skipped. Strict typecheck, production bundle freshness/build, secret scan, release metadata verification, bundle syntax, and working/staged/commit-range whitespace checks all passed.
+- No real plugin, private settings, credentials, deployment target, remote branch, or GitHub setting was accessed or mutated.
+
+### Second-round SHAs
+
+- Base Git commit: `877471e7eacf06969975007994f922a9008462aa`
+- `scripts/deploy-local.js` SHA-256: `c4ff38797b36048b77f4133e7a3da5310e152d9eb3f5142ec4539a57a7f49f88`
+- `scripts/secret-scan.js` SHA-256: `17b8fc7564e2cf3eb24befb4183cb9ea6e616fb6011d1899a56d18422a48143c`
+- `scripts/verify.js` SHA-256: `b9f30d092f48ff470149bfa860ed91ea2d31402e22cd09fd2b9fa919b45dfbf7`

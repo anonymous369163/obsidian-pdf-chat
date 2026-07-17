@@ -142,6 +142,83 @@ test("secret scanner rejects a semver-looking non-placeholder API-key value", ()
   );
 });
 
+test("secret scanner does not exempt credential-like package-lock dependency fields", () => {
+  const { scanText } = require("../scripts/secret-scan");
+  const value = ["1", "2", "3"].join(".");
+  const packageLock = {
+    lockfileVersion: 3,
+    packages: {
+      "": {
+        dependencies: {
+          "api-key": value,
+        },
+      },
+    },
+  };
+
+  assert.deepEqual(
+    scanText(JSON.stringify(packageLock, null, 2), "package-lock.json").map(
+      (finding) => finding.ruleId
+    ),
+    ["secret.api-key-literal"]
+  );
+});
+
+test("secret scanner only exempts versions in genuine package-lock package dependency maps", () => {
+  const { scanText } = require("../scripts/secret-scan");
+  const value = ["2", "2", "4"].join(".");
+  const packageLock = {
+    lockfileVersion: 3,
+    metadata: {
+      dependencies: {
+        "w3c-keyname": value,
+      },
+    },
+  };
+
+  assert.deepEqual(
+    scanText(JSON.stringify(packageLock, null, 2), "package-lock.json").map(
+      (finding) => finding.ruleId
+    ),
+    ["secret.api-key-literal"]
+  );
+});
+
+test("package-lock dependency exemptions are bound to the exact JSON field location", () => {
+  const { scanText } = require("../scripts/secret-scan");
+  const value = ["2", "2", "4"].join(".");
+  const packageLock = {
+    lockfileVersion: 3,
+    packages: {
+      "": {
+        dependencies: {
+          "w3c-keyname": value,
+        },
+      },
+    },
+    metadata: {
+      "w3c-keyname": value,
+    },
+  };
+
+  const findings = scanText(JSON.stringify(packageLock, null, 2), "package-lock.json");
+
+  assert.deepEqual(findings.map((finding) => finding.ruleId), ["secret.api-key-literal"]);
+  assert.equal(findings[0].line > 1, true);
+});
+
+test("secret scanner detects a legal Bearer value ending in a hyphen", () => {
+  const { scanText } = require("../scripts/secret-scan");
+  const bearer = `${["Bear", "er"].join("")} ${"b".repeat(11)}-`;
+
+  assert.deepEqual(
+    scanText(`const authorization = ${JSON.stringify(bearer)};`, "bearer-tail.js").map(
+      (finding) => finding.ruleId
+    ),
+    ["secret.bearer-token"]
+  );
+});
+
 test("secret scanner detects literal fields containing key, token, secret, password, or credential", () => {
   const { scanText } = require("../scripts/secret-scan");
   const value = `synthetic-${"v".repeat(24)}`;
@@ -367,7 +444,7 @@ test("local deployment rejects a non-regular target manifest before writing anyt
 
   assert.throws(
     () => deployRelease({ sourceRoot, targetDir, backupRoot }),
-    /target manifest must be a regular file and not a link/
+    /target manifest must be a regular single-link file/
   );
   assert.equal(fs.existsSync(backupRoot), false);
 });
@@ -387,7 +464,7 @@ test("local deployment rejects a linked release destination before writing anyth
 
   assert.throws(
     () => deployRelease({ sourceRoot, targetDir, backupRoot }),
-    /target main.js must be a regular file and not a link/
+    /target main.js must be a regular single-link file/
   );
   assert.equal(fs.existsSync(backupRoot), false);
   assert.deepEqual(fs.readdirSync(externalDirectory), []);
@@ -406,10 +483,217 @@ test("local deployment rejects non-regular private data before writing anything"
 
   assert.throws(
     () => deployRelease({ sourceRoot, targetDir, backupRoot }),
-    /target data.json must be a regular file and not a link/
+    /target data.json must be a regular single-link file/
   );
   assertReleaseSnapshot(targetDir, before);
   assert.equal(fs.existsSync(backupRoot), false);
+});
+
+test("local deployment rejects hard-linked source release files before writing anything", (t) => {
+  const { deployRelease } = require("../scripts/deploy-local");
+  const root = makeTempDirectory(t);
+  const sourceRoot = path.join(root, "source");
+  const targetDir = path.join(root, "target");
+  const backupRoot = path.join(root, "backups");
+  const externalManifest = path.join(root, "external-manifest.json");
+  writeReleaseFiles(sourceRoot, "new-release");
+  writeReleaseFiles(targetDir, "old-release");
+  fs.copyFileSync(path.join(sourceRoot, "manifest.json"), externalManifest);
+  const externalBefore = fs.readFileSync(externalManifest);
+  fs.rmSync(path.join(sourceRoot, "manifest.json"));
+  fs.linkSync(externalManifest, path.join(sourceRoot, "manifest.json"));
+
+  assert.throws(
+    () => deployRelease({ sourceRoot, targetDir, backupRoot }),
+    /release source manifest\.json must be a regular single-link file/
+  );
+  assert.deepEqual(fs.readFileSync(externalManifest), externalBefore);
+  assert.equal(fs.existsSync(backupRoot), false);
+});
+
+test("local deployment rejects every hard-linked release destination without modifying its external inode", (t) => {
+  const { deployRelease } = require("../scripts/deploy-local");
+  const root = makeTempDirectory(t);
+
+  for (const filename of ["main.js", "manifest.json", "styles.css"]) {
+    const caseRoot = path.join(root, filename.replace(".", "-"));
+    const sourceRoot = path.join(caseRoot, "source");
+    const targetDir = path.join(caseRoot, "target");
+    const backupRoot = path.join(caseRoot, "backups");
+    const externalPath = path.join(caseRoot, `external-${filename}`);
+    writeReleaseFiles(sourceRoot, "new-release");
+    writeReleaseFiles(targetDir, "old-release");
+    fs.copyFileSync(path.join(targetDir, filename), externalPath);
+    const externalBefore = fs.readFileSync(externalPath);
+    fs.rmSync(path.join(targetDir, filename));
+    fs.linkSync(externalPath, path.join(targetDir, filename));
+
+    const label = filename === "manifest.json" ? "target manifest" : `target ${filename}`;
+    assert.throws(
+      () => deployRelease({ sourceRoot, targetDir, backupRoot }),
+      new RegExp(`${label.replace(".", "\\.")} must be a regular single-link file`)
+    );
+    assert.deepEqual(fs.readFileSync(externalPath), externalBefore);
+    assert.equal(fs.existsSync(backupRoot), false);
+  }
+});
+
+test("local deployment rejects hard-linked private data without modifying its external inode", (t) => {
+  const { deployRelease } = require("../scripts/deploy-local");
+  const root = makeTempDirectory(t);
+  const sourceRoot = path.join(root, "source");
+  const targetDir = path.join(root, "target");
+  const backupRoot = path.join(root, "backups");
+  const externalData = path.join(root, "external-data.json");
+  writeReleaseFiles(sourceRoot, "new-release");
+  writeReleaseFiles(targetDir, "old-release");
+  fs.writeFileSync(externalData, JSON.stringify({ conversation: "outside-target" }));
+  const externalBefore = fs.readFileSync(externalData);
+  fs.linkSync(externalData, path.join(targetDir, "data.json"));
+
+  assert.throws(
+    () => deployRelease({ sourceRoot, targetDir, backupRoot }),
+    /target data\.json must be a regular single-link file/
+  );
+  assert.deepEqual(fs.readFileSync(externalData), externalBefore);
+  assert.equal(fs.existsSync(backupRoot), false);
+});
+
+test("local deployment rejects hard-linked staging files before target mutation", (t) => {
+  const { deployRelease } = require("../scripts/deploy-local");
+  const root = makeTempDirectory(t);
+  const sourceRoot = path.join(root, "source");
+  const targetDir = path.join(root, "target");
+  const backupRoot = path.join(root, "backups");
+  writeReleaseFiles(sourceRoot, "new-release");
+  writeReleaseFiles(targetDir, "old-release");
+  const before = snapshotReleaseFiles(targetDir);
+
+  const error = captureError(() =>
+    deployRelease({
+      sourceRoot,
+      targetDir,
+      backupRoot,
+      fileOps: {
+        copyFile(source, destination) {
+          const destinationIsTarget = path.dirname(path.resolve(destination)) === path.resolve(targetDir);
+          if (!destinationIsTarget) fs.linkSync(source, destination);
+          else fs.copyFileSync(source, destination);
+        },
+      },
+    })
+  );
+
+  assert.match(error.message, /staged main\.js must be a regular single-link file/);
+  assert.match(error.message, /backup:/i);
+  assertReleaseSnapshot(targetDir, before);
+});
+
+test("local deployment rejects a hard link introduced while copying to the target", (t) => {
+  const { deployRelease } = require("../scripts/deploy-local");
+  const root = makeTempDirectory(t);
+  const sourceRoot = path.join(root, "source");
+  const targetDir = path.join(root, "target");
+  const backupRoot = path.join(root, "backups");
+  writeReleaseFiles(sourceRoot, "new-release");
+  writeReleaseFiles(targetDir, "old-release");
+  const before = snapshotReleaseFiles(targetDir);
+  let injected = false;
+
+  const error = captureError(() =>
+    deployRelease({
+      sourceRoot,
+      targetDir,
+      backupRoot,
+      fileOps: {
+        copyFile(source, destination) {
+          if (!injected && path.resolve(destination) === path.resolve(targetDir, "main.js")) {
+            injected = true;
+            fs.rmSync(destination);
+            fs.linkSync(source, destination);
+            return;
+          }
+          fs.copyFileSync(source, destination);
+        },
+      },
+    })
+  );
+
+  assert.match(error.message, /deployed target main\.js must be a regular single-link file/);
+  assert.match(error.message, /backup:/i);
+  assertReleaseSnapshot(targetDir, before);
+});
+
+test("local deployment rejects hard-linked backup snapshots before staging", (t) => {
+  const { deployRelease } = require("../scripts/deploy-local");
+  const root = makeTempDirectory(t);
+  const sourceRoot = path.join(root, "source");
+  const targetDir = path.join(root, "target");
+  const backupRoot = path.join(root, "backups");
+  writeReleaseFiles(sourceRoot, "new-release");
+  writeReleaseFiles(targetDir, "old-release");
+  const before = snapshotReleaseFiles(targetDir);
+
+  const error = captureError(() =>
+    deployRelease({
+      sourceRoot,
+      targetDir,
+      backupRoot,
+      fileOps: {
+        copyTree(source, destination) {
+          fs.mkdirSync(destination, { recursive: true });
+          for (const filename of fs.readdirSync(source)) {
+            fs.linkSync(path.join(source, filename), path.join(destination, filename));
+          }
+        },
+      },
+    })
+  );
+
+  assert.match(error.message, /backup main\.js must be a regular single-link file/);
+  assert.match(error.message, /backup:/i);
+  assert.ok(fs.existsSync(error.backupDir));
+  assertReleaseSnapshot(targetDir, before);
+});
+
+test("rollback refuses a newly hard-linked backup file without modifying its external inode", (t) => {
+  const { deployRelease } = require("../scripts/deploy-local");
+  const root = makeTempDirectory(t);
+  const sourceRoot = path.join(root, "source");
+  const targetDir = path.join(root, "target");
+  const backupRoot = path.join(root, "backups");
+  const externalPath = path.join(root, "external-main.js");
+  writeReleaseFiles(sourceRoot, "new-release");
+  writeReleaseFiles(targetDir, "old-release");
+  fs.writeFileSync(externalPath, "external bytes must remain unchanged\n");
+  const externalBefore = fs.readFileSync(externalPath);
+  let injected = false;
+
+  const error = captureError(() =>
+    deployRelease({
+      sourceRoot,
+      targetDir,
+      backupRoot,
+      fileOps: {
+        copyFile(source, destination) {
+          if (!injected && path.resolve(destination) === path.resolve(targetDir, "styles.css")) {
+            injected = true;
+            const backupDir = fs
+              .readdirSync(backupRoot, { withFileTypes: true })
+              .find((entry) => entry.isDirectory() && entry.name.startsWith("pdf-chat-"));
+            const backupMain = path.join(backupRoot, backupDir.name, "main.js");
+            fs.rmSync(backupMain);
+            fs.linkSync(externalPath, backupMain);
+            throw new Error("injected target failure after backup substitution");
+          }
+          fs.copyFileSync(source, destination);
+        },
+      },
+    })
+  );
+
+  assert.match(error.message, /rollback backup main\.js must be a regular single-link file/);
+  assert.deepEqual(fs.readFileSync(externalPath), externalBefore);
 });
 
 test("local deployment stages and hashes every release file before target mutation", (t) => {
@@ -584,4 +868,77 @@ test("local deployment retains a backup when the initial private-data hash fails
   assert.ok(fs.existsSync(error.backupDir));
   assertReleaseSnapshot(targetDir, before);
   assert.deepEqual(fs.readFileSync(dataPath), privateBytes);
+});
+
+test("local deployment rolls back and retains the backup when staging cleanup fails", (t) => {
+  const { deployRelease } = require("../scripts/deploy-local");
+  const root = makeTempDirectory(t);
+  const sourceRoot = path.join(root, "source");
+  const targetDir = path.join(root, "target");
+  const backupRoot = path.join(root, "backups");
+  writeReleaseFiles(sourceRoot, "new-release");
+  writeReleaseFiles(targetDir, "old-release");
+  const privateBytes = Buffer.from(JSON.stringify({ conversation: "unchanged" }));
+  fs.writeFileSync(path.join(targetDir, "data.json"), privateBytes);
+  const before = snapshotReleaseFiles(targetDir);
+
+  const error = captureError(() =>
+    deployRelease({
+      sourceRoot,
+      targetDir,
+      backupRoot,
+      fileOps: {
+        removeTree() {
+          throw new Error("injected staging cleanup failure");
+        },
+      },
+    })
+  );
+
+  assert.match(error.message, /injected staging cleanup failure/);
+  assert.match(error.message, /backup:/i);
+  assert.ok(fs.existsSync(error.backupDir));
+  assertReleaseSnapshot(targetDir, before);
+  assert.deepEqual(fs.readFileSync(path.join(targetDir, "data.json")), privateBytes);
+});
+
+test("staging cleanup failure does not replace the primary deployment error", (t) => {
+  const { deployRelease } = require("../scripts/deploy-local");
+  const root = makeTempDirectory(t);
+  const sourceRoot = path.join(root, "source");
+  const targetDir = path.join(root, "target");
+  const backupRoot = path.join(root, "backups");
+  writeReleaseFiles(sourceRoot, "new-release");
+  writeReleaseFiles(targetDir, "old-release");
+  const privateBytes = Buffer.from(JSON.stringify({ conversation: "unchanged" }));
+  fs.writeFileSync(path.join(targetDir, "data.json"), privateBytes);
+  const before = snapshotReleaseFiles(targetDir);
+  let injected = false;
+
+  const error = captureError(() =>
+    deployRelease({
+      sourceRoot,
+      targetDir,
+      backupRoot,
+      fileOps: {
+        copyFile(source, destination) {
+          if (!injected && path.resolve(destination) === path.resolve(targetDir, "styles.css")) {
+            injected = true;
+            throw new Error("injected primary copy failure");
+          }
+          fs.copyFileSync(source, destination);
+        },
+        removeTree() {
+          throw new Error("injected secondary cleanup failure");
+        },
+      },
+    })
+  );
+
+  assert.match(error.message, /injected primary copy failure/);
+  assert.match(error.message, /staging cleanup also failed: injected secondary cleanup failure/);
+  assert.match(error.message, /backup:/i);
+  assert.ok(fs.existsSync(error.backupDir));
+  assertReleaseSnapshot(targetDir, before);
+  assert.deepEqual(fs.readFileSync(path.join(targetDir, "data.json")), privateBytes);
 });

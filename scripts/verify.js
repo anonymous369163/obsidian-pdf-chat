@@ -20,17 +20,28 @@ function runCommand(command, args, root, label) {
   if (result.status !== 0) throw new Error(`${label} failed with exit code ${result.status}`);
 }
 
-function npmInvocation(args, environment = process.env) {
-  if (environment.npm_execpath) {
-    return {
-      args: [environment.npm_execpath, ...args],
-      command: environment.npm_node_execpath || process.execPath,
-    };
+function resolveNpmCli(environment, executable) {
+  const candidates = [];
+  if (environment.npm_execpath) candidates.push(environment.npm_execpath);
+  const executableDirectory = path.dirname(executable);
+  candidates.push(
+    path.join(executableDirectory, "node_modules", "npm", "bin", "npm-cli.js"),
+    path.resolve(executableDirectory, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+    path.resolve(executableDirectory, "..", "share", "nodejs", "npm", "bin", "npm-cli.js")
+  );
+  try {
+    candidates.push(path.join(path.dirname(require.resolve("npm/package.json")), "bin", "npm-cli.js"));
+  } catch {
+    // npm is commonly installed beside Node instead of exposed as a resolvable package.
   }
-  return {
-    args,
-    command: process.platform === "win32" ? "npm.cmd" : "npm",
-  };
+  const npmCli = candidates.find((candidate) => candidate && fs.existsSync(candidate));
+  if (!npmCli) throw new Error("unable to resolve npm-cli.js from the Node.js installation");
+  return npmCli;
+}
+
+function npmInvocation(args, environment = process.env, executable = process.execPath) {
+  const npmCli = resolveNpmCli(environment, executable);
+  return { args: [npmCli, ...args], command: executable };
 }
 
 function gitValue(root, args) {
@@ -68,8 +79,23 @@ function resolveVerifyBase(root, environment) {
 function checkWhitespace(root, args, label) {
   const result = commandResult("git", ["diff", "--check", ...args], root);
   if (result.status === 0) return;
-  const details = `${result.stdout || ""}${result.stderr || ""}`.trim();
-  throw new Error(`${label} whitespace check failed${details ? `\n${details}` : ""}`);
+  const categories = new Map([
+    ["trailing whitespace", "whitespace.trailing"],
+    ["space before tab in indent", "whitespace.space-before-tab"],
+    ["new blank line at EOF", "whitespace.blank-eof"],
+  ]);
+  const findings = [];
+  for (const line of `${result.stdout || ""}${result.stderr || ""}`.split(/\r?\n/)) {
+    const match = /^(.*):(\d+): (trailing whitespace|space before tab in indent|new blank line at EOF)\.?$/.exec(
+      line
+    );
+    if (!match) continue;
+    findings.push(`${match[1].replace(/\\/g, "/")}:${match[2]} [${categories.get(match[3])}]`);
+  }
+  if (findings.length === 0) findings.push("<repository>:0 [whitespace.unclassified]");
+  throw new Error(
+    `${label} whitespace check failed with ${findings.length} finding(s)\n${findings.join("\n")}`
+  );
 }
 
 function verifyWhitespace(root, environment = process.env) {
@@ -82,18 +108,24 @@ function verifyWhitespace(root, environment = process.env) {
 
 function verifyBundleCurrent(root, build) {
   const bundlePath = path.join(root, "main.js");
-  const before = fs.readFileSync(bundlePath);
+  const existedBefore = fs.existsSync(bundlePath);
+  const before = existedBefore ? fs.readFileSync(bundlePath) : null;
+  const restore = () => {
+    if (existedBefore) fs.writeFileSync(bundlePath, before);
+    else fs.rmSync(bundlePath, { force: true });
+  };
   try {
     build();
   } catch (error) {
-    if (fs.existsSync(bundlePath) && !fs.readFileSync(bundlePath).equals(before)) {
-      fs.writeFileSync(bundlePath, before);
-    }
+    restore();
     throw error;
   }
-  const after = fs.readFileSync(bundlePath);
-  if (!after.equals(before)) {
-    fs.writeFileSync(bundlePath, before);
+  const existsAfter = fs.existsSync(bundlePath);
+  const changed = existedBefore
+    ? !existsAfter || !fs.readFileSync(bundlePath).equals(before)
+    : existsAfter;
+  if (changed) {
+    restore();
     throw new Error("main.js was stale before the production build; run npm run build and commit it");
   }
 }
