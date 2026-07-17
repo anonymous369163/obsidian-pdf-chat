@@ -120,3 +120,75 @@ No CSS, README, manifest/version, package/CI/deploy, installed-plugin, or privat
 ## Concerns
 
 No functional blockers or known requirement gaps. Git emitted the repository's existing LF-to-CRLF working-tree conversion warnings on Windows; both normal and cached diff checks reported no whitespace errors.
+
+## Review-fix addendum
+
+Review-fix implementation commit: `9551737` (`fix: harden translation chunk failure handling`).
+
+### Review RED evidence
+
+1. Empty middle chunk at the service boundary
+   - Command: `node --test --test-name-pattern="fails on an empty middle chunk" tests/translation.test.js`
+   - Expected RED: 0/1 passed; `AssertionError: Missing expected rejection`.
+   - Root cause: `combineTranslations` filtered the empty result, allowing the service to start the third chunk and return a misleading complete result.
+
+2. Empty middle chunk through modal persistence
+   - Command: `node --test --test-name-pattern="modal persists prior output as stopped" tests/translation.test.js`
+   - Expected RED: 0/1 passed; the LLM was called 3 times instead of stopping after the second empty result.
+   - Root cause: the service did not raise a failure, so the modal followed its complete path instead of persisting the first translation as `stopped`.
+
+3. Explicit cancellation checkpoints
+   - Command: `node --test --test-name-pattern="checks cancellation before calls" tests/translation.test.js`
+   - Expected RED: 0/1 passed; `AssertionError: Missing expected rejection` for a pre-aborted signal.
+   - Root cause: the service delegated cancellation entirely to the LLM transport and could neither stop a signal-ignoring transport nor prevent later chunks/completion.
+
+4. Supplementary Unicode safety
+   - Command: `node --test --test-name-pattern="keeps supplementary math characters" tests/translation.test.js`
+   - Expected RED: 0/1 passed; actual chunks were `['ab\ud835', '\udefccd']` instead of `['ab', '𝛼c', 'd']`.
+   - Root cause: hard splits used an unchecked UTF-16 offset between the high and low surrogates.
+
+5. Translation error prompt leakage
+   - Command: `node --test --test-name-pattern="modal sanitizes translation endpoint errors" tests/translation.test.js`
+   - Expected RED: 0/1 passed; the assistant bubble displayed the raw endpoint payload containing `faithful academic translation` and `<source_text>Selected source</source_text>`.
+   - Root cause: the translation catch branch passed `errorMessage(err)` directly to the visible bubble.
+
+6. Required fallback-boundary coverage
+   - Command: `node --test --test-name-pattern="prefers line, sentence, and whitespace" tests/translation.test.js`
+   - Existing behavior GREEN: 1/1 passed before production changes, confirming line, sentence, and whitespace fallback precedence already matched the binding requirement.
+
+### Review implementation
+
+- An empty or whitespace-only chunk result now throws immediately with its chunk index. No later chunk starts. Any prior streamed/translated output remains in modal state and is persisted through the existing `stopped` path.
+- The translation service now throws an `AbortError` before each model call, immediately after every awaited model call, and before returning completion. This covers already-aborted signals and LLM implementations that ignore the signal.
+- Every computed split boundary is checked for a UTF-16 high/low surrogate pair. If necessary the boundary moves so supplementary mathematical characters remain intact in both chunks and `<source_text>` requests.
+- Translation failures with no output now render only `翻译失败，请检查模型配置或稍后重试。`. Raw endpoint errors, system prompts, source wrappers, and source text are neither shown nor persisted. The normal chat error branch was not changed.
+- Added focused line, sentence, and whitespace fallback tests with source reconstruction and per-chunk limit assertions.
+
+### Review GREEN and final verification
+
+Focused GREEN results:
+
+- Empty service result plus modal stopped persistence: 2/2 passed.
+- Pre/post-call cancellation: 1/1 passed.
+- Surrogate-safe requests plus fallback-boundary coverage: 2/2 passed.
+- Sanitized translation failure plus existing stopped/empty failure behavior: 2/2 passed.
+
+Required final commands after all review fixes:
+
+- `npm run typecheck` — exit 0.
+- `npm run build` — exit 0.
+- `npm test` — 35/35 tests passed; 0 failed, skipped, cancelled, or todo.
+- `node --check main.js` — exit 0.
+- `git diff --check` — exit 0 with no whitespace errors.
+- `git diff --cached --check` before the review-fix commit — exit 0.
+
+### Review self-check
+
+- Confirmed empty chunk 2/3 rejects and chunk 3/3 is never requested.
+- Confirmed the modal stores prior output as a visible `stopped` turn and does not persist the empty chunk or internal request.
+- Confirmed pre-aborted signals make zero LLM calls and an LLM that aborts then resolves cannot start a later chunk or return complete.
+- Confirmed no generated chunk ends in a high surrogate or begins in a low surrogate for the supplementary-math regression, and captured request chunks reconstruct the exact source.
+- Confirmed raw translation error payloads do not appear in bubbles, runtime chat additions, or persisted transcripts; normal chat error behavior remains unchanged.
+- Confirmed the review fix changed only `src/translation.ts`, the translation branch in `src/pdf-chat-modal.ts`, `tests/translation.test.js`, and generated `main.js`.
+
+No new blockers or known review gaps remain. The existing Windows LF-to-CRLF conversion warnings remain non-failing; normal and cached diff checks report no whitespace errors.
