@@ -204,20 +204,34 @@ test("splits long translation sources at paragraph boundaries within the charact
   assert.equal(hardSplitChunks.join(""), hardSplitSource);
 });
 
-test("prefers line, sentence, and whitespace boundaries before hard splitting", () => {
+test("prefers an earlier line boundary over later whitespace within the limit", () => {
   const { splitTranslationChunks } = loadBundle();
-  const cases = [
-    { source: "alpha line\nbeta", limit: 11, first: "alpha line\n" },
-    { source: "Alpha one. Beta two.", limit: 12, first: "Alpha one. " },
-    { source: "alpha betaGamma", limit: 8, first: "alpha " },
-  ];
+  const source = "alpha\nbeta gamma";
+  const chunks = plain(splitTranslationChunks(source, 12));
 
-  for (const { source, limit, first } of cases) {
-    const chunks = plain(splitTranslationChunks(source, limit));
-    assert.equal(chunks[0], first);
-    assert.equal(chunks.join(""), source);
-    assert.ok(chunks.every((chunk) => chunk.length > 0 && chunk.length <= limit));
-  }
+  assert.equal(chunks[0], "alpha\n");
+  assert.equal(chunks.join(""), source);
+  assert.ok(chunks.every((chunk) => chunk.length > 0 && chunk.length <= 12));
+});
+
+test("prefers an earlier sentence boundary over later whitespace within the limit", () => {
+  const { splitTranslationChunks } = loadBundle();
+  const source = "Alpha one. Beta two";
+  const chunks = plain(splitTranslationChunks(source, 17));
+
+  assert.equal(chunks[0], "Alpha one. ");
+  assert.equal(chunks.join(""), source);
+  assert.ok(chunks.every((chunk) => chunk.length > 0 && chunk.length <= 17));
+});
+
+test("uses whitespace before hard splitting when no higher-priority boundary exists", () => {
+  const { splitTranslationChunks } = loadBundle();
+  const source = "alpha betaGamma";
+  const chunks = plain(splitTranslationChunks(source, 8));
+
+  assert.equal(chunks[0], "alpha ");
+  assert.equal(chunks.join(""), source);
+  assert.ok(chunks.every((chunk) => chunk.length > 0 && chunk.length <= 8));
 });
 
 test("keeps supplementary math characters intact in chunks and translation requests", async () => {
