@@ -10,6 +10,14 @@ export interface LlmTransportSettings {
 
 type RequestUrl = typeof requestUrl;
 
+function getDefaultFetchRequest(): typeof fetch {
+  const fetchRequest = typeof globalThis !== "undefined" ? globalThis.fetch : undefined;
+  if (typeof fetchRequest !== "function") {
+    return (() => Promise.reject(new Error("fetch is not available in this environment"))) as typeof fetch;
+  }
+  return fetchRequest.bind(globalThis) as typeof fetch;
+}
+
 interface CompletionDelta {
   content?: string;
   reasoning_content?: string;
@@ -36,7 +44,7 @@ export class OpenAICompatibleTransport {
     private readonly getSettings: () => LlmTransportSettings,
     private readonly getModelProfile: (id: string) => ModelProfile,
     private readonly request: RequestUrl = requestUrl,
-    private readonly fetchRequest: typeof fetch = fetch
+    private readonly fetchRequest: typeof fetch = getDefaultFetchRequest()
   ) {}
 
   async chat(request: LlmRequest): Promise<string> {

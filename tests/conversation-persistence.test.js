@@ -115,11 +115,9 @@ function loadPluginModule(options = {}) {
     AbortController,
     TextDecoder,
     URL,
+    __fetchBrand: "window",
     clearTimeout,
     console,
-    fetch: async () => {
-      throw new Error("Unexpected fetch in unit test");
-    },
     module: { exports: {} },
     require(request) {
       if (request === "obsidian") return obsidian;
@@ -127,6 +125,9 @@ function loadPluginModule(options = {}) {
     },
     setTimeout,
     window: {},
+  };
+  sandbox.fetch = options.fetch ? options.fetch(sandbox) : async () => {
+    throw new Error("Unexpected fetch in unit test");
   };
   sandbox.exports = sandbox.module.exports;
 
@@ -738,6 +739,35 @@ test("non-streaming transport preserves endpoint error text when the JSON body i
     transport.chat({ messages: [{ role: "user", content: "Question" }] }),
     /gateway down/
   );
+});
+
+test("streaming transport binds the default browser fetch to the global context", async () => {
+  const PluginClass = loadPluginModule({
+    fetch: () => function boundFetchRequired() {
+      if (!this || this.__fetchBrand !== "window") {
+        throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation");
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        body: null,
+        json: async () => ({ choices: [{ message: { content: "stream answer" } }] }),
+      });
+    },
+  });
+  const Transport = PluginClass.__test.OpenAICompatibleTransport;
+  const profile = {
+    id: "model-a",
+    endpoint: "https://example.invalid",
+    apiKey: "YOUR_API_KEY",
+    model: "model-a",
+  };
+  const transport = new Transport(
+    () => ({ activeModelId: "model-a", temperature: 0.7, maxTokens: 100, stream: true }),
+    () => profile
+  );
+
+  assert.equal(await transport.chat({ messages: [{ role: "user", content: "Question" }] }), "stream answer");
 });
 
 test("modal compatibility services forward the complete LlmRequest contract", async () => {

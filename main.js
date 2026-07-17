@@ -183,11 +183,18 @@ var ConversationStore = class {
 
 // src/llm-transport.ts
 var import_obsidian = require("obsidian");
+function getDefaultFetchRequest() {
+  const fetchRequest = typeof globalThis !== "undefined" ? globalThis.fetch : void 0;
+  if (typeof fetchRequest !== "function") {
+    return (() => Promise.reject(new Error("fetch is not available in this environment")));
+  }
+  return fetchRequest.bind(globalThis);
+}
 function asCompletionPayload(value) {
   return value && typeof value === "object" ? value : null;
 }
 var OpenAICompatibleTransport = class {
-  constructor(getSettings, getModelProfile, request = import_obsidian.requestUrl, fetchRequest = fetch) {
+  constructor(getSettings, getModelProfile, request = import_obsidian.requestUrl, fetchRequest = getDefaultFetchRequest()) {
     this.getSettings = getSettings;
     this.getModelProfile = getModelProfile;
     this.request = request;
