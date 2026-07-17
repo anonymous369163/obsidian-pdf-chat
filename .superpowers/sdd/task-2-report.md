@@ -192,3 +192,48 @@ Required final commands after all review fixes:
 - Confirmed the review fix changed only `src/translation.ts`, the translation branch in `src/pdf-chat-modal.ts`, `tests/translation.test.js`, and generated `main.js`.
 
 No new blockers or known review gaps remain. The existing Windows LF-to-CRLF conversion warnings remain non-failing; normal and cached diff checks report no whitespace errors.
+
+## Re-review test-quality addendum
+
+Focused test commit: `b75530f` (`test: strengthen translation boundary priority coverage`).
+
+### Competing-boundary test design
+
+- Line-priority source: `alpha\nbeta gamma`, limit `12`. Both the earlier line break and the later space after `beta` are within the limit; the required first chunk is `alpha\n`.
+- Sentence-priority source: `Alpha one. Beta two`, limit `17`. Both the earlier sentence boundary and the later space after `Beta` are within the limit; the required first chunk is `Alpha one. `.
+- Whitespace fallback remains a separate focused case using `alpha betaGamma`, proving whitespace is selected when no paragraph, line, or sentence boundary exists.
+
+Splitting these into three tests ensures a line-priority failure cannot prevent the sentence-priority assertion from running.
+
+### Mutation RED evidence
+
+For test-efficacy verification only, the line and sentence branches were temporarily removed from `findPreferredBoundary`; no production mutation was retained.
+
+- Command: `npm run build; node --test --test-name-pattern="earlier line boundary|earlier sentence boundary|uses whitespace before hard" tests/translation.test.js`
+- Result under mutation: 1/3 passed and 2/3 failed.
+- Line failure: actual first chunk `alpha\nbeta ` versus expected `alpha\n`, proving the test rejects a later whitespace fallback when a line boundary exists.
+- Sentence failure: actual first chunk `Alpha one. Beta ` versus expected `Alpha one. `, proving the test rejects a later whitespace fallback when a sentence boundary exists.
+- The whitespace-only case passed under mutation, confirming that the failures were specific to missing higher-priority branches rather than general splitter breakage.
+
+The original line and sentence production branches were then restored byte-for-byte.
+
+### Restored GREEN and verification
+
+- Restored focused command: 3/3 passed.
+- Final diff before commit: only `tests/translation.test.js`; `src/translation.ts` and generated `main.js` matched the prior commit.
+- `npm test` — 37/37 passed; 0 failed, skipped, cancelled, or todo.
+- `npm run typecheck` — exit 0.
+- `npm run build` — exit 0.
+- `node --check main.js` — exit 0.
+- `git diff --check` — exit 0 with no whitespace errors.
+- `git diff --cached --check` before the focused test commit — exit 0.
+
+### Re-review self-check
+
+- Confirmed each higher-priority test contains a lower-priority whitespace candidate later within the same limit.
+- Confirmed exact first-chunk assertions distinguish priority selection from generic valid chunking.
+- Confirmed each case reconstructs the original source and enforces the per-chunk limit.
+- Confirmed mutation RED independently exercised both line and sentence priority assertions.
+- Confirmed no production behavior, bundle output, installed plugin, or private data changed.
+
+No new blockers or concerns.
