@@ -1872,10 +1872,8 @@ ${c.text}`).join("\n\n---\n\n");
     const bubble = this.historyEl.createDiv({ cls: `pdf-chat-bubble ${role}` });
     const compatibleBubble = bubble;
     if (typeof compatibleBubble.setAttr === "function") {
-      compatibleBubble.setAttr("data-speaker", role === "user" ? "\u4F60" : "PDF Chat");
       compatibleBubble.setAttr("aria-label", role === "user" ? "\u4F60\u7684\u6D88\u606F" : "PDF Chat \u7684\u6D88\u606F");
     } else if (typeof compatibleBubble.setAttribute === "function") {
-      compatibleBubble.setAttribute("data-speaker", role === "user" ? "\u4F60" : "PDF Chat");
       compatibleBubble.setAttribute("aria-label", role === "user" ? "\u4F60\u7684\u6D88\u606F" : "PDF Chat \u7684\u6D88\u606F");
     }
     if (opts && opts.loading) bubble.addClass("is-loading");

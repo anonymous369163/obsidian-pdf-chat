@@ -291,17 +291,6 @@
   cursor: text;
 }
 
-.pdf-chat-bubble::before {
-  content: attr(data-speaker);
-  display: block;
-  margin-bottom: 4px;
-  color: var(--text-muted);
-  font-size: 0.7rem;
-  font-weight: var(--font-semibold);
-  line-height: 1.2;
-  letter-spacing: 0.02em;
-}
-
 .pdf-chat-bubble.user {
   align-self: flex-end;
   background: var(--background-modifier-hover);

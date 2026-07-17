@@ -914,10 +914,8 @@ export class PDFChatModal extends Modal {
       setAttr?: (name: string, value: string) => void;
     };
     if (typeof compatibleBubble.setAttr === "function") {
-      compatibleBubble.setAttr("data-speaker", role === "user" ? "你" : "PDF Chat");
       compatibleBubble.setAttr("aria-label", role === "user" ? "你的消息" : "PDF Chat 的消息");
     } else if (typeof compatibleBubble.setAttribute === "function") {
-      compatibleBubble.setAttribute("data-speaker", role === "user" ? "你" : "PDF Chat");
       compatibleBubble.setAttribute("aria-label", role === "user" ? "你的消息" : "PDF Chat 的消息");
     }
     if (opts && opts.loading) bubble.addClass("is-loading");

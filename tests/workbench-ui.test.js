@@ -470,7 +470,8 @@ test("modal builds the accessible research-workbench regions and interactions", 
 
   const bubble = modal.addBubble("user", "Question");
   assert.equal(byClass(modal.historyEl, "pdf-chat-empty-state").length, 0);
-  assert.equal(bubble.getAttribute("data-speaker"), "你");
+  assert.equal(bubble.getAttribute("data-speaker"), null);
+  assert.match(bubble.getAttribute("aria-label"), /消息/);
   assert.deepEqual(modal.transcript, []);
 });
 
@@ -758,6 +759,7 @@ test("CSS defines the scoped responsive, readable, selectable workbench contract
   assert.match(css, /:focus-visible/);
   assert.match(css, /@container|@media\s*\([^)]*max-width/);
   assert.match(css, /\.pdf-chat-bubble[^}]*user-select:\s*text/s);
+  assert.doesNotMatch(css, /attr\(data-speaker\)/);
   assert.match(css, /\.pdf-chat-(?:bubble|message-content)[^}]*table[^}]*overflow-x:\s*auto/s);
   assert.match(css, /\.pdf-chat-bubble\.user[^}]*background:\s*var\(--background-modifier-/s);
   assert.doesNotMatch(css, /\.pdf-chat-bubble\.user[^}]*background:\s*var\(--interactive-accent\)/s);
