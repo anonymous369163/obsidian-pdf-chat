@@ -265,6 +265,11 @@
   color: var(--text-on-accent);
 }
 
+.pdf-chat-translate-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 .pdf-chat-hint {
   font-size: 0.75em;
   color: var(--text-faint);

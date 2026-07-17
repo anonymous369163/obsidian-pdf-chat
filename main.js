@@ -33,6 +33,13 @@ const DEFAULT_SETTINGS = {
     "2. 如果问题在原文片段中找不到依据,请明确说明,不要编造。\n" +
     "3. 直接输出回答内容,不要复述规则,不要加“根据原文...”这类套话开头。\n" +
     "4. 后续追问要结合之前的对话上下文,保持连贯。",
+  // “翻译”按钮发送的固定指令。选中的原文片段已经在系统提示词里了(见 buildSystemMessage),
+  // 这里不用再重复贴一遍原文,只描述翻译要求即可。
+  translatePrompt:
+    "请把【我当前选中并想讨论的原文片段】完整翻译成中文。\n" +
+    "1. 逐段对应原文分段,不要合并或省略段落。\n" +
+    "2. 专业术语可保留英文原词(括号标注即可),公式、代码、变量名、图表编号等保持原样不翻译。\n" +
+    "3. 只输出翻译结果,不要输出原文、不要复述要求、不要加额外解释或总结。",
   // 全文摘要(浓缩上下文)相关设置:先用一个快速/便宜的模型把整篇 PDF 浓缩成摘要,
   // 缓存下来,回答局部选段问题时可以选择性地附带这份摘要作为背景,
   // 而不是把全文原样塞进上下文导致跑题或超长。
@@ -615,6 +622,10 @@ class PDFChatModal extends Modal {
       cls: "pdf-chat-input",
       attr: { placeholder: "针对上面选中的内容提问,按 Enter 提交,Shift+Enter 换行…" },
     });
+    // “翻译”不需要在输入框里打字:选中的原文片段已经在系统提示词里,点一下就直接把固定的
+    // 翻译指令当作这一轮的问题发出去,走的还是同一套发送/流式/历史记录逻辑。
+    this.translateBtn = inputRow.createEl("button", { text: "翻译", cls: "pdf-chat-translate-btn" });
+    this.translateBtn.setAttr("title", "直接翻译当前选中的原文片段,无需输入内容");
     this.sendBtn = inputRow.createEl("button", { text: "发送", cls: "mod-cta" });
 
     const submit = () => this.handleSubmit();
@@ -623,6 +634,13 @@ class PDFChatModal extends Modal {
         this.stopGenerating();
       } else {
         submit();
+      }
+    });
+    this.translateBtn.addEventListener("click", () => {
+      if (this.isSending) {
+        this.stopGenerating();
+      } else {
+        this.handleTranslate();
       }
     });
     this.inputEl.addEventListener("keydown", (evt) => {
@@ -634,7 +652,7 @@ class PDFChatModal extends Modal {
 
     contentEl.createEl("p", {
       cls: "pdf-chat-hint",
-      text: "多轮追问会带着完整对话历史一起发送给模型,答案会实时流式显示。",
+      text: "多轮追问会带着完整对话历史一起发送给模型,答案会实时流式显示。点「翻译」可直接翻译选中内容,不用输入任何文字。",
     });
 
     if (this.transcript.length) {
@@ -896,8 +914,19 @@ class PDFChatModal extends Modal {
     this.sendBtn.toggleClass("is-stop", sending);
   }
 
-  async handleSubmit() {
-    const question = this.inputEl.value.trim();
+  // 点「翻译」按钮触发:不读输入框,直接用固定的翻译指令当作这一轮的问题发出去。
+  // 选中的原文片段已经在系统提示词里(见 buildSystemMessage),跳过 RAG/全文检索拼接——
+  // 那是给"回答具体问题"用的,翻译只需要针对已经在上下文里的选中片段,不需要额外找相关内容。
+  handleTranslate() {
+    const instruction = (this.plugin.settings.translatePrompt || DEFAULT_SETTINGS.translatePrompt).trim();
+    if (!instruction) return;
+    this.handleSubmit({ question: instruction, skipContextAugmentation: true });
+  }
+
+  async handleSubmit(options) {
+    const opts = options || {};
+    const usingOverride = typeof opts.question === "string";
+    const question = usingOverride ? opts.question.trim() : this.inputEl.value.trim();
     if (!question) return;
     if (this.isSending) {
       new Notice("上一个问题还在生成中,请稍候或点击停止");
@@ -905,13 +934,15 @@ class PDFChatModal extends Modal {
     }
 
     this.addBubble("user", question);
-    this.inputEl.value = "";
+    if (!usingOverride) this.inputEl.value = "";
     this.setSendingState(true);
 
     const loadingBubble = this.addBubble("assistant", "思考中…", { loading: true });
 
     let outgoingContent = question;
-    if (this.useRag && this.useFullTextMode && this.pdfFile && !this.fullTextAttached) {
+    if (opts.skipContextAugmentation) {
+      // 跳过下面的 RAG/全文拼接逻辑,原样发送。
+    } else if (this.useRag && this.useFullTextMode && this.pdfFile && !this.fullTextAttached) {
       // 全文足够短,直接把全文交给模型,不做"猜哪一块相关"的检索——实测发现关键词检索对
       // "列举类"问题(比如"论文对比了哪些基线算法")经常检索不全或检索错块,直接给全文更可靠。
       // 只在对话的第一轮附带一次:之后每轮 this.messages 都会带着这一轮的历史一起重新发送,
@@ -1178,6 +1209,17 @@ class PDFChatSettingTab extends PluginSettingTab {
         text.inputEl.rows = 6;
         text.setValue(this.plugin.settings.systemPrompt).onChange(async (value) => {
           this.plugin.settings.systemPrompt = value;
+          await this.plugin.saveSettings();
+        });
+      });
+
+    new Setting(containerEl)
+      .setName("「翻译」按钮的指令")
+      .setDesc("点弹窗里的「翻译」按钮时直接发送的固定指令,不需要在输入框里打字。选中的原文片段已经在系统提示词里,这里只需要描述翻译要求。")
+      .addTextArea((text) => {
+        text.inputEl.rows = 4;
+        text.setValue(this.plugin.settings.translatePrompt).onChange(async (value) => {
+          this.plugin.settings.translatePrompt = value;
           await this.plugin.saveSettings();
         });
       });

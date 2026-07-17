@@ -504,6 +504,68 @@ test("handleSubmit persists streamed partial text when generation is stopped", a
   assert.equal(bubbles.at(-1).text, "Partial answer\n\n[已停止生成]");
 });
 
+test("handleTranslate sends the fixed translate instruction without reading the input box, skipping RAG/full-text augmentation", async () => {
+  const PluginClass = loadPluginModule();
+  const PDFChatModal = PluginClass.__test.PDFChatModal;
+  let apiMessages = [];
+  const plugin = Object.create(PluginClass.prototype);
+  plugin.settings = {
+    activeModelId: "model-a",
+    conversationHistories: {},
+    lastModelId: "",
+    lastPresetId: "",
+    models: [{ id: "model-a" }],
+    promptPresets: [],
+    systemPrompt: "System instructions",
+    translatePrompt: "请把选中的原文片段翻译成中文。",
+  };
+  plugin.getModelProfile = () => ({ id: "model-a" });
+  plugin.saveConversation = async () => {};
+  plugin.chat = async (messages) => {
+    apiMessages = plain(messages);
+    return "翻译结果";
+  };
+
+  const modal = new PDFChatModal({}, plugin, "Selection", { path: "demo.pdf" });
+  // 即使全文/检索都开着,翻译也不应该触发这些逻辑,否则会调用 extractPdfFullText 等
+  // 在单测环境里没有 mock 的依赖。
+  modal.useRag = true;
+  modal.useFullTextMode = true;
+  modal.docChunksEntry = { chunks: [{ idx: 0, page: 1, text: "Some PDF text" }] };
+  const bubbles = [];
+  modal.historyEl = {
+    scrollHeight: 20,
+    createDiv({ cls }) {
+      const bubble = {
+        cls,
+        text: "",
+        classes: [],
+        addClass(value) {
+          this.classes.push(value);
+        },
+        removeClass(value) {
+          this.classes = this.classes.filter((item) => item !== value);
+        },
+        setText(value) {
+          this.text = value;
+        },
+      };
+      bubbles.push(bubble);
+      return bubble;
+    },
+    scrollTo() {},
+  };
+  modal.inputEl = { value: "leave me alone", focus() {} };
+  modal.sendBtn = { setText() {}, toggleClass() {} };
+
+  modal.handleTranslate();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(bubbles[0].text, "请把选中的原文片段翻译成中文。");
+  assert.equal(apiMessages.at(-1).content, "请把选中的原文片段翻译成中文。");
+  assert.equal(modal.inputEl.value, "leave me alone");
+});
+
 test("onload registers separate new-conversation and continue-conversation hotkeys", async () => {
   const PluginClass = loadPluginModule();
   const plugin = Object.create(PluginClass.prototype);
@@ -528,8 +590,8 @@ test("release metadata and CSS expose the 0.2.0 selectable-text contract", () =>
   const versions = JSON.parse(fs.readFileSync(path.join(projectRoot, "versions.json"), "utf8"));
   const css = fs.readFileSync(path.join(projectRoot, "styles.css"), "utf8");
 
-  assert.equal(manifest.version, "0.3.0");
-  assert.equal(versions["0.3.0"], "1.4.0");
+  assert.equal(manifest.version, "0.4.0");
+  assert.equal(versions["0.4.0"], "1.4.0");
   assert.match(css, /\.pdf-chat-bubble[^}]*user-select:\s*text/s);
   assert.match(css, /-webkit-user-select:\s*text/);
   assert.match(css, /\.pdf-chat-bubble[^}]*cursor:\s*text/s);
