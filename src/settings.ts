@@ -1,13 +1,14 @@
 import { normalizeConversationHistories } from "./conversation";
 import { DEFAULT_SETTINGS, LEGACY_0_4_0_TRANSLATE_PROMPT } from "./default-settings";
-import type { PDFChatSettings, TranslationSettings } from "./types";
+import type { CodexDeepAnalysisSettings, PDFChatSettings, TranslationSettings } from "./types";
 
-interface LegacySettings extends Omit<Partial<PDFChatSettings>, "translation"> {
+interface LegacySettings extends Omit<Partial<PDFChatSettings>, "codexDeepAnalysis" | "translation"> {
   endpoint?: string;
   apiKey?: string;
   model?: string;
   translatePrompt?: string;
   translateChunkMaxChars?: number;
+  codexDeepAnalysis?: Partial<CodexDeepAnalysisSettings>;
   translation?: Partial<TranslationSettings>;
 }
 
@@ -103,6 +104,29 @@ export function migrateSettings(savedValue: unknown, now: () => number = Date.no
     };
     needsSave = true;
   }
+
+  const savedCodex =
+    saved && saved.codexDeepAnalysis && typeof saved.codexDeepAnalysis === "object" && !Array.isArray(saved.codexDeepAnalysis)
+      ? saved.codexDeepAnalysis
+      : {};
+  settings.codexDeepAnalysis = {
+    ...DEFAULT_SETTINGS.codexDeepAnalysis,
+    ...savedCodex,
+    enabled: savedCodex.enabled === true,
+    command:
+      typeof savedCodex.command === "string" && savedCodex.command.trim()
+        ? savedCodex.command.trim()
+        : DEFAULT_SETTINGS.codexDeepAnalysis.command,
+    profile: typeof savedCodex.profile === "string" ? savedCodex.profile.trim() : "",
+    model: typeof savedCodex.model === "string" ? savedCodex.model.trim() : "",
+    timeoutMs:
+      typeof savedCodex.timeoutMs === "number" &&
+      Number.isFinite(savedCodex.timeoutMs) &&
+      savedCodex.timeoutMs >= 30000
+        ? Math.floor(savedCodex.timeoutMs)
+        : DEFAULT_SETTINGS.codexDeepAnalysis.timeoutMs,
+    keepTempFiles: savedCodex.keepTempFiles === true,
+  };
   if (saved && (saved.endpoint || saved.apiKey || saved.model) && !(saved.models && saved.models.length)) {
     const migrated = {
       id: "migrated-" + now(),

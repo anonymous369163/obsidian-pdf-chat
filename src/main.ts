@@ -63,6 +63,18 @@ export {
   PaperContextService,
   tokenizeForBM25,
 } from "./paper-context";
+export {
+  buildCodexDeepAnalysisPrompt,
+  buildCodexExecArgs,
+  codexAnalysisOutputSchema,
+  createCodexAnalysisTempDir,
+  parseCodexAnalysisOutput,
+  renderCodexAnalysisMarkdown,
+  removeCodexAnalysisTempDir,
+  runCodexExec,
+  searchPdfFiles,
+  writeCodexAnalysisPackage,
+} from "./multi-paper";
 export { createPDFChatModalServices } from "./modal-services";
 export { PDFChatModal } from "./pdf-chat-modal";
 export { QuickTranslateMarker } from "./quick-translate-marker";
@@ -113,6 +125,7 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
           this.paperContextService!.getOrCreateDocSummary(file, forceRefresh),
         getOrCreateDocChunks: (file, forceRefresh) =>
           this.paperContextService!.getOrCreateDocChunks(file, forceRefresh),
+        extractPages: (file) => this.paperContextService!.extractPages(file),
         extractFullText: (file) => this.paperContextService!.extractFullText(file),
         planRagQueries: (question) => this.paperContextService!.planRagQueries(question),
         retrieveContext: (chunks, queries, topK) =>

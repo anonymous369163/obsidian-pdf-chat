@@ -331,6 +331,124 @@
   display: none;
 }
 
+.pdf-chat-multi-paper {
+  display: grid;
+  gap: var(--pdf-chat-space-small);
+  padding: var(--pdf-chat-space-small) 0 0;
+  border-top: 1px solid color-mix(in srgb, var(--interactive-accent) 10%, var(--background-modifier-border));
+}
+
+.pdf-chat-context-help,
+.pdf-chat-multi-paper-status,
+.pdf-chat-reference-empty,
+.pdf-chat-search-empty {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+.pdf-chat-pdf-search-row {
+  display: flex;
+  gap: var(--pdf-chat-space-small);
+}
+
+.pdf-chat-pdf-search-input {
+  width: 100%;
+  min-height: 34px;
+  border-radius: var(--pdf-chat-radius-sm);
+}
+
+.pdf-chat-pdf-search-results {
+  display: grid;
+  gap: 4px;
+}
+
+.pdf-chat-pdf-search-result {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--pdf-chat-radius-sm);
+  background: color-mix(in srgb, var(--background-primary) 72%, var(--background-secondary));
+  color: var(--text-normal);
+  text-align: left;
+  cursor: pointer;
+}
+
+.pdf-chat-pdf-search-result:hover,
+.pdf-chat-pdf-search-result:focus-visible {
+  border-color: var(--pdf-chat-accent-border);
+  background: var(--pdf-chat-accent-soft);
+}
+
+.pdf-chat-pdf-search-name {
+  font-size: 0.8rem;
+  font-weight: var(--font-semibold);
+}
+
+.pdf-chat-pdf-search-path {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-chat-pdf-reference-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--pdf-chat-space-small);
+}
+
+.pdf-chat-reference-chip {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 9px;
+  border: 1px solid var(--pdf-chat-accent-border);
+  border-radius: 999px;
+  background: var(--pdf-chat-accent-soft);
+  color: var(--text-normal);
+  font-size: 0.74rem;
+}
+
+.pdf-chat-reference-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-chat-reference-remove {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 50%;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.pdf-chat-reference-remove:hover,
+.pdf-chat-reference-remove:focus-visible {
+  color: var(--text-normal);
+  background: color-mix(in srgb, var(--interactive-accent) 16%, transparent);
+}
+
+.pdf-chat-multi-paper-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--pdf-chat-space-small);
+}
+
+.pdf-chat-codex-analysis-btn {
+  border-color: var(--pdf-chat-accent-border);
+  color: var(--pdf-chat-accent-muted);
+}
+
 .pdf-chat-history {
   flex: 1 1 auto;
   min-height: 0;

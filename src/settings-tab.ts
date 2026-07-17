@@ -379,6 +379,71 @@ export class PDFChatSettingTab extends PluginSettingTab {
         "默认快捷键：Ctrl+Alt+Q 新开对话；Ctrl+Q 继续上次对话。可在 设置→快捷键→搜索“PDF Chat”中修改。弹窗支持拖动、缩放、连续追问和停止生成。",
       cls: "setting-item-description",
     });
+    containerEl.createEl("h4", { text: "Codex 深度多论文分析" });
+    containerEl.createEl("p", {
+      text:
+        "启用后，论文上下文区会允许手动触发 Codex CLI。插件只会把论文文本和当前问题写入临时分析包，不会复制 data.json、API key 或模型 endpoint。",
+      cls: "setting-item-description",
+    });
+    new Setting(containerEl)
+      .setName("启用 Codex CLI 深度分析")
+      .setDesc("仅桌面端可用。Codex 使用它自己的登录/配置，不使用 PDF Chat 的 API key。")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.codexDeepAnalysis.enabled).onChange(async (value) => {
+          this.plugin.settings.codexDeepAnalysis.enabled = value;
+          await this.plugin.saveSettings();
+        })
+      );
+    new Setting(containerEl)
+      .setName("Codex 命令")
+      .setDesc("默认 codex；如果不在 PATH 中，可填写 codex 可执行文件的完整路径。")
+      .addText((text) =>
+        text.setValue(this.plugin.settings.codexDeepAnalysis.command).onChange(async (value) => {
+          this.plugin.settings.codexDeepAnalysis.command =
+            value.trim() || DEFAULT_SETTINGS.codexDeepAnalysis.command;
+          await this.plugin.saveSettings();
+        })
+      );
+    new Setting(containerEl)
+      .setName("Codex profile")
+      .setDesc("可选；对应 codex exec --profile。留空则使用 Codex 默认配置。")
+      .addText((text) =>
+        text.setValue(this.plugin.settings.codexDeepAnalysis.profile).onChange(async (value) => {
+          this.plugin.settings.codexDeepAnalysis.profile = value.trim();
+          await this.plugin.saveSettings();
+        })
+      );
+    new Setting(containerEl)
+      .setName("Codex model")
+      .setDesc("可选；对应 codex exec --model。留空则使用 Codex 默认模型。")
+      .addText((text) =>
+        text.setValue(this.plugin.settings.codexDeepAnalysis.model).onChange(async (value) => {
+          this.plugin.settings.codexDeepAnalysis.model = value.trim();
+          await this.plugin.saveSettings();
+        })
+      );
+    new Setting(containerEl)
+      .setName("Codex 超时毫秒")
+      .setDesc("默认 600000，即 10 分钟；超时后会终止 Codex 进程。")
+      .addText((text) =>
+        text.setValue(String(this.plugin.settings.codexDeepAnalysis.timeoutMs)).onChange(async (value) => {
+          const parsed = Number(value.trim());
+          this.plugin.settings.codexDeepAnalysis.timeoutMs =
+            Number.isFinite(parsed) && parsed >= 30000
+              ? Math.floor(parsed)
+              : DEFAULT_SETTINGS.codexDeepAnalysis.timeoutMs;
+          await this.plugin.saveSettings();
+        })
+      );
+    new Setting(containerEl)
+      .setName("保留 Codex 临时分析包")
+      .setDesc("仅用于调试。关闭时任务结束会删除临时包。")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.codexDeepAnalysis.keepTempFiles).onChange(async (value) => {
+          this.plugin.settings.codexDeepAnalysis.keepTempFiles = value;
+          await this.plugin.saveSettings();
+        })
+      );
     containerEl.createEl("h4", { text: "阅读模式预设" });
     containerEl.createEl("p", {
       text: "弹窗的阅读模式会列出这些预设；切换后替换系统提示词，选区原文仍会自动附加。",

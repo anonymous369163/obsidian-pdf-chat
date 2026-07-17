@@ -84,9 +84,19 @@ test("Task 5 settings preserve legacy chunk size while keeping credential-free 0
   assert.equal(DEFAULT_SETTINGS.models[0].endpoint, "");
   assert.equal(DEFAULT_SETTINGS.models[0].apiKey, "");
   assert.equal(DEFAULT_SETTINGS.models[0].model, "");
+  assert.deepEqual(plain(DEFAULT_SETTINGS.codexDeepAnalysis), {
+    enabled: false,
+    command: "codex",
+    profile: "",
+    model: "",
+    timeoutMs: 600000,
+    keepTempFiles: false,
+  });
 
   const legacy = migrateSettings({ translateChunkMaxChars: 3000 }).settings;
   assert.equal(legacy.translation.chunkChars, 3000);
+  assert.equal(legacy.codexDeepAnalysis.command, "codex");
+  assert.equal(legacy.codexDeepAnalysis.enabled, false);
   assert.equal(Object.hasOwn(legacy, "translateChunkMaxChars"), false);
 
   const nestedWins = migrateSettings({

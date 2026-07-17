@@ -36,9 +36,13 @@ __export(main_exports, {
   TranslationService: () => TranslationService,
   bm25Retrieve: () => bm25Retrieve,
   bm25RetrieveMulti: () => bm25RetrieveMulti,
+  buildCodexDeepAnalysisPrompt: () => buildCodexDeepAnalysisPrompt,
+  buildCodexExecArgs: () => buildCodexExecArgs,
   buildTranslationMessages: () => buildTranslationMessages,
   chunkPdfPages: () => chunkPdfPages,
   cleanSelectionText: () => cleanSelectionText,
+  codexAnalysisOutputSchema: () => codexAnalysisOutputSchema,
+  createCodexAnalysisTempDir: () => createCodexAnalysisTempDir,
   createCompatibilityActionRegistry: () => createCompatibilityActionRegistry,
   createPDFChatModalServices: () => createPDFChatModalServices,
   createResearchActionRegistry: () => createResearchActionRegistry,
@@ -51,14 +55,20 @@ __export(main_exports, {
   normalizeConversationHistories: () => normalizeConversationHistories,
   normalizeConversationMessages: () => normalizeConversationMessages,
   normalizeRagChunkSettings: () => normalizeRagChunkSettings,
+  parseCodexAnalysisOutput: () => parseCodexAnalysisOutput,
+  removeCodexAnalysisTempDir: () => removeCodexAnalysisTempDir,
+  renderCodexAnalysisMarkdown: () => renderCodexAnalysisMarkdown,
   resolveContinueModelId: () => resolveContinueModelId,
   resolveTranslateModelId: () => resolveTranslateModelId,
+  runCodexExec: () => runCodexExec,
+  searchPdfFiles: () => searchPdfFiles,
   splitTranslationChunks: () => splitTranslationChunks,
   stableConversationHash: () => stableConversationHash,
-  tokenizeForBM25: () => tokenizeForBM25
+  tokenizeForBM25: () => tokenizeForBM25,
+  writeCodexAnalysisPackage: () => writeCodexAnalysisPackage
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 
 // src/actions.ts
 var ResearchActionRegistry = class {
@@ -398,6 +408,14 @@ var DEFAULT_SETTINGS = {
     chunkChars: 8e3,
     additionalInstruction: ""
   },
+  codexDeepAnalysis: {
+    enabled: false,
+    command: "codex",
+    profile: "",
+    model: "",
+    timeoutMs: 6e5,
+    keepTempFiles: false
+  },
   // 全文摘要(浓缩上下文)相关设置:先用一个快速/便宜的模型把整篇 PDF 浓缩成摘要,
   // 缓存下来,回答局部选段问题时可以选择性地附带这份摘要作为背景,
   // 而不是把全文原样塞进上下文导致跑题或超长。
@@ -619,6 +637,9 @@ var PaperContextService = class {
   }
   createContext(file, selectedText, conversationKey) {
     return { app: this.app, file, selectedText, conversationKey };
+  }
+  extractPages(file) {
+    return extractPdfPages(this.app, file);
   }
   extractFullText(file) {
     return extractPdfFullText(this.app, file);
@@ -893,6 +914,7 @@ function createPDFChatModalServices(plugin, overrides = {}) {
     papers: {
       getOrCreateDocSummary: (file, forceRefresh) => plugin.getOrCreateDocSummary(file, forceRefresh),
       getOrCreateDocChunks: (file, forceRefresh) => plugin.getOrCreateDocChunks(file, forceRefresh),
+      extractPages: (file) => plugin.paperContextService ? plugin.paperContextService.extractPages(file) : extractPdfPages(plugin.app || {}, file),
       extractFullText: (file) => plugin.paperContextService ? plugin.paperContextService.extractFullText(file) : extractPdfFullText(plugin.app || {}, file),
       planRagQueries: (question) => plugin.planRagQueries(question),
       retrieveContext: (chunks, queries, topK) => expandWithNeighbors(chunks, bm25RetrieveMulti(chunks, queries, topK))
@@ -924,7 +946,336 @@ function createPDFChatModalServices(plugin, overrides = {}) {
 }
 
 // src/pdf-chat-modal.ts
+var import_obsidian3 = require("obsidian");
+
+// src/multi-paper.ts
 var import_obsidian2 = require("obsidian");
+function loadNodeModule(name) {
+  const nodeRequire = typeof require === "function" ? require : null;
+  if (!nodeRequire) throw new Error("Node.js APIs are not available in this Obsidian environment");
+  return nodeRequire(name);
+}
+function isPdfFile(file) {
+  const extension = String(file.extension || "").toLowerCase();
+  if (extension) return extension === "pdf";
+  return /\.pdf$/i.test(file.path || file.name || "");
+}
+function searchPdfFiles(app, query, options = {}) {
+  var _a;
+  const files = ((_a = app == null ? void 0 : app.vault) == null ? void 0 : _a.getFiles) ? app.vault.getFiles() : [];
+  const normalizedQuery = (query || "").trim();
+  const matcher = normalizedQuery && typeof import_obsidian2.prepareFuzzySearch === "function" ? (0, import_obsidian2.prepareFuzzySearch)(normalizedQuery) : null;
+  const fallbackQuery = normalizedQuery.toLowerCase();
+  const candidates = files.filter(isPdfFile).filter((file) => {
+    var _a2;
+    return !((_a2 = options.excludePaths) == null ? void 0 : _a2.has(file.path));
+  }).map((file) => {
+    var _a2;
+    const target = `${file.name || ""} ${file.path || ""}`;
+    const match = matcher ? matcher(target) : fallbackQuery ? target.toLowerCase().includes(fallbackQuery) ? { score: fallbackQuery.length, matches: [] } : null : { score: 1, matches: [] };
+    if (!match) return null;
+    return {
+      path: file.path,
+      name: file.name || file.path.split(/[\\/]/).pop() || file.path,
+      score: typeof match.score === "number" ? match.score : normalizedQuery.length || 1,
+      cached: Boolean((_a2 = options.cachedPaths) == null ? void 0 : _a2.has(file.path))
+    };
+  }).filter((candidate) => Boolean(candidate)).sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
+  return candidates.slice(0, options.limit || 8);
+}
+function safePaperId(input, fallback) {
+  const base = (input || fallback || "paper").replace(/\\/g, "/").split("/").pop().replace(/\.pdf$/i, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return base || fallback || "paper";
+}
+function writeJson(fs, file, value) {
+  fs.writeFileSync(file, JSON.stringify(value, null, 2), "utf8");
+}
+function pageFileName(page) {
+  return `page-${String(page).padStart(3, "0")}.md`;
+}
+function createCodexAnalysisTempDir(taskId) {
+  const fs = loadNodeModule("node:fs");
+  const os = loadNodeModule("node:os");
+  const path = loadNodeModule("node:path");
+  return fs.mkdtempSync(path.join(os.tmpdir(), `pdf-chat-analysis-${taskId}-`));
+}
+function removeCodexAnalysisTempDir(analysisDir) {
+  if (!analysisDir) return;
+  const fs = loadNodeModule("node:fs");
+  fs.rmSync(analysisDir, { recursive: true, force: true });
+}
+function codexAnalysisOutputSchema() {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["taskType", "question", "papers", "comparison", "synthesis", "limitations"],
+    properties: {
+      taskType: { const: "multi-paper-analysis" },
+      question: { type: "string" },
+      papers: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["id", "name", "role", "oneSentenceTakeaway", "coreMethod", "keyEvidence"],
+          properties: {
+            id: { type: "string" },
+            name: { type: "string" },
+            role: { enum: ["current", "referenced"] },
+            oneSentenceTakeaway: { type: "string" },
+            coreMethod: { type: "string" },
+            keyEvidence: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["claim", "source"],
+                properties: {
+                  claim: { type: "string" },
+                  source: { type: "string" },
+                  page: { type: "number" }
+                }
+              }
+            }
+          }
+        }
+      },
+      comparison: {
+        type: "object",
+        additionalProperties: false,
+        required: ["similarities", "differences", "complementaryOpportunities", "conflictsOrRisks"],
+        properties: {
+          similarities: { type: "array", items: { type: "string" } },
+          differences: { type: "array", items: { type: "string" } },
+          complementaryOpportunities: { type: "array", items: { type: "string" } },
+          conflictsOrRisks: { type: "array", items: { type: "string" } }
+        }
+      },
+      synthesis: {
+        type: "object",
+        additionalProperties: false,
+        required: ["shortAnswer", "detailedAnalysisMarkdown", "suggestedNextQuestions"],
+        properties: {
+          shortAnswer: { type: "string" },
+          detailedAnalysisMarkdown: { type: "string" },
+          suggestedNextQuestions: { type: "array", items: { type: "string" } }
+        }
+      },
+      limitations: { type: "array", items: { type: "string" } }
+    }
+  };
+}
+async function writeCodexAnalysisPackage(request) {
+  const fs = loadNodeModule("node:fs");
+  const path = loadNodeModule("node:path");
+  const analysisDir = request.baseDir;
+  fs.mkdirSync(path.join(analysisDir, "papers"), { recursive: true });
+  const manifestPapers = [];
+  for (const [index, paper] of request.papers.entries()) {
+    const id = safePaperId(paper.id || paper.vaultPath || paper.name, `paper-${index + 1}`);
+    const paperDir = path.join(analysisDir, "papers", id);
+    const pagesDir = path.join(paperDir, "pages");
+    fs.mkdirSync(pagesDir, { recursive: true });
+    const metadataPath = path.join("papers", id, "metadata.json");
+    const summaryPath = path.join("papers", id, "summary.md");
+    const fullTextPath = path.join("papers", id, "full_text.md");
+    const chunksPath = path.join("papers", id, "chunks.json");
+    const relativePagesDir = path.join("papers", id, "pages").replace(/\\/g, "/");
+    writeJson(fs, path.join(analysisDir, metadataPath), {
+      id,
+      name: paper.name,
+      role: paper.role,
+      vaultPath: paper.vaultPath,
+      mtime: paper.mtime,
+      pageCount: paper.pages.length,
+      fullTextLength: paper.pages.reduce((total, page) => total + (page.text || "").length, 0),
+      chunkCount: paper.chunks.length
+    });
+    fs.writeFileSync(path.join(analysisDir, summaryPath), paper.summary || "(no summary)", "utf8");
+    fs.writeFileSync(
+      path.join(analysisDir, fullTextPath),
+      paper.pages.map((page) => `[Page ${page.page}]
+${page.text}`).join("\n\n"),
+      "utf8"
+    );
+    writeJson(fs, path.join(analysisDir, chunksPath), paper.chunks);
+    for (const page of paper.pages) {
+      fs.writeFileSync(path.join(pagesDir, pageFileName(page.page)), page.text || "", "utf8");
+    }
+    manifestPapers.push({
+      id,
+      role: paper.role,
+      name: paper.name,
+      vaultPath: paper.vaultPath,
+      metadataPath: metadataPath.replace(/\\/g, "/"),
+      summaryPath: summaryPath.replace(/\\/g, "/"),
+      fullTextPath: fullTextPath.replace(/\\/g, "/"),
+      chunksPath: chunksPath.replace(/\\/g, "/"),
+      pagesDir: relativePagesDir
+    });
+  }
+  const manifest = {
+    version: 1,
+    taskId: request.taskId,
+    createdAt: request.createdAt,
+    question: request.question,
+    papers: manifestPapers
+  };
+  const manifestPath = path.join(analysisDir, "manifest.json");
+  const questionPath = path.join(analysisDir, "question.md");
+  const outputSchemaPath = path.join(analysisDir, "output.schema.json");
+  writeJson(fs, manifestPath, manifest);
+  fs.writeFileSync(questionPath, request.question, "utf8");
+  writeJson(fs, outputSchemaPath, codexAnalysisOutputSchema());
+  return { analysisDir, manifestPath, questionPath, outputSchemaPath };
+}
+function buildCodexDeepAnalysisPrompt() {
+  return [
+    "You are a careful research assistant performing multi-paper analysis.",
+    "Read manifest.json and question.md first.",
+    "For each paper: read summary.md, then full_text.md, and use pages/ or chunks.json for evidence.",
+    "Extract each paper's research problem, core method, assumptions, experiments, conclusions, and limitations.",
+    "Then compare similarities, differences, complementary opportunities, and conflicts or risks.",
+    "Every important claim must cite the paper name and page or chunk/source location when available.",
+    "Return only JSON that matches output.schema.json. Do not include markdown fences."
+  ].join("\n");
+}
+function buildCodexExecArgs(request) {
+  const args = [
+    "exec",
+    "--sandbox",
+    "read-only",
+    "--skip-git-repo-check",
+    "--ephemeral",
+    "--cd",
+    request.analysisDir,
+    "--output-schema",
+    "output.schema.json",
+    "--output-last-message",
+    "codex-output.json"
+  ];
+  if (request.profile) args.push("--profile", request.profile);
+  if (request.model) args.push("--model", request.model);
+  args.push(request.prompt);
+  return { command: request.command || "codex", args };
+}
+function argValue(args, flag) {
+  const index = args.indexOf(flag);
+  return index >= 0 && index + 1 < args.length ? args[index + 1] : null;
+}
+function redactProcessText(text) {
+  return (text || "").replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, "Bearer [REDACTED]").replace(/sk-[A-Za-z0-9_-]{12,}/g, "sk-[REDACTED]").slice(0, 1200);
+}
+function runCodexExec(execArgs, options) {
+  const path = loadNodeModule("node:path");
+  const fs = loadNodeModule("node:fs");
+  const childProcess = options.spawn ? { spawn: options.spawn } : loadNodeModule("node:child_process");
+  const analysisDir = argValue(execArgs.args, "--cd");
+  if (!analysisDir) throw new Error("Codex command is missing --cd analysis directory");
+  const outputFileName = options.outputFileName || "codex-output.json";
+  const outputPath = path.join(analysisDir, outputFileName);
+  return new Promise((resolve, reject) => {
+    var _a, _b;
+    let settled = false;
+    let stderr = "";
+    const timeoutMs = Math.max(1, options.timeoutMs || 6e5);
+    const child = childProcess.spawn(execArgs.command, execArgs.args, {
+      cwd: analysisDir,
+      windowsHide: true,
+      shell: false
+    });
+    let timer;
+    const onAbort = () => {
+      try {
+        child.kill("SIGTERM");
+      } catch (error) {
+        void error;
+      }
+      const abortError = new Error("Codex analysis aborted");
+      abortError.name = "AbortError";
+      finish(() => reject(abortError));
+    };
+    const finish = (callback) => {
+      var _a2;
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      (_a2 = options.signal) == null ? void 0 : _a2.removeEventListener("abort", onAbort);
+      callback();
+    };
+    (_a = options.signal) == null ? void 0 : _a.addEventListener("abort", onAbort);
+    timer = setTimeout(() => {
+      try {
+        child.kill("SIGTERM");
+      } catch (error) {
+        void error;
+      }
+      finish(() => reject(new Error(`Codex analysis timed out after ${timeoutMs}ms`)));
+    }, timeoutMs);
+    (_b = child.stderr) == null ? void 0 : _b.on("data", (chunk) => {
+      stderr += String(chunk || "");
+    });
+    child.on("error", (error) => {
+      finish(() => reject(new Error("Codex CLI failed to start: " + error.message)));
+    });
+    child.on("close", (code) => {
+      finish(() => {
+        if (code !== 0) {
+          const detail = redactProcessText(stderr);
+          reject(new Error(`Codex CLI exited with code ${code}${detail ? `: ${detail}` : ""}`));
+          return;
+        }
+        if (!fs.existsSync(outputPath)) {
+          reject(new Error("Codex CLI finished but did not write codex-output.json"));
+          return;
+        }
+        resolve(fs.readFileSync(outputPath, "utf8"));
+      });
+    });
+  });
+}
+function isStringArray(value) {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+function parseCodexAnalysisOutput(raw) {
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error("Invalid Codex analysis output: JSON parse failed");
+  }
+  const value = parsed;
+  if (!value || typeof value !== "object" || value.taskType !== "multi-paper-analysis" || typeof value.question !== "string" || !Array.isArray(value.papers) || !value.comparison || !value.synthesis || typeof value.synthesis.shortAnswer !== "string" || typeof value.synthesis.detailedAnalysisMarkdown !== "string" || !isStringArray(value.synthesis.suggestedNextQuestions) || !isStringArray(value.limitations)) {
+    throw new Error("Invalid Codex analysis output: missing required fields");
+  }
+  return value;
+}
+function listBlock(items) {
+  return items.length ? items.map((item) => `- ${item}`).join("\n") : "- \u6682\u65E0";
+}
+function renderCodexAnalysisMarkdown(output) {
+  const nextQuestions = output.synthesis.suggestedNextQuestions.length ? `
+
+### \u53EF\u4EE5\u7EE7\u7EED\u8FFD\u95EE
+${listBlock(output.synthesis.suggestedNextQuestions)}` : "";
+  const limitations = output.limitations.length ? `
+
+### \u5C40\u9650
+${listBlock(output.limitations)}` : "";
+  return [
+    `### \u7B80\u77ED\u7ED3\u8BBA
+${output.synthesis.shortAnswer}`,
+    output.synthesis.detailedAnalysisMarkdown,
+    `### \u76F8\u4F3C\u70B9
+${listBlock(output.comparison.similarities)}`,
+    `### \u4E0D\u540C\u70B9
+${listBlock(output.comparison.differences)}`,
+    `### \u7ED3\u5408\u673A\u4F1A
+${listBlock(output.comparison.complementaryOpportunities)}`,
+    `### \u98CE\u9669\u4E0E\u51B2\u7A81
+${listBlock(output.comparison.conflictsOrRisks)}`
+  ].join("\n\n") + nextQuestions + limitations;
+}
 
 // src/modal-ui.ts
 var controlId = 0;
@@ -1232,16 +1583,20 @@ function errorMessage(error) {
 function isAbortError(error) {
   return !!error && typeof error === "object" && "name" in error && error.name === "AbortError";
 }
+function isCodexUnavailableError(error) {
+  const message = errorMessage(error);
+  return /failed to start|not available|ENOENT|not recognized|cannot find/i.test(message);
+}
 async function renderMarkdownInto(app, component, el, text) {
   el.empty();
   el.addClass("markdown-rendered");
   try {
-    if (import_obsidian2.MarkdownRenderer.render) {
-      await import_obsidian2.MarkdownRenderer.render(app, text, el, "", component);
+    if (import_obsidian3.MarkdownRenderer.render) {
+      await import_obsidian3.MarkdownRenderer.render(app, text, el, "", component);
       return;
     }
-    if (import_obsidian2.MarkdownRenderer.renderMarkdown) {
-      await import_obsidian2.MarkdownRenderer.renderMarkdown(text, el, "", component);
+    if (import_obsidian3.MarkdownRenderer.renderMarkdown) {
+      await import_obsidian3.MarkdownRenderer.renderMarkdown(text, el, "", component);
       return;
     }
   } catch (e) {
@@ -1272,7 +1627,7 @@ function canCreateBubbleChildren(parent) {
 async function renderMarkdownIntoBubble(app, component, bubble, text) {
   await renderMarkdownInto(app, component, getBubbleContentEl(bubble), formatAssistantDisplayMarkdown(text));
 }
-var PDFChatModal = class extends import_obsidian2.Modal {
+var PDFChatModal = class extends import_obsidian3.Modal {
   constructor(app, plugin, contextText, pdfFile, startFresh, services, autoTranslateOnOpen) {
     super(app);
     __publicField(this, "plugin");
@@ -1313,6 +1668,13 @@ var PDFChatModal = class extends import_obsidian2.Modal {
     __publicField(this, "ragCheckbox");
     __publicField(this, "ragStatusEl");
     __publicField(this, "ragRefreshBtn");
+    __publicField(this, "referencedPdfFiles", []);
+    __publicField(this, "pdfReferenceChipsEl");
+    __publicField(this, "pdfSearchInputEl");
+    __publicField(this, "pdfSearchResultsEl");
+    __publicField(this, "ordinaryCompareBtn");
+    __publicField(this, "codexDeepAnalyzeBtn");
+    __publicField(this, "multiPaperStatusEl");
     __publicField(this, "historyEl");
     __publicField(this, "emptyStateEl");
     __publicField(this, "suggestionsEl");
@@ -1436,10 +1798,10 @@ ${this.contextText}`;
     if (restoringHistory) {
       this.restoreConversationHistory().catch((err) => {
         this.setHistoryLiveMode("polite");
-        new import_obsidian2.Notice("\u6062\u590D\u4E0A\u6B21\u5BF9\u8BDD\u663E\u793A\u5931\u8D25: " + errorMessage(err));
+        new import_obsidian3.Notice("\u6062\u590D\u4E0A\u6B21\u5BF9\u8BDD\u663E\u793A\u5931\u8D25: " + errorMessage(err));
       });
     } else if (this.startFresh && this.hadExistingHistory) {
-      new import_obsidian2.Notice("\u5DF2\u5F00\u59CB\u65B0\u5BF9\u8BDD(\u53D1\u51FA\u7B2C\u4E00\u6761\u6D88\u606F\u540E\u4F1A\u66FF\u6362\u6389\u4E0A\u6B21\u4FDD\u5B58\u7684\u8BB0\u5F55)");
+      new import_obsidian3.Notice("\u5DF2\u5F00\u59CB\u65B0\u5BF9\u8BDD(\u53D1\u51FA\u7B2C\u4E00\u6761\u6D88\u606F\u540E\u4F1A\u66FF\u6362\u6389\u4E0A\u6B21\u4FDD\u5B58\u7684\u8BB0\u5F55)");
     }
     if (this.autoTranslateOnOpen) this.handleTranslate();
     else this.inputEl.focus();
@@ -1528,6 +1890,152 @@ ${this.contextText}`;
         this.updateComposerContextStatus();
       });
     }
+    this.buildMultiPaperControls(container);
+  }
+  buildMultiPaperControls(container) {
+    const section = container.createDiv({ cls: "pdf-chat-multi-paper" });
+    section.createEl("h4", { text: "\u591A\u8BBA\u6587\u5BF9\u6BD4", cls: "pdf-chat-context-heading" });
+    section.createDiv({
+      text: "\u5F15\u7528 vault \u5185\u5176\u4ED6 PDF \u540E\uFF0C\u53EF\u7528\u666E\u901A API \u5FEB\u901F\u5BF9\u6BD4\uFF0C\u6216\u624B\u52A8\u89E6\u53D1 Codex \u6DF1\u5EA6\u9605\u8BFB\u3002",
+      cls: "pdf-chat-context-help"
+    });
+    const searchRow = section.createDiv({ cls: "pdf-chat-pdf-search-row" });
+    this.pdfSearchInputEl = searchRow.createEl("input", {
+      cls: "pdf-chat-pdf-search-input",
+      attr: {
+        type: "text",
+        placeholder: "@ \u641C\u7D22 PDF \u6587\u4EF6\u540D\u6216\u8DEF\u5F84",
+        "aria-label": "@ \u641C\u7D22 vault \u5185 PDF"
+      }
+    });
+    this.pdfSearchResultsEl = section.createDiv({ cls: "pdf-chat-pdf-search-results" });
+    this.pdfReferenceChipsEl = section.createDiv({
+      cls: "pdf-chat-pdf-reference-chips",
+      attr: { "aria-label": "\u5DF2\u5F15\u7528 PDF" }
+    });
+    const actions = section.createDiv({ cls: "pdf-chat-multi-paper-actions" });
+    this.ordinaryCompareBtn = actions.createEl("button", {
+      text: "\u666E\u901A\u5BF9\u6BD4",
+      cls: "pdf-chat-research-action-btn pdf-chat-ordinary-compare-btn",
+      attr: { type: "button" }
+    });
+    labelControl(this.ordinaryCompareBtn, "\u4F7F\u7528\u5F53\u524D\u6A21\u578B\u5FEB\u901F\u5BF9\u6BD4\u5DF2\u5F15\u7528\u8BBA\u6587");
+    this.codexDeepAnalyzeBtn = actions.createEl("button", {
+      text: "Codex \u6DF1\u5EA6\u5206\u6790",
+      cls: "pdf-chat-research-action-btn pdf-chat-codex-analysis-btn",
+      attr: { type: "button" }
+    });
+    labelControl(this.codexDeepAnalyzeBtn, "\u4F7F\u7528 Codex CLI \u6DF1\u5EA6\u5206\u6790\u5F53\u524D\u8BBA\u6587\u548C\u5DF2\u5F15\u7528\u8BBA\u6587");
+    this.multiPaperStatusEl = section.createDiv({
+      text: this.plugin.settings.codexDeepAnalysis.enabled ? "Codex CLI \u5DF2\u542F\u7528\uFF0C\u5206\u6790\u65F6\u53EA\u4F1A\u8BFB\u53D6\u4E34\u65F6\u8BBA\u6587\u5305\u3002" : "Codex \u6DF1\u5EA6\u5206\u6790\u9700\u8981\u5148\u5728\u8BBE\u7F6E\u4E2D\u542F\u7528\u3002",
+      cls: "pdf-chat-multi-paper-status"
+    });
+    this.pdfSearchInputEl.addEventListener("input", () => {
+      var _a;
+      this.renderPdfSearchResults(((_a = this.pdfSearchInputEl) == null ? void 0 : _a.value) || "");
+    });
+    this.pdfSearchInputEl.addEventListener("focus", () => {
+      var _a;
+      this.renderPdfSearchResults(((_a = this.pdfSearchInputEl) == null ? void 0 : _a.value) || "");
+    });
+    this.ordinaryCompareBtn.addEventListener("click", () => {
+      void this.runOrdinaryMultiPaperCompare();
+    });
+    this.codexDeepAnalyzeBtn.addEventListener("click", () => {
+      void this.runCodexDeepAnalysis();
+    });
+    this.updateReferencedPdfChips();
+  }
+  isPdfLikeFile(file) {
+    const candidate = file;
+    if (!candidate) return false;
+    if (String(candidate.extension || "").toLowerCase() === "pdf") return true;
+    return /\.pdf$/i.test(candidate.path || candidate.name || "");
+  }
+  findPdfFileByPath(path) {
+    var _a;
+    const vault = (_a = this.app) == null ? void 0 : _a.vault;
+    const direct = (vault == null ? void 0 : vault.getAbstractFileByPath) ? vault.getAbstractFileByPath(path) : null;
+    if (this.isPdfLikeFile(direct)) return direct;
+    const files = (vault == null ? void 0 : vault.getFiles) ? vault.getFiles() : [];
+    return files.find((file) => file.path === path && this.isPdfLikeFile(file)) || null;
+  }
+  addReferencedPdf(file) {
+    if (!file || !this.isPdfLikeFile(file)) return;
+    if (this.pdfFile && file.path === this.pdfFile.path) {
+      new import_obsidian3.Notice("\u5F53\u524D PDF \u5DF2\u81EA\u52A8\u4F5C\u4E3A\u5BF9\u6BD4\u4E3B\u4F53\uFF0C\u65E0\u9700\u91CD\u590D\u5F15\u7528\u3002");
+      return;
+    }
+    if (this.referencedPdfFiles.find((existing) => existing.path === file.path)) return;
+    if (this.referencedPdfFiles.length >= 3) {
+      new import_obsidian3.Notice("\u7B2C\u4E00\u7248\u6700\u591A\u989D\u5916\u5F15\u7528 3 \u7BC7 PDF\u3002");
+      return;
+    }
+    this.referencedPdfFiles.push(file);
+    this.updateReferencedPdfChips();
+    if (this.pdfSearchInputEl) this.pdfSearchInputEl.value = "";
+    this.renderPdfSearchResults("");
+  }
+  removeReferencedPdf(path) {
+    var _a;
+    this.referencedPdfFiles = this.referencedPdfFiles.filter((file) => file.path !== path);
+    this.updateReferencedPdfChips();
+    this.renderPdfSearchResults(((_a = this.pdfSearchInputEl) == null ? void 0 : _a.value) || "");
+  }
+  updateReferencedPdfChips() {
+    if (!this.pdfReferenceChipsEl) return;
+    this.pdfReferenceChipsEl.empty();
+    if (!this.referencedPdfFiles.length) {
+      this.pdfReferenceChipsEl.createDiv({
+        text: "\u5C1A\u672A\u5F15\u7528\u5176\u4ED6 PDF",
+        cls: "pdf-chat-reference-empty"
+      });
+      return;
+    }
+    for (const file of this.referencedPdfFiles) {
+      const chip = this.pdfReferenceChipsEl.createDiv({ cls: "pdf-chat-reference-chip" });
+      chip.createEl("span", { text: file.name || file.path });
+      const remove = chip.createEl("button", {
+        text: "\xD7",
+        cls: "pdf-chat-reference-remove",
+        attr: { type: "button" }
+      });
+      labelControl(remove, `\u79FB\u9664 ${file.name || file.path}`);
+      remove.addEventListener("click", () => this.removeReferencedPdf(file.path));
+    }
+  }
+  renderPdfSearchResults(query) {
+    if (!this.pdfSearchResultsEl) return;
+    this.pdfSearchResultsEl.empty();
+    const trimmed = (query || "").replace(/^@/, "").trim();
+    if (!trimmed) return;
+    const excludePaths = new Set(this.referencedPdfFiles.map((file) => file.path));
+    if (this.pdfFile) excludePaths.add(this.pdfFile.path);
+    const cachedPaths = /* @__PURE__ */ new Set([
+      ...Object.keys(this.plugin.settings.docSummaries || {}),
+      ...Object.keys(this.plugin.settings.docChunks || {})
+    ]);
+    const results = searchPdfFiles(this.app, trimmed, { limit: 6, excludePaths, cachedPaths });
+    if (!results.length) {
+      this.pdfSearchResultsEl.createDiv({ text: "\u672A\u627E\u5230\u5339\u914D\u7684 PDF", cls: "pdf-chat-search-empty" });
+      return;
+    }
+    for (const candidate of results) {
+      const button = this.pdfSearchResultsEl.createEl("button", {
+        cls: "pdf-chat-pdf-search-result",
+        attr: { type: "button" }
+      });
+      button.createEl("span", { text: candidate.name, cls: "pdf-chat-pdf-search-name" });
+      button.createEl("span", {
+        text: `${candidate.path}${candidate.cached ? " \xB7 \u5DF2\u6709\u7F13\u5B58" : ""}`,
+        cls: "pdf-chat-pdf-search-path"
+      });
+      labelControl(button, `\u5F15\u7528 ${candidate.name}`);
+      button.addEventListener("click", () => {
+        const file = this.findPdfFileByPath(candidate.path);
+        if (file) this.addReferencedPdf(file);
+      });
+    }
   }
   renderResearchActions(container) {
     for (const action of listResearchActionsForSlot(this.services.actions, "context")) {
@@ -1538,7 +2046,7 @@ ${this.contextText}`;
       });
       labelControl(button, action.name);
       button.addEventListener("click", () => {
-        void this.services.actions.execute(action.id, { translate: () => this.runTranslation() }).catch((error) => new import_obsidian2.Notice("\u7814\u7A76\u64CD\u4F5C\u5931\u8D25: " + errorMessage(error)));
+        void this.services.actions.execute(action.id, { translate: () => this.runTranslation() }).catch((error) => new import_obsidian3.Notice("\u7814\u7A76\u64CD\u4F5C\u5931\u8D25: " + errorMessage(error)));
       });
     }
   }
@@ -1644,14 +2152,14 @@ ${this.contextText}`;
       this.showFollowupSuggestions();
     }
     const scope = this.pdfFile ? "\u672C PDF" : "\u5F53\u524D\u9009\u533A";
-    new import_obsidian2.Notice(`\u5DF2\u6062\u590D${scope}\u4E0A\u6B21\u5BF9\u8BDD(${this.transcript.length} \u6761\u6D88\u606F)`);
+    new import_obsidian3.Notice(`\u5DF2\u6062\u590D${scope}\u4E0A\u6B21\u5BF9\u8BDD(${this.transcript.length} \u6761\u6D88\u606F)`);
   }
   async persistConversation() {
     try {
       await this.services.conversations.save(this.conversationKey, this.transcript);
       return true;
     } catch (err) {
-      new import_obsidian2.Notice("\u4FDD\u5B58\u5BF9\u8BDD\u5931\u8D25: " + errorMessage(err));
+      new import_obsidian3.Notice("\u4FDD\u5B58\u5BF9\u8BDD\u5931\u8D25: " + errorMessage(err));
       return false;
     }
   }
@@ -1663,7 +2171,7 @@ ${this.contextText}`;
       );
       return true;
     } catch (err) {
-      new import_obsidian2.Notice("\u4FDD\u5B58\u7FFB\u8BD1\u8BB0\u5F55\u5931\u8D25: " + errorMessage(err));
+      new import_obsidian3.Notice("\u4FDD\u5B58\u7FFB\u8BD1\u8BB0\u5F55\u5931\u8D25: " + errorMessage(err));
       return false;
     }
   }
@@ -1687,7 +2195,7 @@ ${this.contextText}`;
   }
   async resetConversation() {
     if (this.isSending) {
-      new import_obsidian2.Notice("\u6B63\u5728\u751F\u6210\u4E2D,\u8BF7\u5148\u505C\u6B62\u6216\u7B49\u5F85\u5B8C\u6210\u540E\u518D\u6E05\u7A7A");
+      new import_obsidian3.Notice("\u6B63\u5728\u751F\u6210\u4E2D,\u8BF7\u5148\u505C\u6B62\u6216\u7B49\u5F85\u5B8C\u6210\u540E\u518D\u6E05\u7A7A");
       return;
     }
     this.transcript = [];
@@ -1700,14 +2208,14 @@ ${this.contextText}`;
     this.showEmptyState();
     try {
       await this.services.conversations.clear(this.conversationKey);
-      new import_obsidian2.Notice("\u5BF9\u8BDD\u5DF2\u6E05\u7A7A,\u539F\u6587\u4E0A\u4E0B\u6587\u4FDD\u7559");
+      new import_obsidian3.Notice("\u5BF9\u8BDD\u5DF2\u6E05\u7A7A,\u539F\u6587\u4E0A\u4E0B\u6587\u4FDD\u7559");
     } catch (err) {
-      new import_obsidian2.Notice("\u754C\u9762\u5DF2\u6E05\u7A7A,\u4F46\u5220\u9664\u5DF2\u4FDD\u5B58\u5BF9\u8BDD\u5931\u8D25: " + errorMessage(err));
+      new import_obsidian3.Notice("\u754C\u9762\u5DF2\u6E05\u7A7A,\u4F46\u5220\u9664\u5DF2\u4FDD\u5B58\u5BF9\u8BDD\u5931\u8D25: " + errorMessage(err));
     }
   }
   applyPreset(id) {
     if (this.isSending) {
-      new import_obsidian2.Notice("\u6B63\u5728\u751F\u6210\u4E2D,\u8BF7\u5148\u505C\u6B62\u6216\u7B49\u5F85\u5B8C\u6210\u540E\u518D\u5207\u6362\u9605\u8BFB\u6A21\u5F0F");
+      new import_obsidian3.Notice("\u6B63\u5728\u751F\u6210\u4E2D,\u8BF7\u5148\u505C\u6B62\u6216\u7B49\u5F85\u5B8C\u6210\u540E\u518D\u5207\u6362\u9605\u8BFB\u6A21\u5F0F");
       this.modeSelect.value = this.currentPresetId;
       return;
     }
@@ -1717,11 +2225,11 @@ ${this.contextText}`;
     this.messages[0] = this.buildSystemMessage();
     const preset = this.plugin.settings.promptPresets.find((p) => p.id === id);
     const name = id === "__default__" ? "\u9ED8\u8BA4" : preset && preset.name || id;
-    new import_obsidian2.Notice(`\u5DF2\u5207\u6362\u5230\u300C${name}\u300D\u6A21\u5F0F,\u540E\u7EED\u56DE\u7B54\u4F1A\u6309\u65B0\u8BBE\u5B9A\u8FDB\u884C`);
+    new import_obsidian3.Notice(`\u5DF2\u5207\u6362\u5230\u300C${name}\u300D\u6A21\u5F0F,\u540E\u7EED\u56DE\u7B54\u4F1A\u6309\u65B0\u8BBE\u5B9A\u8FDB\u884C`);
   }
   applyModel(id) {
     if (this.isSending) {
-      new import_obsidian2.Notice("\u6B63\u5728\u751F\u6210\u4E2D,\u8BF7\u5148\u505C\u6B62\u6216\u7B49\u5F85\u5B8C\u6210\u540E\u518D\u5207\u6362\u6A21\u578B");
+      new import_obsidian3.Notice("\u6B63\u5728\u751F\u6210\u4E2D,\u8BF7\u5148\u505C\u6B62\u6216\u7B49\u5F85\u5B8C\u6210\u540E\u518D\u5207\u6362\u6A21\u578B");
       this.modelSelect.value = this.currentModelId;
       return;
     }
@@ -1729,7 +2237,7 @@ ${this.contextText}`;
     this.plugin.settings.lastModelId = id;
     this.plugin.saveSettings();
     const m = this.plugin.settings.models.find((x) => x.id === id);
-    new import_obsidian2.Notice(`\u5DF2\u5207\u6362\u5230\u6A21\u578B\u300C${m && m.name || id}\u300D`);
+    new import_obsidian3.Notice(`\u5DF2\u5207\u6362\u5230\u6A21\u578B\u300C${m && m.name || id}\u300D`);
   }
   applyFontScale(scale) {
     const clamped = Math.round(Math.min(1.6, Math.max(0.7, scale)) * 100) / 100;
@@ -1774,15 +2282,15 @@ ${this.contextText}`;
       this.summaryRefreshBtn.disabled = true;
     }
     if (this.summaryCheckbox) this.summaryCheckbox.disabled = true;
-    const notice = new import_obsidian2.Notice("\u6B63\u5728\u7528\u5FEB\u901F\u6A21\u578B\u63D0\u70BC\u5168\u6587\u6458\u8981,\u53EF\u80FD\u9700\u8981\u51E0\u5341\u79D2\u2026", 0);
+    const notice = new import_obsidian3.Notice("\u6B63\u5728\u7528\u5FEB\u901F\u6A21\u578B\u63D0\u70BC\u5168\u6587\u6458\u8981,\u53EF\u80FD\u9700\u8981\u51E0\u5341\u79D2\u2026", 0);
     try {
       this.docSummaryEntry = await this.services.papers.getOrCreateDocSummary(this.pdfFile, forceRefresh);
       this.refreshSummaryStatus();
       notice.hide();
-      new import_obsidian2.Notice("\u5168\u6587\u6458\u8981\u5DF2\u751F\u6210/\u66F4\u65B0");
+      new import_obsidian3.Notice("\u5168\u6587\u6458\u8981\u5DF2\u751F\u6210/\u66F4\u65B0");
     } catch (err) {
       notice.hide();
-      new import_obsidian2.Notice("\u751F\u6210\u6458\u8981\u5931\u8D25: " + errorMessage(err));
+      new import_obsidian3.Notice("\u751F\u6210\u6458\u8981\u5931\u8D25: " + errorMessage(err));
       if (this.summaryCheckbox) this.summaryCheckbox.checked = false;
       this.useDocSummary = false;
     } finally {
@@ -1846,7 +2354,7 @@ ${this.contextText}`;
       this.docChunksEntry = await this.services.papers.getOrCreateDocChunks(this.pdfFile, forceRefresh);
       this.refreshRagStatus();
     } catch (err) {
-      new import_obsidian2.Notice("\u5EFA\u7ACB\u68C0\u7D22\u7D22\u5F15\u5931\u8D25: " + errorMessage(err));
+      new import_obsidian3.Notice("\u5EFA\u7ACB\u68C0\u7D22\u7D22\u5F15\u5931\u8D25: " + errorMessage(err));
       if (this.ragCheckbox) this.ragCheckbox.checked = false;
       this.useRag = false;
     } finally {
@@ -1857,6 +2365,251 @@ ${this.contextText}`;
       }
       if (this.ragCheckbox) this.ragCheckbox.disabled = false;
       this.updateComposerContextStatus();
+    }
+  }
+  selectedPaperFiles() {
+    const papers = [];
+    if (this.pdfFile) papers.push({ file: this.pdfFile, role: "current" });
+    for (const file of this.referencedPdfFiles) papers.push({ file, role: "referenced" });
+    return papers;
+  }
+  getMultiPaperQuestion() {
+    var _a, _b;
+    const typed = (_b = (_a = this.inputEl) == null ? void 0 : _a.value) == null ? void 0 : _b.trim();
+    return typed || "\u8BF7\u5BF9\u6BD4\u5F53\u524D\u8BBA\u6587\u548C\u5DF2\u5F15\u7528\u8BBA\u6587\u7684\u76F8\u4F3C\u70B9\u3001\u4E0D\u540C\u70B9\uFF0C\u4EE5\u53CA\u5B83\u4EEC\u662F\u5426\u6709\u7ED3\u5408\u7684\u53EF\u80FD\u6027\u3002";
+  }
+  multiPaperUserLabel(question) {
+    const refs = this.referencedPdfFiles.map((file) => file.name || file.path).join("\u3001");
+    return refs ? `\u591A\u8BBA\u6587\u5206\u6790\uFF1A${question}
+
+\u5F15\u7528\u8BBA\u6587\uFF1A${refs}` : `\u591A\u8BBA\u6587\u5206\u6790\uFF1A${question}`;
+  }
+  async buildApiMultiPaperContext(question, progress) {
+    const papers = this.selectedPaperFiles();
+    const parts = [];
+    for (const { file, role } of papers) {
+      progress == null ? void 0 : progress(`\u6B63\u5728\u51C6\u5907 ${file.name || file.path} \u7684\u6458\u8981\u548C\u68C0\u7D22\u7247\u6BB5\u2026`);
+      const summary = await this.services.papers.getOrCreateDocSummary(file, false);
+      const chunksEntry = await this.services.papers.getOrCreateDocChunks(file, false);
+      const retrieved = this.services.papers.retrieveContext(
+        chunksEntry.chunks || [],
+        [question],
+        this.plugin.settings.ragTopK || DEFAULT_SETTINGS.ragTopK
+      );
+      const evidence = retrieved.length ? retrieved.map((chunk) => {
+        var _a;
+        return `[Page ${chunk.page} / chunk ${(_a = chunk.idx) != null ? _a : "?"}]
+${chunk.text}`;
+      }).join("\n\n") : "(\u672A\u68C0\u7D22\u5230\u660E\u663E\u76F8\u5173\u7247\u6BB5)";
+      parts.push(
+        [
+          `## ${role === "current" ? "\u5F53\u524D\u8BBA\u6587" : "\u5F15\u7528\u8BBA\u6587"}\uFF1A${file.name || file.path}`,
+          `\u8DEF\u5F84\uFF1A${file.path}`,
+          "### \u6458\u8981",
+          summary.summary || "(\u65E0\u6458\u8981)",
+          "### \u53EF\u80FD\u76F8\u5173\u7247\u6BB5",
+          evidence
+        ].join("\n")
+      );
+    }
+    return [
+      "\u4F60\u6B63\u5728\u505A\u591A\u8BBA\u6587\u5BF9\u6BD4\u3002\u8BF7\u53EA\u57FA\u4E8E\u4E0B\u9762\u63D0\u4F9B\u7684\u8BBA\u6587\u6458\u8981\u548C\u68C0\u7D22\u7247\u6BB5\u56DE\u7B54\uFF0C\u5E76\u6807\u660E\u4F9D\u636E\u6765\u81EA\u54EA\u7BC7\u8BBA\u6587\u3002",
+      "\u5982\u679C\u8BC1\u636E\u4E0D\u8DB3\uFF0C\u8BF7\u660E\u786E\u8BF4\u660E\u4E0D\u8DB3\uFF0C\u4E0D\u8981\u7F16\u9020\u3002",
+      "",
+      parts.join("\n\n---\n\n"),
+      "",
+      "## \u7528\u6237\u95EE\u9898",
+      question
+    ].join("\n");
+  }
+  async completeApiMultiPaperAnswer(question, userLabel, bubble) {
+    var _a, _b;
+    const outgoing = await this.buildApiMultiPaperContext(question, (message) => {
+      var _a2;
+      (_a2 = this.multiPaperStatusEl) == null ? void 0 : _a2.setText(message);
+      setBubbleText(bubble, message);
+    });
+    let fullText = "";
+    let firstChunkArrived = false;
+    fullText = await this.services.llm.chat({
+      messages: [...this.messages, { role: "user", content: outgoing }],
+      onChunk: (_piece, acc) => {
+        fullText = acc;
+        if (!firstChunkArrived) {
+          firstChunkArrived = true;
+          bubble.removeClass("is-loading");
+        }
+        setBubbleText(bubble, acc);
+        this.historyEl.scrollTo({ top: this.historyEl.scrollHeight, behavior: "auto" });
+      },
+      signal: (_a = this.abortController) == null ? void 0 : _a.signal,
+      modelProfile: this.services.models.get(this.currentModelId)
+    });
+    bubble.removeClass("is-loading");
+    bubble.addClass("is-rendered");
+    await renderMarkdownIntoBubble(this.app, this.plugin, bubble, fullText);
+    this.messages.push({ role: "user", content: userLabel }, { role: "assistant", content: fullText });
+    await this.recordTranscriptTurn(userLabel, fullText, "complete");
+    this.showFollowupSuggestions("chat");
+    (_b = this.multiPaperStatusEl) == null ? void 0 : _b.setText("\u5DF2\u964D\u7EA7\u4E3A\u666E\u901A\u591A\u8BBA\u6587\u5BF9\u6BD4\u5E76\u5B8C\u6210\u3002");
+  }
+  async prepareCodexPapers(progress) {
+    const prepared = [];
+    const usedIds = /* @__PURE__ */ new Map();
+    for (const { file, role } of this.selectedPaperFiles()) {
+      progress == null ? void 0 : progress(`\u6B63\u5728\u62BD\u53D6 ${file.name || file.path} \u7684\u5168\u6587\u3001\u5206\u9875\u6587\u672C\u548C\u7F13\u5B58\u8D44\u4EA7\u2026`);
+      const [pages, summary, chunksEntry] = await Promise.all([
+        this.services.papers.extractPages(file),
+        this.services.papers.getOrCreateDocSummary(file, false),
+        this.services.papers.getOrCreateDocChunks(file, false)
+      ]);
+      const baseId = file.path || file.name || `paper-${prepared.length + 1}`;
+      const seen = usedIds.get(baseId) || 0;
+      usedIds.set(baseId, seen + 1);
+      prepared.push({
+        id: seen ? `${baseId}-${seen + 1}` : baseId,
+        role,
+        name: file.name || file.path,
+        vaultPath: file.path,
+        mtime: file.stat && file.stat.mtime,
+        summary: summary.summary || "",
+        chunks: chunksEntry.chunks || [],
+        pages
+      });
+    }
+    return prepared;
+  }
+  async runOrdinaryMultiPaperCompare() {
+    var _a, _b;
+    if (!this.pdfFile) {
+      new import_obsidian3.Notice("\u591A\u8BBA\u6587\u5BF9\u6BD4\u9700\u8981\u4ECE PDF \u89C6\u56FE\u6253\u5F00\u3002");
+      return;
+    }
+    if (!this.referencedPdfFiles.length) {
+      new import_obsidian3.Notice("\u8BF7\u5148 @ \u5F15\u7528\u81F3\u5C11\u4E00\u7BC7\u5176\u4ED6 PDF\u3002");
+      return;
+    }
+    if (this.isSending) return;
+    const question = this.getMultiPaperQuestion();
+    const loadingNotice = new import_obsidian3.Notice("\u6B63\u5728\u51C6\u5907\u591A\u8BBA\u6587\u5BF9\u6BD4\u4E0A\u4E0B\u6587\u2026", 0);
+    try {
+      const outgoing = await this.buildApiMultiPaperContext(question, (message) => {
+        var _a2;
+        (_a2 = this.multiPaperStatusEl) == null ? void 0 : _a2.setText(message);
+      });
+      loadingNotice.hide();
+      await this.handleSubmit({
+        question: this.multiPaperUserLabel(question),
+        outgoingContentOverride: outgoing,
+        skipContextAugmentation: true
+      });
+      (_a = this.multiPaperStatusEl) == null ? void 0 : _a.setText("\u666E\u901A\u5BF9\u6BD4\u5DF2\u5B8C\u6210\uFF0C\u53EF\u7EE7\u7EED\u8FFD\u95EE\u3002");
+    } catch (error) {
+      loadingNotice.hide();
+      new import_obsidian3.Notice("\u666E\u901A\u591A\u8BBA\u6587\u5BF9\u6BD4\u51C6\u5907\u5931\u8D25: " + errorMessage(error));
+      (_b = this.multiPaperStatusEl) == null ? void 0 : _b.setText("\u666E\u901A\u5BF9\u6BD4\u51C6\u5907\u5931\u8D25\u3002");
+    }
+  }
+  async runCodexDeepAnalysis() {
+    var _a, _b, _c, _d, _e, _f, _g;
+    if (!this.pdfFile) {
+      new import_obsidian3.Notice("Codex \u6DF1\u5EA6\u5206\u6790\u9700\u8981\u4ECE PDF \u89C6\u56FE\u6253\u5F00\u3002");
+      return;
+    }
+    if (!this.referencedPdfFiles.length) {
+      new import_obsidian3.Notice("\u8BF7\u5148 @ \u5F15\u7528\u81F3\u5C11\u4E00\u7BC7\u5176\u4ED6 PDF\u3002");
+      return;
+    }
+    if (!this.plugin.settings.codexDeepAnalysis.enabled) {
+      new import_obsidian3.Notice("\u9700\u8981\u5148\u5728 PDF Chat \u8BBE\u7F6E\u4E2D\u542F\u7528 Codex CLI \u6DF1\u5EA6\u5206\u6790\u3002");
+      (_a = this.multiPaperStatusEl) == null ? void 0 : _a.setText("Codex \u6DF1\u5EA6\u5206\u6790\u5C1A\u672A\u542F\u7528\u3002");
+      return;
+    }
+    if (this.isSending) return;
+    const question = this.getMultiPaperQuestion();
+    const userLabel = this.multiPaperUserLabel(question);
+    this.activeComposerKind = "chat";
+    this.hideFollowupSuggestions();
+    this.addBubble("user", userLabel);
+    this.inputEl.value = "";
+    if (this.inputEl.style) this.inputEl.style.height = "";
+    this.setSendingState(true);
+    const loadingBubble = this.addBubble("assistant", "\u6B63\u5728\u51C6\u5907 Codex \u591A\u8BBA\u6587\u5206\u6790\u5305\u2026", { loading: true });
+    this.abortController = new AbortController();
+    let analysisDir = "";
+    try {
+      const taskId = String(Date.now());
+      const papers = await this.prepareCodexPapers((message) => {
+        var _a2;
+        (_a2 = this.multiPaperStatusEl) == null ? void 0 : _a2.setText(message);
+        setBubbleText(loadingBubble, message);
+      });
+      analysisDir = createCodexAnalysisTempDir(taskId);
+      await writeCodexAnalysisPackage({
+        baseDir: analysisDir,
+        taskId,
+        createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+        question,
+        papers
+      });
+      const settings = this.plugin.settings.codexDeepAnalysis;
+      const execArgs = buildCodexExecArgs({
+        analysisDir,
+        command: settings.command || DEFAULT_SETTINGS.codexDeepAnalysis.command,
+        profile: settings.profile,
+        model: settings.model,
+        prompt: buildCodexDeepAnalysisPrompt()
+      });
+      const runningMessage = `Codex \u6B63\u5728\u9605\u8BFB ${papers.length} \u7BC7\u8BBA\u6587\u2026`;
+      (_b = this.multiPaperStatusEl) == null ? void 0 : _b.setText(runningMessage);
+      setBubbleText(loadingBubble, runningMessage);
+      const raw = await runCodexExec(execArgs, {
+        timeoutMs: settings.timeoutMs || DEFAULT_SETTINGS.codexDeepAnalysis.timeoutMs,
+        signal: this.abortController.signal
+      });
+      const output = parseCodexAnalysisOutput(raw);
+      const markdown = renderCodexAnalysisMarkdown(output);
+      loadingBubble.removeClass("is-loading");
+      loadingBubble.addClass("is-rendered");
+      await renderMarkdownIntoBubble(this.app, this.plugin, loadingBubble, markdown);
+      this.messages.push({ role: "user", content: userLabel }, { role: "assistant", content: markdown });
+      await this.recordTranscriptTurn(userLabel, markdown, "complete");
+      this.showFollowupSuggestions("chat");
+      (_c = this.multiPaperStatusEl) == null ? void 0 : _c.setText("Codex \u6DF1\u5EA6\u5206\u6790\u5DF2\u5B8C\u6210\u3002");
+    } catch (error) {
+      loadingBubble.removeClass("is-loading");
+      if (isAbortError(error)) {
+        loadingBubble.addClass("is-stopped");
+        setBubbleText(loadingBubble, "Codex \u6DF1\u5EA6\u5206\u6790\u5DF2\u505C\u6B62\u3002");
+        (_d = this.multiPaperStatusEl) == null ? void 0 : _d.setText("Codex \u6DF1\u5EA6\u5206\u6790\u5DF2\u505C\u6B62\u3002");
+      } else if (isCodexUnavailableError(error)) {
+        setBubbleText(loadingBubble, "Codex CLI \u4E0D\u53EF\u7528\uFF0C\u6B63\u5728\u6539\u7528\u666E\u901A API \u591A\u8BBA\u6587\u5BF9\u6BD4\u2026");
+        (_e = this.multiPaperStatusEl) == null ? void 0 : _e.setText("Codex \u4E0D\u53EF\u7528\uFF0C\u964D\u7EA7\u4E3A\u666E\u901A\u5BF9\u6BD4\u3002");
+        try {
+          await this.completeApiMultiPaperAnswer(question, userLabel, loadingBubble);
+        } catch (fallbackError) {
+          loadingBubble.removeClass("is-loading");
+          loadingBubble.addClass("is-error");
+          setBubbleText(loadingBubble, "\u666E\u901A\u5BF9\u6BD4\u4E5F\u5931\u8D25: " + errorMessage(fallbackError));
+          (_f = this.multiPaperStatusEl) == null ? void 0 : _f.setText("\u666E\u901A\u5BF9\u6BD4\u964D\u7EA7\u5931\u8D25\u3002");
+        }
+      } else {
+        loadingBubble.addClass("is-error");
+        setBubbleText(loadingBubble, "Codex \u6DF1\u5EA6\u5206\u6790\u5931\u8D25: " + errorMessage(error));
+        (_g = this.multiPaperStatusEl) == null ? void 0 : _g.setText("Codex \u6DF1\u5EA6\u5206\u6790\u5931\u8D25\uFF0C\u53EF\u6539\u7528\u666E\u901A\u5BF9\u6BD4\u3002");
+      }
+    } finally {
+      const keep = this.plugin.settings.codexDeepAnalysis.keepTempFiles;
+      if (analysisDir && !keep) {
+        try {
+          removeCodexAnalysisTempDir(analysisDir);
+        } catch (error) {
+          void error;
+        }
+      }
+      this.setSendingState(false);
+      this.abortController = null;
+      this.inputEl.focus();
     }
   }
   setupDragging(handleEl) {
@@ -2039,7 +2792,7 @@ ${this.contextText}`;
     const question = typeof opts.question === "string" ? opts.question.trim() : this.inputEl.value.trim();
     if (!question) return;
     if (this.isSending) {
-      new import_obsidian2.Notice("\u4E0A\u4E00\u4E2A\u95EE\u9898\u8FD8\u5728\u751F\u6210\u4E2D,\u8BF7\u7A0D\u5019\u6216\u70B9\u51FB\u505C\u6B62");
+      new import_obsidian3.Notice("\u4E0A\u4E00\u4E2A\u95EE\u9898\u8FD8\u5728\u751F\u6210\u4E2D,\u8BF7\u7A0D\u5019\u6216\u70B9\u51FB\u505C\u6B62");
       return;
     }
     if (this.activeComposerKind === "translate" && this.translateTranscript.length) {
@@ -2055,8 +2808,9 @@ ${this.contextText}`;
     }
     this.setSendingState(true);
     const loadingBubble = this.addBubble("assistant", "\u601D\u8003\u4E2D\u2026", { loading: true });
-    let outgoingContent = question;
-    if (opts.skipContextAugmentation) {
+    let outgoingContent = opts.outgoingContentOverride || question;
+    if (opts.outgoingContentOverride) {
+    } else if (opts.skipContextAugmentation) {
     } else if (this.useRag && this.useFullTextMode && this.pdfFile && !this.fullTextAttached) {
       setBubbleText(loadingBubble, "\u6B63\u5728\u8BFB\u53D6\u5168\u6587\u2026");
       try {
@@ -2389,6 +3143,17 @@ function migrateSettings(savedValue, now = Date.now) {
     };
     needsSave = true;
   }
+  const savedCodex = saved && saved.codexDeepAnalysis && typeof saved.codexDeepAnalysis === "object" && !Array.isArray(saved.codexDeepAnalysis) ? saved.codexDeepAnalysis : {};
+  settings.codexDeepAnalysis = {
+    ...DEFAULT_SETTINGS.codexDeepAnalysis,
+    ...savedCodex,
+    enabled: savedCodex.enabled === true,
+    command: typeof savedCodex.command === "string" && savedCodex.command.trim() ? savedCodex.command.trim() : DEFAULT_SETTINGS.codexDeepAnalysis.command,
+    profile: typeof savedCodex.profile === "string" ? savedCodex.profile.trim() : "",
+    model: typeof savedCodex.model === "string" ? savedCodex.model.trim() : "",
+    timeoutMs: typeof savedCodex.timeoutMs === "number" && Number.isFinite(savedCodex.timeoutMs) && savedCodex.timeoutMs >= 3e4 ? Math.floor(savedCodex.timeoutMs) : DEFAULT_SETTINGS.codexDeepAnalysis.timeoutMs,
+    keepTempFiles: savedCodex.keepTempFiles === true
+  };
   if (saved && (saved.endpoint || saved.apiKey || saved.model) && !(saved.models && saved.models.length)) {
     const migrated = {
       id: "migrated-" + now(),
@@ -2433,7 +3198,7 @@ function enqueueSettingsSave(owner) {
 }
 
 // src/settings-tab.ts
-var import_obsidian3 = require("obsidian");
+var import_obsidian4 = require("obsidian");
 
 // src/settings-ui.ts
 function createSettingsSection(parent, title) {
@@ -2455,7 +3220,7 @@ function labelExtraButton(button, label) {
   if (!button.extraSettingsEl) return;
   button.extraSettingsEl.setAttr("aria-label", label);
 }
-var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
+var PDFChatSettingTab = class extends import_obsidian4.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     __publicField(this, "plugin");
@@ -2478,7 +3243,7 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
     });
     this.plugin.settings.models.forEach((model, index) => {
       const isActive = model.id === this.plugin.settings.activeModelId;
-      const header = new import_obsidian3.Setting(containerEl).setName(`\u6A21\u578B ${index + 1}${isActive ? " \xB7 \u9ED8\u8BA4" : ""}`);
+      const header = new import_obsidian4.Setting(containerEl).setName(`\u6A21\u578B ${index + 1}${isActive ? " \xB7 \u9ED8\u8BA4" : ""}`);
       header.addText(
         (text) => text.setPlaceholder("\u540D\u79F0").setValue(model.name).onChange(async (value) => {
           model.name = value;
@@ -2499,7 +3264,7 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
         labelExtraButton(button, "\u5220\u9664\u8FD9\u4E2A\u6A21\u578B");
         button.setIcon("trash").onClick(async () => {
           if (this.plugin.settings.models.length <= 1) {
-            new import_obsidian3.Notice("\u81F3\u5C11\u8981\u4FDD\u7559\u4E00\u4E2A\u6A21\u578B\u914D\u7F6E");
+            new import_obsidian4.Notice("\u81F3\u5C11\u8981\u4FDD\u7559\u4E00\u4E2A\u6A21\u578B\u914D\u7F6E");
             return;
           }
           this.plugin.settings.models.splice(index, 1);
@@ -2510,20 +3275,20 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
           this.display();
         });
       });
-      new import_obsidian3.Setting(containerEl).setName("Endpoint").addText(
+      new import_obsidian4.Setting(containerEl).setName("Endpoint").addText(
         (text) => text.setPlaceholder("OpenAI \u517C\u5BB9\u7684 chat/completions \u63A5\u53E3\u5730\u5740").setValue(model.endpoint).onChange(async (value) => {
           model.endpoint = value.trim();
           await this.plugin.saveSettings();
         })
       );
-      new import_obsidian3.Setting(containerEl).setName("API Key").addText((text) => {
+      new import_obsidian4.Setting(containerEl).setName("API Key").addText((text) => {
         text.inputEl.type = "password";
         text.setValue(model.apiKey).onChange(async (value) => {
           model.apiKey = value.trim();
           await this.plugin.saveSettings();
         });
       });
-      new import_obsidian3.Setting(containerEl).setName("\u6A21\u578B\u540D(model \u5B57\u6BB5)").addText(
+      new import_obsidian4.Setting(containerEl).setName("\u6A21\u578B\u540D(model \u5B57\u6BB5)").addText(
         (text) => text.setValue(model.model).onChange(async (value) => {
           model.model = value.trim();
           await this.plugin.saveSettings();
@@ -2531,7 +3296,7 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
       );
       containerEl.createEl("hr");
     });
-    new import_obsidian3.Setting(containerEl).addButton(
+    new import_obsidian4.Setting(containerEl).addButton(
       (button) => button.setButtonText("+ \u6DFB\u52A0\u6A21\u578B").setCta().onClick(async () => {
         this.plugin.settings.models.push({
           id: "model-" + Date.now(),
@@ -2546,27 +3311,27 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
     );
   }
   renderChatSection(containerEl) {
-    new import_obsidian3.Setting(containerEl).setName("\u6D41\u5F0F\u8F93\u51FA").setDesc("\u5F00\u542F\u540E\u7B54\u6848\u4F1A\u4E00\u8FB9\u751F\u6210\u4E00\u8FB9\u663E\u793A\uFF1B\u5173\u95ED\u5219\u7B49\u751F\u6210\u5B8C\u518D\u4E00\u6B21\u6027\u663E\u793A").addToggle(
+    new import_obsidian4.Setting(containerEl).setName("\u6D41\u5F0F\u8F93\u51FA").setDesc("\u5F00\u542F\u540E\u7B54\u6848\u4F1A\u4E00\u8FB9\u751F\u6210\u4E00\u8FB9\u663E\u793A\uFF1B\u5173\u95ED\u5219\u7B49\u751F\u6210\u5B8C\u518D\u4E00\u6B21\u6027\u663E\u793A").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.stream).onChange(async (value) => {
         this.plugin.settings.stream = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("Temperature").addText(
+    new import_obsidian4.Setting(containerEl).setName("Temperature").addText(
       (text) => text.setValue(String(this.plugin.settings.temperature)).onChange(async (value) => {
         const parsed = parseFloat(value);
         this.plugin.settings.temperature = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.temperature;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("Max Tokens").addText(
+    new import_obsidian4.Setting(containerEl).setName("Max Tokens").addText(
       (text) => text.setValue(String(this.plugin.settings.maxTokens)).onChange(async (value) => {
         const parsed = parseInt(value, 10);
         this.plugin.settings.maxTokens = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.maxTokens;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("\u7EE7\u7EED\u5BF9\u8BDD\u4F7F\u7528\u7684\u6A21\u578B").setDesc("\u7559\u7A7A\u65F6\u4F18\u5148\u9009\u62E9 id\u3001\u6A21\u578B\u540D\u6216\u663E\u793A\u540D\u79F0\u4E2D\u5305\u542B GLM \u7684\u6A21\u578B\uFF0C\u7136\u540E\u56DE\u9000\u5230\u9ED8\u8BA4\u6A21\u578B\u3002").addDropdown((dropdown) => {
+    new import_obsidian4.Setting(containerEl).setName("\u7EE7\u7EED\u5BF9\u8BDD\u4F7F\u7528\u7684\u6A21\u578B").setDesc("\u7559\u7A7A\u65F6\u4F18\u5148\u9009\u62E9 id\u3001\u6A21\u578B\u540D\u6216\u663E\u793A\u540D\u79F0\u4E2D\u5305\u542B GLM \u7684\u6A21\u578B\uFF0C\u7136\u540E\u56DE\u9000\u5230\u9ED8\u8BA4\u6A21\u578B\u3002").addDropdown((dropdown) => {
       dropdown.addOption("", "\u81EA\u52A8\uFF08\u4F18\u5148 GLM\uFF09");
       this.plugin.settings.models.forEach((model) => dropdown.addOption(model.id, model.name));
       dropdown.setValue(this.plugin.settings.continueModelId);
@@ -2575,7 +3340,7 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian3.Setting(containerEl).setName("\u7CFB\u7EDF\u63D0\u793A\u8BCD").setDesc("\u4F1A\u81EA\u52A8\u9644\u52A0\u9009\u4E2D\u7684\u539F\u6587\u7247\u6BB5\u5728\u5176\u540E").addTextArea((text) => {
+    new import_obsidian4.Setting(containerEl).setName("\u7CFB\u7EDF\u63D0\u793A\u8BCD").setDesc("\u4F1A\u81EA\u52A8\u9644\u52A0\u9009\u4E2D\u7684\u539F\u6587\u7247\u6BB5\u5728\u5176\u540E").addTextArea((text) => {
       text.inputEl.rows = 6;
       text.setValue(this.plugin.settings.systemPrompt).onChange(async (value) => {
         this.plugin.settings.systemPrompt = value;
@@ -2584,7 +3349,7 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
     });
   }
   renderTranslationSection(containerEl) {
-    new import_obsidian3.Setting(containerEl).setName("\u7FFB\u8BD1\u4F7F\u7528\u7684\u6A21\u578B").setDesc("\u7559\u7A7A\u65F6\u4F18\u5148\u9009\u62E9 id\u3001\u6A21\u578B\u540D\u6216\u663E\u793A\u540D\u79F0\u4E2D\u5305\u542B DeepSeek \u7684\u6A21\u578B\uFF0C\u7136\u540E\u56DE\u9000\u5230\u9ED8\u8BA4\u6A21\u578B\u3002").addDropdown((dropdown) => {
+    new import_obsidian4.Setting(containerEl).setName("\u7FFB\u8BD1\u4F7F\u7528\u7684\u6A21\u578B").setDesc("\u7559\u7A7A\u65F6\u4F18\u5148\u9009\u62E9 id\u3001\u6A21\u578B\u540D\u6216\u663E\u793A\u540D\u79F0\u4E2D\u5305\u542B DeepSeek \u7684\u6A21\u578B\uFF0C\u7136\u540E\u56DE\u9000\u5230\u9ED8\u8BA4\u6A21\u578B\u3002").addDropdown((dropdown) => {
       dropdown.addOption("", "\u81EA\u52A8\uFF08\u4F18\u5148 DeepSeek\uFF09");
       this.plugin.settings.models.forEach((model) => dropdown.addOption(model.id, model.name));
       dropdown.setValue(this.plugin.settings.translateModelId);
@@ -2593,26 +3358,26 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian3.Setting(containerEl).setName("\u5212\u8BCD\u540E\u81EA\u52A8\u51FA\u73B0\u300C\u8BD1\u300D\u60AC\u6D6E\u56FE\u6807").setDesc("\u4EC5\u5728\u6D3B\u52A8\u89C6\u56FE\u662F PDF \u4E14\u9009\u533A\u975E\u7A7A\u65F6\u663E\u793A\uFF1B\u70B9\u51FB\u540E\u6253\u5F00\u65B0\u5F39\u7A97\u5E76\u81EA\u52A8\u7FFB\u8BD1\u3002").addToggle(
+    new import_obsidian4.Setting(containerEl).setName("\u5212\u8BCD\u540E\u81EA\u52A8\u51FA\u73B0\u300C\u8BD1\u300D\u60AC\u6D6E\u56FE\u6807").setDesc("\u4EC5\u5728\u6D3B\u52A8\u89C6\u56FE\u662F PDF \u4E14\u9009\u533A\u975E\u7A7A\u65F6\u663E\u793A\uFF1B\u70B9\u51FB\u540E\u6253\u5F00\u65B0\u5F39\u7A97\u5E76\u81EA\u52A8\u7FFB\u8BD1\u3002").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.quickTranslateMarkerEnabled).onChange(async (value) => {
         this.plugin.settings.quickTranslateMarkerEnabled = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("\u7FFB\u8BD1\u76EE\u6807\u8BED\u8A00").setDesc("\u7528\u4E8E\u5F39\u7A97\u4E2D\u7684\u9009\u533A\u7FFB\u8BD1\uFF0C\u4F8B\u5982 zh-CN\u3001en \u6216 ja").addText(
+    new import_obsidian4.Setting(containerEl).setName("\u7FFB\u8BD1\u76EE\u6807\u8BED\u8A00").setDesc("\u7528\u4E8E\u5F39\u7A97\u4E2D\u7684\u9009\u533A\u7FFB\u8BD1\uFF0C\u4F8B\u5982 zh-CN\u3001en \u6216 ja").addText(
       (text) => text.setValue(this.plugin.settings.translation.targetLanguage).onChange(async (value) => {
         this.plugin.settings.translation.targetLanguage = value.trim() || DEFAULT_SETTINGS.translation.targetLanguage;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("\u7FFB\u8BD1\u5206\u5757\u5927\u5C0F\uFF08Unicode \u5B57\u7B26\uFF09").setDesc("\u957F\u9009\u533A\u4F1A\u6309 Unicode \u5B57\u7B26\u6570\u5206\u5757\u53D1\u9001\u3002\u8BF7\u8F93\u5165\u5927\u4E8E 0 \u7684\u6574\u6570\uFF1B\u65E0\u6548\u503C\u6062\u590D\u4E3A 8000\u3002").addText(
+    new import_obsidian4.Setting(containerEl).setName("\u7FFB\u8BD1\u5206\u5757\u5927\u5C0F\uFF08Unicode \u5B57\u7B26\uFF09").setDesc("\u957F\u9009\u533A\u4F1A\u6309 Unicode \u5B57\u7B26\u6570\u5206\u5757\u53D1\u9001\u3002\u8BF7\u8F93\u5165\u5927\u4E8E 0 \u7684\u6574\u6570\uFF1B\u65E0\u6548\u503C\u6062\u590D\u4E3A 8000\u3002").addText(
       (text) => text.setValue(String(this.plugin.settings.translation.chunkChars)).onChange(async (value) => {
         const parsed = Number(value.trim());
         this.plugin.settings.translation.chunkChars = Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_SETTINGS.translation.chunkChars;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("\u7FFB\u8BD1\u9644\u52A0\u8981\u6C42").setDesc("\u53EF\u9009\u3002\u7528\u4E8E\u8865\u5145\u672F\u8BED\u3001\u98CE\u683C\u6216\u9886\u57DF\u7EA6\u5B9A\uFF1B\u539F\u6587\u7531\u72EC\u7ACB\u7FFB\u8BD1\u4EFB\u52A1\u5B89\u5168\u9644\u52A0\u3002").addTextArea((text) => {
+    new import_obsidian4.Setting(containerEl).setName("\u7FFB\u8BD1\u9644\u52A0\u8981\u6C42").setDesc("\u53EF\u9009\u3002\u7528\u4E8E\u8865\u5145\u672F\u8BED\u3001\u98CE\u683C\u6216\u9886\u57DF\u7EA6\u5B9A\uFF1B\u539F\u6587\u7531\u72EC\u7ACB\u7FFB\u8BD1\u4EFB\u52A1\u5B89\u5168\u9644\u52A0\u3002").addTextArea((text) => {
       text.inputEl.rows = 4;
       text.setValue(this.plugin.settings.translation.additionalInstruction).onChange(async (value) => {
         this.plugin.settings.translation.additionalInstruction = value;
@@ -2626,13 +3391,13 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
       text: "\u5168\u6587\u6458\u8981\u6309\u6587\u4EF6\u8DEF\u5F84\u548C\u4FEE\u6539\u65F6\u95F4\u7F13\u5B58\uFF0C\u53EF\u4F5C\u4E3A\u5F53\u524D\u9009\u533A\u4E4B\u5916\u7684\u7B80\u8981\u80CC\u666F\u3002\u4EC5\u5BF9 PDF \u751F\u6548\u3002",
       cls: "setting-item-description"
     });
-    new import_obsidian3.Setting(containerEl).setName("\u6253\u5F00 PDF \u5212\u8BCD\u5F39\u7A97\u65F6\u81EA\u52A8\u9644\u5E26\u5168\u6587\u6458\u8981").setDesc("\u6709\u7F13\u5B58\u65F6\u76F4\u63A5\u4F7F\u7528\uFF1B\u6CA1\u6709\u7F13\u5B58\u65F6\u81EA\u52A8\u751F\u6210\u4E00\u6B21\u3002").addToggle(
+    new import_obsidian4.Setting(containerEl).setName("\u6253\u5F00 PDF \u5212\u8BCD\u5F39\u7A97\u65F6\u81EA\u52A8\u9644\u5E26\u5168\u6587\u6458\u8981").setDesc("\u6709\u7F13\u5B58\u65F6\u76F4\u63A5\u4F7F\u7528\uFF1B\u6CA1\u6709\u7F13\u5B58\u65F6\u81EA\u52A8\u751F\u6210\u4E00\u6B21\u3002").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.autoDocSummary).onChange(async (value) => {
         this.plugin.settings.autoDocSummary = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("\u6458\u8981\u751F\u6210\u7528\u7684\u6A21\u578B").setDesc("\u5EFA\u8BAE\u9009\u62E9\u901F\u5EA6\u5FEB\u3001\u6210\u672C\u4F4E\u7684\u6A21\u578B\uFF0C\u804A\u5929\u4E3B\u6A21\u578B\u53EF\u4EE5\u4E0D\u540C\u3002").addDropdown((dropdown) => {
+    new import_obsidian4.Setting(containerEl).setName("\u6458\u8981\u751F\u6210\u7528\u7684\u6A21\u578B").setDesc("\u5EFA\u8BAE\u9009\u62E9\u901F\u5EA6\u5FEB\u3001\u6210\u672C\u4F4E\u7684\u6A21\u578B\uFF0C\u804A\u5929\u4E3B\u6A21\u578B\u53EF\u4EE5\u4E0D\u540C\u3002").addDropdown((dropdown) => {
       this.plugin.settings.models.forEach((model) => dropdown.addOption(model.id, model.name));
       dropdown.setValue(this.plugin.settings.summaryModelId || this.plugin.settings.activeModelId);
       dropdown.onChange(async (value) => {
@@ -2640,21 +3405,21 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian3.Setting(containerEl).setName("\u5168\u6587\u622A\u65AD\u5B57\u7B26\u6570\u4E0A\u9650").addText(
+    new import_obsidian4.Setting(containerEl).setName("\u5168\u6587\u622A\u65AD\u5B57\u7B26\u6570\u4E0A\u9650").addText(
       (text) => text.setValue(String(this.plugin.settings.summaryMaxChars)).onChange(async (value) => {
         const parsed = parseInt(value, 10);
         this.plugin.settings.summaryMaxChars = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.summaryMaxChars;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("\u6458\u8981\u6700\u5927\u8F93\u51FA token \u6570").addText(
+    new import_obsidian4.Setting(containerEl).setName("\u6458\u8981\u6700\u5927\u8F93\u51FA token \u6570").addText(
       (text) => text.setValue(String(this.plugin.settings.summaryMaxTokens)).onChange(async (value) => {
         const parsed = parseInt(value, 10);
         this.plugin.settings.summaryMaxTokens = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.summaryMaxTokens;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("\u6458\u8981\u751F\u6210\u63D0\u793A\u8BCD").addTextArea((text) => {
+    new import_obsidian4.Setting(containerEl).setName("\u6458\u8981\u751F\u6210\u63D0\u793A\u8BCD").addTextArea((text) => {
       text.inputEl.rows = 5;
       text.inputEl.style.width = "100%";
       text.setValue(this.plugin.settings.summaryPrompt).onChange(async (value) => {
@@ -2662,7 +3427,7 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian3.Setting(containerEl).setName("\u6E05\u7A7A\u5DF2\u7F13\u5B58\u7684\u5168\u6587\u6458\u8981").setDesc(`\u5F53\u524D\u5DF2\u7F13\u5B58 ${Object.keys(this.plugin.settings.docSummaries || {}).length} \u7BC7\u6587\u6863\u7684\u6458\u8981`).addButton(
+    new import_obsidian4.Setting(containerEl).setName("\u6E05\u7A7A\u5DF2\u7F13\u5B58\u7684\u5168\u6587\u6458\u8981").setDesc(`\u5F53\u524D\u5DF2\u7F13\u5B58 ${Object.keys(this.plugin.settings.docSummaries || {}).length} \u7BC7\u6587\u6863\u7684\u6458\u8981`).addButton(
       (button) => button.setButtonText("\u6E05\u7A7A\u7F13\u5B58").onClick(async () => {
         this.plugin.settings.docSummaries = {};
         await this.plugin.saveSettings();
@@ -2674,26 +3439,26 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
       text: "\u8F83\u77ED PDF \u76F4\u63A5\u63D0\u4F9B\u5168\u6587\uFF1B\u8D85\u8FC7\u9608\u503C\u65F6\u9000\u56DE\u672C\u5730 BM25 \u68C0\u7D22\u3002\u68C0\u7D22\u4E0E\u6458\u8981\u4E92\u8865\uFF0C\u4E0D\u9700\u8981 embedding \u6A21\u578B\u3002",
       cls: "setting-item-description"
     });
-    new import_obsidian3.Setting(containerEl).setName("\u5168\u6587\u76F4\u8BFB\u7684\u5B57\u6570\u9608\u503C").setDesc("\u5168\u6587\u4E0D\u8D85\u8FC7\u6B64\u503C\u65F6\u76F4\u63A5\u4EA4\u7ED9\u6A21\u578B\u56DE\u7B54\uFF1B\u8D85\u8FC7\u65F6\u4F7F\u7528\u5173\u952E\u8BCD\u68C0\u7D22\u3002").addText(
+    new import_obsidian4.Setting(containerEl).setName("\u5168\u6587\u76F4\u8BFB\u7684\u5B57\u6570\u9608\u503C").setDesc("\u5168\u6587\u4E0D\u8D85\u8FC7\u6B64\u503C\u65F6\u76F4\u63A5\u4EA4\u7ED9\u6A21\u578B\u56DE\u7B54\uFF1B\u8D85\u8FC7\u65F6\u4F7F\u7528\u5173\u952E\u8BCD\u68C0\u7D22\u3002").addText(
       (text) => text.setValue(String(this.plugin.settings.ragFullTextThreshold)).onChange(async (value) => {
         const parsed = parseInt(value, 10);
         this.plugin.settings.ragFullTextThreshold = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.ragFullTextThreshold;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("\u6253\u5F00 PDF \u5212\u8BCD\u5F39\u7A97\u65F6\u81EA\u52A8\u5EFA\u7ACB\u68C0\u7D22\u7D22\u5F15").setDesc("\u7D22\u5F15\u662F\u7EAF\u672C\u5730\u6587\u672C\u5207\u5757\uFF0C\u51E0\u4E4E\u4E0D\u8017\u65F6\u3002").addToggle(
+    new import_obsidian4.Setting(containerEl).setName("\u6253\u5F00 PDF \u5212\u8BCD\u5F39\u7A97\u65F6\u81EA\u52A8\u5EFA\u7ACB\u68C0\u7D22\u7D22\u5F15").setDesc("\u7D22\u5F15\u662F\u7EAF\u672C\u5730\u6587\u672C\u5207\u5757\uFF0C\u51E0\u4E4E\u4E0D\u8017\u65F6\u3002").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.autoRag).onChange(async (value) => {
         this.plugin.settings.autoRag = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("\u63D0\u95EE\u524D\u5148\u8BA9\u5FEB\u6A21\u578B\u601D\u8003\u68C0\u7D22\u89D2\u5EA6").setDesc("\u751F\u6210\u591A\u7EC4\u4E2D\u82F1\u53CC\u8BED\u68C0\u7D22\u8BCD\u540E\u878D\u5408\u6392\u5E8F\uFF0C\u4EE3\u4EF7\u662F\u6BCF\u6B21\u63D0\u95EE\u591A\u4E00\u6B21\u6A21\u578B\u8C03\u7528\u3002").addToggle(
+    new import_obsidian4.Setting(containerEl).setName("\u63D0\u95EE\u524D\u5148\u8BA9\u5FEB\u6A21\u578B\u601D\u8003\u68C0\u7D22\u89D2\u5EA6").setDesc("\u751F\u6210\u591A\u7EC4\u4E2D\u82F1\u53CC\u8BED\u68C0\u7D22\u8BCD\u540E\u878D\u5408\u6392\u5E8F\uFF0C\u4EE3\u4EF7\u662F\u6BCF\u6B21\u63D0\u95EE\u591A\u4E00\u6B21\u6A21\u578B\u8C03\u7528\u3002").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.ragQueryTranslate).onChange(async (value) => {
         this.plugin.settings.ragQueryTranslate = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("\u68C0\u7D22\u89D2\u5EA6\u89C4\u5212\u63D0\u793A\u8BCD").addTextArea((text) => {
+    new import_obsidian4.Setting(containerEl).setName("\u68C0\u7D22\u89D2\u5EA6\u89C4\u5212\u63D0\u793A\u8BCD").addTextArea((text) => {
       text.inputEl.rows = 5;
       text.inputEl.style.width = "100%";
       text.setValue(this.plugin.settings.ragQueryPrompt).onChange(async (value) => {
@@ -2701,14 +3466,14 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian3.Setting(containerEl).setName("\u6BCF\u6B21\u68C0\u7D22\u8FD4\u56DE\u7684\u7247\u6BB5\u6570(Top K)").addText(
+    new import_obsidian4.Setting(containerEl).setName("\u6BCF\u6B21\u68C0\u7D22\u8FD4\u56DE\u7684\u7247\u6BB5\u6570(Top K)").addText(
       (text) => text.setValue(String(this.plugin.settings.ragTopK)).onChange(async (value) => {
         const parsed = parseInt(value, 10);
         this.plugin.settings.ragTopK = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.ragTopK;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("\u5355\u5757\u6700\u5927\u5B57\u7B26\u6570").addText(
+    new import_obsidian4.Setting(containerEl).setName("\u5355\u5757\u6700\u5927\u5B57\u7B26\u6570").addText(
       (text) => text.setValue(String(this.plugin.settings.ragChunkSize)).onChange(async (value) => {
         const normalized = normalizeRagChunkSettings(
           Number(value.trim()),
@@ -2719,7 +3484,7 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("\u5207\u5757\u91CD\u53E0\u5B57\u7B26\u6570").addText(
+    new import_obsidian4.Setting(containerEl).setName("\u5207\u5757\u91CD\u53E0\u5B57\u7B26\u6570").addText(
       (text) => text.setValue(String(this.plugin.settings.ragChunkOverlap)).onChange(async (value) => {
         const normalized = normalizeRagChunkSettings(
           this.plugin.settings.ragChunkSize,
@@ -2730,7 +3495,7 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("\u6E05\u7A7A\u5DF2\u7F13\u5B58\u7684\u68C0\u7D22\u7D22\u5F15").setDesc(`\u5F53\u524D\u5DF2\u4E3A ${Object.keys(this.plugin.settings.docChunks || {}).length} \u7BC7\u6587\u6863\u5EFA\u7ACB\u8FC7\u7D22\u5F15`).addButton(
+    new import_obsidian4.Setting(containerEl).setName("\u6E05\u7A7A\u5DF2\u7F13\u5B58\u7684\u68C0\u7D22\u7D22\u5F15").setDesc(`\u5F53\u524D\u5DF2\u4E3A ${Object.keys(this.plugin.settings.docChunks || {}).length} \u7BC7\u6587\u6863\u5EFA\u7ACB\u8FC7\u7D22\u5F15`).addButton(
       (button) => button.setButtonText("\u6E05\u7A7A\u7F13\u5B58").onClick(async () => {
         this.plugin.settings.docChunks = {};
         await this.plugin.saveSettings();
@@ -2743,13 +3508,55 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
       text: "\u9ED8\u8BA4\u5FEB\u6377\u952E\uFF1ACtrl+Alt+Q \u65B0\u5F00\u5BF9\u8BDD\uFF1BCtrl+Q \u7EE7\u7EED\u4E0A\u6B21\u5BF9\u8BDD\u3002\u53EF\u5728 \u8BBE\u7F6E\u2192\u5FEB\u6377\u952E\u2192\u641C\u7D22\u201CPDF Chat\u201D\u4E2D\u4FEE\u6539\u3002\u5F39\u7A97\u652F\u6301\u62D6\u52A8\u3001\u7F29\u653E\u3001\u8FDE\u7EED\u8FFD\u95EE\u548C\u505C\u6B62\u751F\u6210\u3002",
       cls: "setting-item-description"
     });
+    containerEl.createEl("h4", { text: "Codex \u6DF1\u5EA6\u591A\u8BBA\u6587\u5206\u6790" });
+    containerEl.createEl("p", {
+      text: "\u542F\u7528\u540E\uFF0C\u8BBA\u6587\u4E0A\u4E0B\u6587\u533A\u4F1A\u5141\u8BB8\u624B\u52A8\u89E6\u53D1 Codex CLI\u3002\u63D2\u4EF6\u53EA\u4F1A\u628A\u8BBA\u6587\u6587\u672C\u548C\u5F53\u524D\u95EE\u9898\u5199\u5165\u4E34\u65F6\u5206\u6790\u5305\uFF0C\u4E0D\u4F1A\u590D\u5236 data.json\u3001API key \u6216\u6A21\u578B endpoint\u3002",
+      cls: "setting-item-description"
+    });
+    new import_obsidian4.Setting(containerEl).setName("\u542F\u7528 Codex CLI \u6DF1\u5EA6\u5206\u6790").setDesc("\u4EC5\u684C\u9762\u7AEF\u53EF\u7528\u3002Codex \u4F7F\u7528\u5B83\u81EA\u5DF1\u7684\u767B\u5F55/\u914D\u7F6E\uFF0C\u4E0D\u4F7F\u7528 PDF Chat \u7684 API key\u3002").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.codexDeepAnalysis.enabled).onChange(async (value) => {
+        this.plugin.settings.codexDeepAnalysis.enabled = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian4.Setting(containerEl).setName("Codex \u547D\u4EE4").setDesc("\u9ED8\u8BA4 codex\uFF1B\u5982\u679C\u4E0D\u5728 PATH \u4E2D\uFF0C\u53EF\u586B\u5199 codex \u53EF\u6267\u884C\u6587\u4EF6\u7684\u5B8C\u6574\u8DEF\u5F84\u3002").addText(
+      (text) => text.setValue(this.plugin.settings.codexDeepAnalysis.command).onChange(async (value) => {
+        this.plugin.settings.codexDeepAnalysis.command = value.trim() || DEFAULT_SETTINGS.codexDeepAnalysis.command;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian4.Setting(containerEl).setName("Codex profile").setDesc("\u53EF\u9009\uFF1B\u5BF9\u5E94 codex exec --profile\u3002\u7559\u7A7A\u5219\u4F7F\u7528 Codex \u9ED8\u8BA4\u914D\u7F6E\u3002").addText(
+      (text) => text.setValue(this.plugin.settings.codexDeepAnalysis.profile).onChange(async (value) => {
+        this.plugin.settings.codexDeepAnalysis.profile = value.trim();
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian4.Setting(containerEl).setName("Codex model").setDesc("\u53EF\u9009\uFF1B\u5BF9\u5E94 codex exec --model\u3002\u7559\u7A7A\u5219\u4F7F\u7528 Codex \u9ED8\u8BA4\u6A21\u578B\u3002").addText(
+      (text) => text.setValue(this.plugin.settings.codexDeepAnalysis.model).onChange(async (value) => {
+        this.plugin.settings.codexDeepAnalysis.model = value.trim();
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian4.Setting(containerEl).setName("Codex \u8D85\u65F6\u6BEB\u79D2").setDesc("\u9ED8\u8BA4 600000\uFF0C\u5373 10 \u5206\u949F\uFF1B\u8D85\u65F6\u540E\u4F1A\u7EC8\u6B62 Codex \u8FDB\u7A0B\u3002").addText(
+      (text) => text.setValue(String(this.plugin.settings.codexDeepAnalysis.timeoutMs)).onChange(async (value) => {
+        const parsed = Number(value.trim());
+        this.plugin.settings.codexDeepAnalysis.timeoutMs = Number.isFinite(parsed) && parsed >= 3e4 ? Math.floor(parsed) : DEFAULT_SETTINGS.codexDeepAnalysis.timeoutMs;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian4.Setting(containerEl).setName("\u4FDD\u7559 Codex \u4E34\u65F6\u5206\u6790\u5305").setDesc("\u4EC5\u7528\u4E8E\u8C03\u8BD5\u3002\u5173\u95ED\u65F6\u4EFB\u52A1\u7ED3\u675F\u4F1A\u5220\u9664\u4E34\u65F6\u5305\u3002").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.codexDeepAnalysis.keepTempFiles).onChange(async (value) => {
+        this.plugin.settings.codexDeepAnalysis.keepTempFiles = value;
+        await this.plugin.saveSettings();
+      })
+    );
     containerEl.createEl("h4", { text: "\u9605\u8BFB\u6A21\u5F0F\u9884\u8BBE" });
     containerEl.createEl("p", {
       text: "\u5F39\u7A97\u7684\u9605\u8BFB\u6A21\u5F0F\u4F1A\u5217\u51FA\u8FD9\u4E9B\u9884\u8BBE\uFF1B\u5207\u6362\u540E\u66FF\u6362\u7CFB\u7EDF\u63D0\u793A\u8BCD\uFF0C\u9009\u533A\u539F\u6587\u4ECD\u4F1A\u81EA\u52A8\u9644\u52A0\u3002",
       cls: "setting-item-description"
     });
     this.plugin.settings.promptPresets.forEach((preset, index) => {
-      const nameSetting = new import_obsidian3.Setting(containerEl).setName(`\u9884\u8BBE ${index + 1}`);
+      const nameSetting = new import_obsidian4.Setting(containerEl).setName(`\u9884\u8BBE ${index + 1}`);
       nameSetting.addText(
         (text) => text.setPlaceholder("\u540D\u79F0").setValue(preset.name).onChange(async (value) => {
           preset.name = value;
@@ -2764,7 +3571,7 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
           this.display();
         });
       });
-      new import_obsidian3.Setting(containerEl).addTextArea((text) => {
+      new import_obsidian4.Setting(containerEl).addTextArea((text) => {
         text.inputEl.rows = 4;
         text.inputEl.style.width = "100%";
         text.setPlaceholder("\u8FD9\u5957\u6A21\u5F0F\u7684\u7CFB\u7EDF\u63D0\u793A\u8BCD/\u6307\u4EE4").setValue(preset.prompt).onChange(async (value) => {
@@ -2773,7 +3580,7 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
         });
       });
     });
-    new import_obsidian3.Setting(containerEl).addButton(
+    new import_obsidian4.Setting(containerEl).addButton(
       (button) => button.setButtonText("+ \u6DFB\u52A0\u9884\u8BBE").setCta().onClick(async () => {
         this.plugin.settings.promptPresets.push({
           id: "preset-" + Date.now(),
@@ -2788,7 +3595,7 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
 };
 
 // src/main.ts
-var PDFChatPlugin = class extends import_obsidian4.Plugin {
+var PDFChatPlugin = class extends import_obsidian5.Plugin {
   constructor() {
     super(...arguments);
     __publicField(this, "_saveQueue", Promise.resolve());
@@ -2831,6 +3638,7 @@ var PDFChatPlugin = class extends import_obsidian4.Plugin {
       papers: {
         getOrCreateDocSummary: (file, forceRefresh) => this.paperContextService.getOrCreateDocSummary(file, forceRefresh),
         getOrCreateDocChunks: (file, forceRefresh) => this.paperContextService.getOrCreateDocChunks(file, forceRefresh),
+        extractPages: (file) => this.paperContextService.extractPages(file),
         extractFullText: (file) => this.paperContextService.extractFullText(file),
         planRagQueries: (question) => this.paperContextService.planRagQueries(question),
         retrieveContext: (chunks, queries, topK) => this.paperContextService.retrieveContext(chunks, queries, topK)
@@ -2885,7 +3693,7 @@ var PDFChatPlugin = class extends import_obsidian4.Plugin {
     const raw = sel ? sel.toString() : "";
     const text = cleanSelectionText(raw || "");
     if (!text) {
-      new import_obsidian4.Notice("\u6CA1\u6709\u68C0\u6D4B\u5230\u9009\u4E2D\u7684\u6587\u5B57,\u8BF7\u5148\u5212\u9009\u4E00\u6BB5\u5185\u5BB9\u518D\u6309\u5FEB\u6377\u952E");
+      new import_obsidian5.Notice("\u6CA1\u6709\u68C0\u6D4B\u5230\u9009\u4E2D\u7684\u6587\u5B57,\u8BF7\u5148\u5212\u9009\u4E00\u6BB5\u5185\u5BB9\u518D\u6309\u5FEB\u6377\u952E");
       return;
     }
     const pdfFile = getActivePdfFile(this.app);

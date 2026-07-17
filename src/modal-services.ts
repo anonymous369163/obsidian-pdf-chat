@@ -1,5 +1,5 @@
 import { createResearchActionRegistry } from "./actions";
-import { bm25RetrieveMulti, expandWithNeighbors, extractPdfFullText } from "./paper-context";
+import { bm25RetrieveMulti, expandWithNeighbors, extractPdfFullText, extractPdfPages } from "./paper-context";
 import { TranslationService } from "./translation";
 import type {
   LlmOperations,
@@ -38,6 +38,10 @@ export function createPDFChatModalServices(
     papers: {
       getOrCreateDocSummary: (file, forceRefresh) => plugin.getOrCreateDocSummary(file, forceRefresh),
       getOrCreateDocChunks: (file, forceRefresh) => plugin.getOrCreateDocChunks(file, forceRefresh),
+      extractPages: (file) =>
+        plugin.paperContextService
+          ? plugin.paperContextService.extractPages(file)
+          : extractPdfPages(plugin.app || {}, file),
       extractFullText: (file) =>
         plugin.paperContextService
           ? plugin.paperContextService.extractFullText(file)

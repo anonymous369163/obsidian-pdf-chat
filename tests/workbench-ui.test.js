@@ -357,6 +357,7 @@ function createModalHarness({
   translation,
   autoTranslateOnOpen = false,
   startFresh = false,
+  app = {},
 } = {}) {
   const { bundle } = loadBundle({ markdownRenderer });
   const settings = JSON.parse(JSON.stringify(bundle.DEFAULT_SETTINGS));
@@ -408,7 +409,7 @@ function createModalHarness({
   };
   const pdfFile = { name: "demo.pdf", path: "papers/demo.pdf", stat: { mtime: 1 } };
   const modal = new bundle.PDFChatModal(
-    {},
+    app,
     plugin,
     "Selected source",
     pdfFile,
@@ -555,6 +556,51 @@ test("modal builds the accessible research-workbench regions and interactions", 
   assert.match(descendants(byClass(assistantBubble, "pdf-chat-message-meta")[0]).map((el) => el.textContent).join(" "), /PDF Chat/);
   assert.equal(byClass(assistantBubble, "pdf-chat-message-content")[0].textContent, "Plain assistant answer.");
   assert.deepEqual(modal.transcript, []);
+});
+
+test("multi-paper panel searches PDFs, renders reference chips, and caps external references", () => {
+  const files = [
+    { name: "demo.pdf", path: "papers/demo.pdf", extension: "pdf", stat: { mtime: 1 } },
+    { name: "Alpha Paper.pdf", path: "papers/Alpha Paper.pdf", extension: "pdf", stat: { mtime: 2 } },
+    { name: "Beta Paper.pdf", path: "papers/Beta Paper.pdf", extension: "pdf", stat: { mtime: 3 } },
+    { name: "Gamma Paper.pdf", path: "papers/Gamma Paper.pdf", extension: "pdf", stat: { mtime: 4 } },
+    { name: "Delta Paper.pdf", path: "papers/Delta Paper.pdf", extension: "pdf", stat: { mtime: 5 } },
+    { name: "Alpha Note.md", path: "notes/Alpha Note.md", extension: "md", stat: { mtime: 6 } },
+  ];
+  const app = {
+    vault: {
+      getFiles: () => files,
+      getAbstractFileByPath: (target) => files.find((file) => file.path === target) || null,
+    },
+  };
+  const { modal } = createModalHarness({ app });
+  const searchInput = byClass(modal.contentEl, "pdf-chat-pdf-search-input")[0];
+  const results = byClass(modal.contentEl, "pdf-chat-pdf-search-results")[0];
+  assert.ok(searchInput, "missing @ PDF search input");
+  assert.equal(byClass(modal.contentEl, "pdf-chat-codex-analysis-btn").length, 1);
+  assert.equal(byClass(modal.contentEl, "pdf-chat-ordinary-compare-btn").length, 1);
+
+  searchInput.value = "Paper";
+  searchInput.dispatch("input");
+  assert.equal(byClass(results, "pdf-chat-pdf-search-result").length, 4);
+  assert.doesNotMatch(descendants(results).map((element) => element.textContent).join(" "), /demo\.pdf|Alpha Note/);
+
+  byClass(results, "pdf-chat-pdf-search-result")[0].dispatch("click");
+  assert.equal(modal.referencedPdfFiles.length, 1);
+  assert.equal(byClass(modal.contentEl, "pdf-chat-reference-chip").length, 1);
+  searchInput.value = "Paper";
+  searchInput.dispatch("input");
+  byClass(results, "pdf-chat-pdf-search-result")[0].dispatch("click");
+  searchInput.value = "Paper";
+  searchInput.dispatch("input");
+  byClass(results, "pdf-chat-pdf-search-result")[0].dispatch("click");
+  searchInput.value = "Paper";
+  searchInput.dispatch("input");
+  byClass(results, "pdf-chat-pdf-search-result")[0].dispatch("click");
+  assert.equal(modal.referencedPdfFiles.length, 3);
+  assert.equal(byClass(modal.contentEl, "pdf-chat-reference-chip").length, 3);
+  byClass(modal.contentEl, "pdf-chat-reference-remove")[0].dispatch("click");
+  assert.equal(modal.referencedPdfFiles.length, 2);
 });
 
 test("restored history keeps the live region off until every Markdown render settles", async () => {
@@ -736,7 +782,15 @@ test("settings preserve every legacy control in the correct ordered section and 
       "切块重叠字符数",
       "清空已缓存的检索索引",
     ],
-    plugin.settings.promptPresets.map((_preset, index) => `预设 ${index + 1}`),
+    [
+      "启用 Codex CLI 深度分析",
+      "Codex 命令",
+      "Codex profile",
+      "Codex model",
+      "Codex 超时毫秒",
+      "保留 Codex 临时分析包",
+      ...plugin.settings.promptPresets.map((_preset, index) => `预设 ${index + 1}`),
+    ],
   ];
   assert.deepEqual(
     JSON.parse(JSON.stringify(sections.map(settingNames))),
@@ -840,6 +894,12 @@ test("settings preserve every legacy control in the correct ordered section and 
   assert.equal(plugin.settings.ragChunkOverlap, 0);
   ragOverlap.value = "50";
   ragOverlap.dispatch("change");
+  const codexCommand = controlFor(sections[4], "Codex 命令", "input");
+  codexCommand.value = "  C:/Tools/codex.exe  ";
+  codexCommand.dispatch("change");
+  const codexTimeout = controlFor(sections[4], "Codex 超时毫秒", "input");
+  codexTimeout.value = "120000";
+  codexTimeout.dispatch("change");
   const firstPreset = controlFor(sections[4], "预设 1", "input");
   firstPreset.value = "Updated preset";
   firstPreset.dispatch("change");
@@ -855,6 +915,8 @@ test("settings preserve every legacy control in the correct ordered section and 
   assert.equal(plugin.settings.ragTopK, 7);
   assert.equal(plugin.settings.ragChunkSize, 50);
   assert.equal(plugin.settings.ragChunkOverlap, 49);
+  assert.equal(plugin.settings.codexDeepAnalysis.command, "C:/Tools/codex.exe");
+  assert.equal(plugin.settings.codexDeepAnalysis.timeoutMs, 120000);
   assert.equal(plugin.settings.promptPresets[0].name, "Updated preset");
 });
 

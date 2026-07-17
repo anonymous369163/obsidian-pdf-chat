@@ -10,6 +10,18 @@ import { DEFAULT_SETTINGS } from "./default-settings";
 import { listResearchActionsForSlot } from "./actions";
 import { createPDFChatModalServices } from "./modal-services";
 import {
+  buildCodexDeepAnalysisPrompt,
+  buildCodexExecArgs,
+  createCodexAnalysisTempDir,
+  parseCodexAnalysisOutput,
+  renderCodexAnalysisMarkdown,
+  removeCodexAnalysisTempDir,
+  runCodexExec,
+  searchPdfFiles,
+  writeCodexAnalysisPackage,
+  type PreparedCodexPaper,
+} from "./multi-paper";
+import {
   buildComposer,
   buildContextPanel,
   buildFollowupSuggestions,
@@ -33,6 +45,7 @@ import type {
 interface SubmitOptions {
   question?: string;
   skipContextAugmentation?: boolean;
+  outgoingContentOverride?: string;
 }
 
 interface BubbleOptions {
@@ -55,6 +68,11 @@ function errorMessage(error: unknown): string {
 
 function isAbortError(error: unknown): boolean {
   return !!error && typeof error === "object" && "name" in error && error.name === "AbortError";
+}
+
+function isCodexUnavailableError(error: unknown): boolean {
+  const message = errorMessage(error);
+  return /failed to start|not available|ENOENT|not recognized|cannot find/i.test(message);
 }
 
 async function renderMarkdownInto(
@@ -164,6 +182,13 @@ export class PDFChatModal extends Modal {
   ragCheckbox?: HTMLInputElement;
   ragStatusEl?: HTMLSpanElement;
   ragRefreshBtn?: HTMLButtonElement;
+  referencedPdfFiles: TFile[] = [];
+  pdfReferenceChipsEl?: HTMLElement;
+  pdfSearchInputEl?: HTMLInputElement;
+  pdfSearchResultsEl?: HTMLElement;
+  ordinaryCompareBtn?: HTMLButtonElement;
+  codexDeepAnalyzeBtn?: HTMLButtonElement;
+  multiPaperStatusEl?: HTMLElement;
   historyEl!: HTMLElement;
   emptyStateEl?: HTMLDivElement;
   suggestionsEl?: HTMLElement;
@@ -420,6 +445,161 @@ export class PDFChatModal extends Modal {
         this.useRag = !!(this.docChunksEntry && this.docChunksEntry.chunks.length);
         ragCheckbox.checked = this.useRag;
         this.updateComposerContextStatus();
+      });
+    }
+
+    this.buildMultiPaperControls(container);
+  }
+
+  private buildMultiPaperControls(container: HTMLElement): void {
+    const section = container.createDiv({ cls: "pdf-chat-multi-paper" });
+    section.createEl("h4", { text: "多论文对比", cls: "pdf-chat-context-heading" });
+    section.createDiv({
+      text: "引用 vault 内其他 PDF 后，可用普通 API 快速对比，或手动触发 Codex 深度阅读。",
+      cls: "pdf-chat-context-help",
+    });
+
+    const searchRow = section.createDiv({ cls: "pdf-chat-pdf-search-row" });
+    this.pdfSearchInputEl = searchRow.createEl("input", {
+      cls: "pdf-chat-pdf-search-input",
+      attr: {
+        type: "text",
+        placeholder: "@ 搜索 PDF 文件名或路径",
+        "aria-label": "@ 搜索 vault 内 PDF",
+      },
+    });
+    this.pdfSearchResultsEl = section.createDiv({ cls: "pdf-chat-pdf-search-results" });
+    this.pdfReferenceChipsEl = section.createDiv({
+      cls: "pdf-chat-pdf-reference-chips",
+      attr: { "aria-label": "已引用 PDF" },
+    });
+
+    const actions = section.createDiv({ cls: "pdf-chat-multi-paper-actions" });
+    this.ordinaryCompareBtn = actions.createEl("button", {
+      text: "普通对比",
+      cls: "pdf-chat-research-action-btn pdf-chat-ordinary-compare-btn",
+      attr: { type: "button" },
+    });
+    labelControl(this.ordinaryCompareBtn, "使用当前模型快速对比已引用论文");
+    this.codexDeepAnalyzeBtn = actions.createEl("button", {
+      text: "Codex 深度分析",
+      cls: "pdf-chat-research-action-btn pdf-chat-codex-analysis-btn",
+      attr: { type: "button" },
+    });
+    labelControl(this.codexDeepAnalyzeBtn, "使用 Codex CLI 深度分析当前论文和已引用论文");
+    this.multiPaperStatusEl = section.createDiv({
+      text: this.plugin.settings.codexDeepAnalysis.enabled
+        ? "Codex CLI 已启用，分析时只会读取临时论文包。"
+        : "Codex 深度分析需要先在设置中启用。",
+      cls: "pdf-chat-multi-paper-status",
+    });
+
+    this.pdfSearchInputEl.addEventListener("input", () => {
+      this.renderPdfSearchResults(this.pdfSearchInputEl?.value || "");
+    });
+    this.pdfSearchInputEl.addEventListener("focus", () => {
+      this.renderPdfSearchResults(this.pdfSearchInputEl?.value || "");
+    });
+    this.ordinaryCompareBtn.addEventListener("click", () => {
+      void this.runOrdinaryMultiPaperCompare();
+    });
+    this.codexDeepAnalyzeBtn.addEventListener("click", () => {
+      void this.runCodexDeepAnalysis();
+    });
+    this.updateReferencedPdfChips();
+  }
+
+  private isPdfLikeFile(file: unknown): file is TFile {
+    const candidate = file as TFile & { extension?: string; path?: string; name?: string };
+    if (!candidate) return false;
+    if (String(candidate.extension || "").toLowerCase() === "pdf") return true;
+    return /\.pdf$/i.test(candidate.path || candidate.name || "");
+  }
+
+  private findPdfFileByPath(path: string): TFile | null {
+    const vault = this.app?.vault;
+    const direct = vault?.getAbstractFileByPath ? vault.getAbstractFileByPath(path) : null;
+    if (this.isPdfLikeFile(direct)) return direct;
+    const files = vault?.getFiles ? vault.getFiles() : [];
+    return (files.find((file: TFile) => file.path === path && this.isPdfLikeFile(file)) as TFile | undefined) || null;
+  }
+
+  private addReferencedPdf(file: TFile): void {
+    if (!file || !this.isPdfLikeFile(file)) return;
+    if (this.pdfFile && file.path === this.pdfFile.path) {
+      new Notice("当前 PDF 已自动作为对比主体，无需重复引用。");
+      return;
+    }
+    if (this.referencedPdfFiles.find((existing) => existing.path === file.path)) return;
+    if (this.referencedPdfFiles.length >= 3) {
+      new Notice("第一版最多额外引用 3 篇 PDF。");
+      return;
+    }
+    this.referencedPdfFiles.push(file);
+    this.updateReferencedPdfChips();
+    if (this.pdfSearchInputEl) this.pdfSearchInputEl.value = "";
+    this.renderPdfSearchResults("");
+  }
+
+  private removeReferencedPdf(path: string): void {
+    this.referencedPdfFiles = this.referencedPdfFiles.filter((file) => file.path !== path);
+    this.updateReferencedPdfChips();
+    this.renderPdfSearchResults(this.pdfSearchInputEl?.value || "");
+  }
+
+  private updateReferencedPdfChips(): void {
+    if (!this.pdfReferenceChipsEl) return;
+    this.pdfReferenceChipsEl.empty();
+    if (!this.referencedPdfFiles.length) {
+      this.pdfReferenceChipsEl.createDiv({
+        text: "尚未引用其他 PDF",
+        cls: "pdf-chat-reference-empty",
+      });
+      return;
+    }
+    for (const file of this.referencedPdfFiles) {
+      const chip = this.pdfReferenceChipsEl.createDiv({ cls: "pdf-chat-reference-chip" });
+      chip.createEl("span", { text: file.name || file.path });
+      const remove = chip.createEl("button", {
+        text: "×",
+        cls: "pdf-chat-reference-remove",
+        attr: { type: "button" },
+      });
+      labelControl(remove, `移除 ${file.name || file.path}`);
+      remove.addEventListener("click", () => this.removeReferencedPdf(file.path));
+    }
+  }
+
+  private renderPdfSearchResults(query: string): void {
+    if (!this.pdfSearchResultsEl) return;
+    this.pdfSearchResultsEl.empty();
+    const trimmed = (query || "").replace(/^@/, "").trim();
+    if (!trimmed) return;
+    const excludePaths = new Set(this.referencedPdfFiles.map((file) => file.path));
+    if (this.pdfFile) excludePaths.add(this.pdfFile.path);
+    const cachedPaths = new Set([
+      ...Object.keys(this.plugin.settings.docSummaries || {}),
+      ...Object.keys(this.plugin.settings.docChunks || {}),
+    ]);
+    const results = searchPdfFiles(this.app, trimmed, { limit: 6, excludePaths, cachedPaths });
+    if (!results.length) {
+      this.pdfSearchResultsEl.createDiv({ text: "未找到匹配的 PDF", cls: "pdf-chat-search-empty" });
+      return;
+    }
+    for (const candidate of results) {
+      const button = this.pdfSearchResultsEl.createEl("button", {
+        cls: "pdf-chat-pdf-search-result",
+        attr: { type: "button" },
+      });
+      button.createEl("span", { text: candidate.name, cls: "pdf-chat-pdf-search-name" });
+      button.createEl("span", {
+        text: `${candidate.path}${candidate.cached ? " · 已有缓存" : ""}`,
+        cls: "pdf-chat-pdf-search-path",
+      });
+      labelControl(button, `引用 ${candidate.name}`);
+      button.addEventListener("click", () => {
+        const file = this.findPdfFileByPath(candidate.path);
+        if (file) this.addReferencedPdf(file);
       });
     }
   }
@@ -793,6 +973,254 @@ export class PDFChatModal extends Modal {
     }
   }
 
+  private selectedPaperFiles(): Array<{ file: TFile; role: "current" | "referenced" }> {
+    const papers: Array<{ file: TFile; role: "current" | "referenced" }> = [];
+    if (this.pdfFile) papers.push({ file: this.pdfFile, role: "current" });
+    for (const file of this.referencedPdfFiles) papers.push({ file, role: "referenced" });
+    return papers;
+  }
+
+  private getMultiPaperQuestion(): string {
+    const typed = this.inputEl?.value?.trim();
+    return typed || "请对比当前论文和已引用论文的相似点、不同点，以及它们是否有结合的可能性。";
+  }
+
+  private multiPaperUserLabel(question: string): string {
+    const refs = this.referencedPdfFiles.map((file) => file.name || file.path).join("、");
+    return refs ? `多论文分析：${question}\n\n引用论文：${refs}` : `多论文分析：${question}`;
+  }
+
+  private async buildApiMultiPaperContext(question: string, progress?: (message: string) => void): Promise<string> {
+    const papers = this.selectedPaperFiles();
+    const parts: string[] = [];
+    for (const { file, role } of papers) {
+      progress?.(`正在准备 ${file.name || file.path} 的摘要和检索片段…`);
+      const summary = await this.services.papers.getOrCreateDocSummary(file, false);
+      const chunksEntry = await this.services.papers.getOrCreateDocChunks(file, false);
+      const retrieved = this.services.papers.retrieveContext(
+        chunksEntry.chunks || [],
+        [question],
+        this.plugin.settings.ragTopK || DEFAULT_SETTINGS.ragTopK
+      );
+      const evidence = retrieved.length
+        ? retrieved.map((chunk) => `[Page ${chunk.page} / chunk ${chunk.idx ?? "?"}]\n${chunk.text}`).join("\n\n")
+        : "(未检索到明显相关片段)";
+      parts.push(
+        [
+          `## ${role === "current" ? "当前论文" : "引用论文"}：${file.name || file.path}`,
+          `路径：${file.path}`,
+          "### 摘要",
+          summary.summary || "(无摘要)",
+          "### 可能相关片段",
+          evidence,
+        ].join("\n")
+      );
+    }
+    return [
+      "你正在做多论文对比。请只基于下面提供的论文摘要和检索片段回答，并标明依据来自哪篇论文。",
+      "如果证据不足，请明确说明不足，不要编造。",
+      "",
+      parts.join("\n\n---\n\n"),
+      "",
+      "## 用户问题",
+      question,
+    ].join("\n");
+  }
+
+  private async completeApiMultiPaperAnswer(
+    question: string,
+    userLabel: string,
+    bubble: HTMLDivElement
+  ): Promise<void> {
+    const outgoing = await this.buildApiMultiPaperContext(question, (message) => {
+      this.multiPaperStatusEl?.setText(message);
+      setBubbleText(bubble, message);
+    });
+    let fullText = "";
+    let firstChunkArrived = false;
+    fullText = await this.services.llm.chat({
+      messages: [...this.messages, { role: "user", content: outgoing }],
+      onChunk: (_piece, acc) => {
+        fullText = acc;
+        if (!firstChunkArrived) {
+          firstChunkArrived = true;
+          bubble.removeClass("is-loading");
+        }
+        setBubbleText(bubble, acc);
+        this.historyEl.scrollTo({ top: this.historyEl.scrollHeight, behavior: "auto" });
+      },
+      signal: this.abortController?.signal,
+      modelProfile: this.services.models.get(this.currentModelId),
+    });
+    bubble.removeClass("is-loading");
+    bubble.addClass("is-rendered");
+    await renderMarkdownIntoBubble(this.app, this.plugin, bubble, fullText);
+    this.messages.push({ role: "user", content: userLabel }, { role: "assistant", content: fullText });
+    await this.recordTranscriptTurn(userLabel, fullText, "complete");
+    this.showFollowupSuggestions("chat");
+    this.multiPaperStatusEl?.setText("已降级为普通多论文对比并完成。");
+  }
+
+  private async prepareCodexPapers(progress?: (message: string) => void): Promise<PreparedCodexPaper[]> {
+    const prepared: PreparedCodexPaper[] = [];
+    const usedIds = new Map<string, number>();
+    for (const { file, role } of this.selectedPaperFiles()) {
+      progress?.(`正在抽取 ${file.name || file.path} 的全文、分页文本和缓存资产…`);
+      const [pages, summary, chunksEntry] = await Promise.all([
+        this.services.papers.extractPages(file),
+        this.services.papers.getOrCreateDocSummary(file, false),
+        this.services.papers.getOrCreateDocChunks(file, false),
+      ]);
+      const baseId = file.path || file.name || `paper-${prepared.length + 1}`;
+      const seen = usedIds.get(baseId) || 0;
+      usedIds.set(baseId, seen + 1);
+      prepared.push({
+        id: seen ? `${baseId}-${seen + 1}` : baseId,
+        role,
+        name: file.name || file.path,
+        vaultPath: file.path,
+        mtime: file.stat && file.stat.mtime,
+        summary: summary.summary || "",
+        chunks: chunksEntry.chunks || [],
+        pages,
+      });
+    }
+    return prepared;
+  }
+
+  async runOrdinaryMultiPaperCompare(): Promise<void> {
+    if (!this.pdfFile) {
+      new Notice("多论文对比需要从 PDF 视图打开。");
+      return;
+    }
+    if (!this.referencedPdfFiles.length) {
+      new Notice("请先 @ 引用至少一篇其他 PDF。");
+      return;
+    }
+    if (this.isSending) return;
+    const question = this.getMultiPaperQuestion();
+    const loadingNotice = new Notice("正在准备多论文对比上下文…", 0);
+    try {
+      const outgoing = await this.buildApiMultiPaperContext(question, (message) => {
+        this.multiPaperStatusEl?.setText(message);
+      });
+      loadingNotice.hide();
+      await this.handleSubmit({
+        question: this.multiPaperUserLabel(question),
+        outgoingContentOverride: outgoing,
+        skipContextAugmentation: true,
+      });
+      this.multiPaperStatusEl?.setText("普通对比已完成，可继续追问。");
+    } catch (error) {
+      loadingNotice.hide();
+      new Notice("普通多论文对比准备失败: " + errorMessage(error));
+      this.multiPaperStatusEl?.setText("普通对比准备失败。");
+    }
+  }
+
+  async runCodexDeepAnalysis(): Promise<void> {
+    if (!this.pdfFile) {
+      new Notice("Codex 深度分析需要从 PDF 视图打开。");
+      return;
+    }
+    if (!this.referencedPdfFiles.length) {
+      new Notice("请先 @ 引用至少一篇其他 PDF。");
+      return;
+    }
+    if (!this.plugin.settings.codexDeepAnalysis.enabled) {
+      new Notice("需要先在 PDF Chat 设置中启用 Codex CLI 深度分析。");
+      this.multiPaperStatusEl?.setText("Codex 深度分析尚未启用。");
+      return;
+    }
+    if (this.isSending) return;
+
+    const question = this.getMultiPaperQuestion();
+    const userLabel = this.multiPaperUserLabel(question);
+    this.activeComposerKind = "chat";
+    this.hideFollowupSuggestions();
+    this.addBubble("user", userLabel);
+    this.inputEl.value = "";
+    if (this.inputEl.style) this.inputEl.style.height = "";
+    this.setSendingState(true);
+    const loadingBubble = this.addBubble("assistant", "正在准备 Codex 多论文分析包…", { loading: true });
+    this.abortController = new AbortController();
+    let analysisDir = "";
+
+    try {
+      const taskId = String(Date.now());
+      const papers = await this.prepareCodexPapers((message) => {
+        this.multiPaperStatusEl?.setText(message);
+        setBubbleText(loadingBubble, message);
+      });
+      analysisDir = createCodexAnalysisTempDir(taskId);
+      await writeCodexAnalysisPackage({
+        baseDir: analysisDir,
+        taskId,
+        createdAt: new Date().toISOString(),
+        question,
+        papers,
+      });
+      const settings = this.plugin.settings.codexDeepAnalysis;
+      const execArgs = buildCodexExecArgs({
+        analysisDir,
+        command: settings.command || DEFAULT_SETTINGS.codexDeepAnalysis.command,
+        profile: settings.profile,
+        model: settings.model,
+        prompt: buildCodexDeepAnalysisPrompt(),
+      });
+      const runningMessage = `Codex 正在阅读 ${papers.length} 篇论文…`;
+      this.multiPaperStatusEl?.setText(runningMessage);
+      setBubbleText(loadingBubble, runningMessage);
+      const raw = await runCodexExec(execArgs, {
+        timeoutMs: settings.timeoutMs || DEFAULT_SETTINGS.codexDeepAnalysis.timeoutMs,
+        signal: this.abortController.signal,
+      });
+      const output = parseCodexAnalysisOutput(raw);
+      const markdown = renderCodexAnalysisMarkdown(output);
+      loadingBubble.removeClass("is-loading");
+      loadingBubble.addClass("is-rendered");
+      await renderMarkdownIntoBubble(this.app, this.plugin, loadingBubble, markdown);
+      this.messages.push({ role: "user", content: userLabel }, { role: "assistant", content: markdown });
+      await this.recordTranscriptTurn(userLabel, markdown, "complete");
+      this.showFollowupSuggestions("chat");
+      this.multiPaperStatusEl?.setText("Codex 深度分析已完成。");
+    } catch (error) {
+      loadingBubble.removeClass("is-loading");
+      if (isAbortError(error)) {
+        loadingBubble.addClass("is-stopped");
+        setBubbleText(loadingBubble, "Codex 深度分析已停止。");
+        this.multiPaperStatusEl?.setText("Codex 深度分析已停止。");
+      } else if (isCodexUnavailableError(error)) {
+        setBubbleText(loadingBubble, "Codex CLI 不可用，正在改用普通 API 多论文对比…");
+        this.multiPaperStatusEl?.setText("Codex 不可用，降级为普通对比。");
+        try {
+          await this.completeApiMultiPaperAnswer(question, userLabel, loadingBubble);
+        } catch (fallbackError) {
+          loadingBubble.removeClass("is-loading");
+          loadingBubble.addClass("is-error");
+          setBubbleText(loadingBubble, "普通对比也失败: " + errorMessage(fallbackError));
+          this.multiPaperStatusEl?.setText("普通对比降级失败。");
+        }
+      } else {
+        loadingBubble.addClass("is-error");
+        setBubbleText(loadingBubble, "Codex 深度分析失败: " + errorMessage(error));
+        this.multiPaperStatusEl?.setText("Codex 深度分析失败，可改用普通对比。");
+      }
+    } finally {
+      const keep = this.plugin.settings.codexDeepAnalysis.keepTempFiles;
+      if (analysisDir && !keep) {
+        try {
+          removeCodexAnalysisTempDir(analysisDir);
+        } catch (error) {
+          void error;
+        }
+      }
+      this.setSendingState(false);
+      this.abortController = null;
+      this.inputEl.focus();
+    }
+  }
+
   setupDragging(handleEl: HTMLElement): void {
     handleEl.addClass("pdf-chat-drag-handle");
     handleEl.addEventListener("mousedown", (evt: MouseEvent) => {
@@ -1012,8 +1440,10 @@ export class PDFChatModal extends Modal {
 
     const loadingBubble = this.addBubble("assistant", "思考中…", { loading: true });
 
-    let outgoingContent = question;
-    if (opts.skipContextAugmentation) {
+    let outgoingContent = opts.outgoingContentOverride || question;
+    if (opts.outgoingContentOverride) {
+      // 外部任务已经构造好了发送给模型的上下文；界面仍只显示用户可见问题。
+    } else if (opts.skipContextAugmentation) {
       // 跳过下面的 RAG/全文拼接逻辑,原样发送。
     } else if (this.useRag && this.useFullTextMode && this.pdfFile && !this.fullTextAttached) {
       // 全文足够短,直接把全文交给模型,不做"猜哪一块相关"的检索——实测发现关键词检索对

@@ -215,6 +215,10 @@ export class PaperContextService {
     return { app: this.app, file, selectedText, conversationKey };
   }
 
+  extractPages(file: TFile): Promise<PdfPageText[]> {
+    return extractPdfPages(this.app, file);
+  }
+
   extractFullText(file: TFile): Promise<string> {
     return extractPdfFullText(this.app, file);
   }

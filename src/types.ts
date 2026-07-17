@@ -66,6 +66,15 @@ export interface TranslationSettings {
   additionalInstruction: string;
 }
 
+export interface CodexDeepAnalysisSettings {
+  enabled: boolean;
+  command: string;
+  profile: string;
+  model: string;
+  timeoutMs: number;
+  keepTempFiles: boolean;
+}
+
 export interface TranslationProgress {
   chunkIndex: number;
   chunkCount: number;
@@ -104,6 +113,7 @@ export interface PDFChatSettings {
   continueModelId: string;
   systemPrompt: string;
   translation: TranslationSettings;
+  codexDeepAnalysis: CodexDeepAnalysisSettings;
   summaryModelId: string;
   autoDocSummary: boolean;
   summaryMaxChars: number;
@@ -161,6 +171,7 @@ export interface ConversationOperations {
 export interface PaperContextOperations {
   getOrCreateDocSummary(file: TFile, forceRefresh: boolean): Promise<DocSummaryEntry>;
   getOrCreateDocChunks(file: TFile, forceRefresh: boolean): Promise<DocChunksEntry>;
+  extractPages(file: TFile): Promise<PdfPageText[]>;
   extractFullText(file: TFile): Promise<string>;
   planRagQueries(question: string): Promise<string[]>;
   retrieveContext(chunks: PdfChunk[], queries: string[], topK: number): PdfChunk[];

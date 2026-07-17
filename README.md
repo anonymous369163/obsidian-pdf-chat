@@ -1,6 +1,6 @@
 # Obsidian PDF Chat
 
-Version 0.7.1 refines the research workbench visual hierarchy, reading width, composer card, and follow-up suggestions while keeping the 0.7 quick-translation and model-routing behavior.
+Version 0.7.1 refines the research workbench visual hierarchy, reading width, composer card, follow-up suggestions, and adds the first multi-PDF comparison workflow.
 
 PDF Chat turns an Obsidian PDF view into a compact research workbench. Select paper text, open the workbench, and ask questions without leaving the document. User and assistant messages are selectable and copyable, and the most recent conversation is restored per-PDF.
 
@@ -11,11 +11,24 @@ PDF Chat turns an Obsidian PDF view into a compact research workbench. Select pa
 - Use the PDF-only quick-translate marker beside a non-empty selection to open a fresh modal and translate immediately.
 - Generate or reuse a paper summary for compact global context.
 - Read shorter papers in full or use local BM25 RAG for long-paper retrieval.
+- Search vault PDFs from the paper context panel, add up to three referenced PDFs, and run a quick multi-paper comparison with the configured chat model.
+- Optionally enable Codex CLI deep analysis for harder multi-paper questions. Codex reads a temporary analysis package containing the current question plus per-paper summaries, chunks, full text, page files, and metadata.
 - Switch model profiles and research prompts from the workbench.
 - Choose an independent translation model and continue model. Empty choices automatically prefer DeepSeek and GLM profiles, respectively, before falling back to the active model.
 - Stop an in-progress response, clear the current conversation, and resize or move the modal.
 
 The plugin registers commands for a fresh conversation and for continuing the saved conversation. Their default shortcuts are `Ctrl/Cmd + Alt + Q` and `Ctrl/Cmd + Q`, respectively. Translation is available to immediate follow-up questions in the open modal, while separate translation history prevents it from replacing the academic chat restored by the continue command.
+
+## Multi-PDF and Codex deep analysis
+
+Open PDF Chat from a PDF, expand **Paper context**, then use the `@` PDF search field to reference other PDFs in the same vault. The first version supports the current PDF plus up to three referenced PDFs.
+
+There are two analysis paths:
+
+- **Ordinary comparison** uses the plugin's configured chat model and API key. It prepares summaries and local BM25 evidence snippets for the selected papers, then answers quickly in the current conversation.
+- **Codex deep analysis** is manual and disabled by default. When enabled in settings, the plugin creates a one-time temporary folder like `pdf-chat-analysis-*` with `manifest.json`, `question.md`, `output.schema.json`, and per-paper assets under `papers/`. It then runs `codex exec --sandbox read-only --ephemeral --cd <analysis-dir> --output-schema output.schema.json --output-last-message codex-output.json ...`.
+
+The Codex package contains paper text and the user question only. It does not copy plugin source, `.env`, `data.json`, API keys, model endpoints, or local model profiles. Unless **Keep Codex temporary analysis package** is enabled for debugging, the temporary folder is removed after the task. If Codex is not installed or cannot start, the modal falls back to ordinary comparison.
 
 ## Manual installation
 
