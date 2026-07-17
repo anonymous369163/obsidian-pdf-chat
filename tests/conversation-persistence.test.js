@@ -218,6 +218,74 @@ test("modal constructor restores visible history into runtime model messages", (
   assert.equal(modal.fullTextAttached, false);
 });
 
+test("modal constructor skips loading history when starting fresh", () => {
+  const PluginClass = loadPluginModule();
+  const PDFChatModal = PluginClass.__test.PDFChatModal;
+  const plugin = Object.create(PluginClass.prototype);
+  plugin.settings = {
+    activeModelId: "model-a",
+    conversationHistories: {
+      "pdf:papers/demo.pdf": {
+        version: 1,
+        updatedAt: 1,
+        messages: [
+          { role: "user", content: "Earlier question", status: "complete" },
+          { role: "assistant", content: "Earlier answer", status: "stopped" },
+        ],
+      },
+    },
+    lastModelId: "",
+    lastPresetId: "",
+    models: [{ id: "model-a" }],
+    promptPresets: [],
+    systemPrompt: "System instructions",
+  };
+
+  const modal = new PDFChatModal({}, plugin, "Latest selected text", { path: "papers/demo.pdf" }, true);
+
+  assert.equal(modal.startFresh, true);
+  assert.equal(modal.hadExistingHistory, true);
+  assert.deepEqual(plain(modal.transcript), []);
+  assert.equal(modal.messages.length, 1);
+  assert.equal(modal.messages[0].role, "system");
+});
+
+test("closing an empty fresh-started modal does not erase previously saved history", async () => {
+  const PluginClass = loadPluginModule();
+  const PDFChatModal = PluginClass.__test.PDFChatModal;
+  const plugin = Object.create(PluginClass.prototype);
+  plugin.settings = {
+    activeModelId: "model-a",
+    conversationHistories: {
+      "pdf:demo.pdf": {
+        version: 1,
+        updatedAt: 1,
+        messages: [{ role: "user", content: "Old question", status: "complete" }],
+      },
+    },
+    lastModelId: "",
+    lastPresetId: "",
+    models: [{ id: "model-a" }],
+    promptPresets: [],
+    systemPrompt: "System instructions",
+  };
+  let saveCalled = false;
+  plugin.saveConversation = async () => {
+    saveCalled = true;
+  };
+
+  const modal = new PDFChatModal({}, plugin, "Selection", { path: "demo.pdf" }, true);
+  modal.abortController = null;
+  modal.contentEl = { empty() {} };
+
+  modal.onClose();
+
+  assert.equal(saveCalled, false);
+  assert.deepEqual(plugin.settings.conversationHistories["pdf:demo.pdf"].messages, [
+    { role: "user", content: "Old question", status: "complete" },
+  ]);
+});
+
 test("modal records only finalized visible turns", async () => {
   const PluginClass = loadPluginModule();
   const PDFChatModal = PluginClass.__test.PDFChatModal;
@@ -436,13 +504,32 @@ test("handleSubmit persists streamed partial text when generation is stopped", a
   assert.equal(bubbles.at(-1).text, "Partial answer\n\n[已停止生成]");
 });
 
+test("onload registers separate new-conversation and continue-conversation hotkeys", async () => {
+  const PluginClass = loadPluginModule();
+  const plugin = Object.create(PluginClass.prototype);
+  plugin.loadData = async () => ({});
+  plugin.saveData = async () => {};
+  const addedCommands = [];
+  plugin.addCommand = (cmd) => addedCommands.push(cmd);
+  plugin.addSettingTab = () => {};
+
+  await plugin.onload();
+
+  const fresh = addedCommands.find((c) => c.id === "ask-about-selection");
+  const continued = addedCommands.find((c) => c.id === "continue-conversation");
+  assert.ok(fresh, "expected a new-conversation command to be registered");
+  assert.ok(continued, "expected a continue-conversation command to be registered");
+  assert.deepEqual(plain(fresh.hotkeys), [{ modifiers: ["Mod", "Alt"], key: "Q" }]);
+  assert.deepEqual(plain(continued.hotkeys), [{ modifiers: ["Mod"], key: "Q" }]);
+});
+
 test("release metadata and CSS expose the 0.2.0 selectable-text contract", () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(projectRoot, "manifest.json"), "utf8"));
   const versions = JSON.parse(fs.readFileSync(path.join(projectRoot, "versions.json"), "utf8"));
   const css = fs.readFileSync(path.join(projectRoot, "styles.css"), "utf8");
 
-  assert.equal(manifest.version, "0.2.0");
-  assert.equal(versions["0.2.0"], "1.4.0");
+  assert.equal(manifest.version, "0.3.0");
+  assert.equal(versions["0.3.0"], "1.4.0");
   assert.match(css, /\.pdf-chat-bubble[^}]*user-select:\s*text/s);
   assert.match(css, /-webkit-user-select:\s*text/);
   assert.match(css, /\.pdf-chat-bubble[^}]*cursor:\s*text/s);

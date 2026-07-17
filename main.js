@@ -387,11 +387,12 @@ async function renderMarkdownInto(app, component, el, text) {
 }
 
 class PDFChatModal extends Modal {
-  constructor(app, plugin, contextText, pdfFile) {
+  constructor(app, plugin, contextText, pdfFile, startFresh) {
     super(app);
     this.plugin = plugin;
     this.contextText = contextText;
     this.pdfFile = pdfFile || null;
+    this.startFresh = !!startFresh;
 
     const lastPresetId = this.plugin.settings.lastPresetId;
     this.currentPresetId =
@@ -419,7 +420,13 @@ class PDFChatModal extends Modal {
     // 实际发给模型的内容就多一份完整全文,输入越滚越大、越聊越慢、越聊越贵。
     this.fullTextAttached = false;
     this.conversationKey = this.plugin.getConversationKey(this.pdfFile, this.contextText);
-    this.transcript = this.plugin.getConversation(this.conversationKey);
+    // “新开对话”按快捷键触发时不加载旧记录:这次会话从空白开始,只要发出第一条消息,
+    // 旧的这份记录就会被 recordTranscriptTurn 整份替换掉(每个 key 只保留一份最近对话)。
+    // 如果只是打开看看什么都没问就关闭,onClose 里的保存会因为 transcript 仍是空数组而跳过,
+    // 不会误删旧记录。
+    const existingTranscript = this.plugin.getConversation(this.conversationKey);
+    this.hadExistingHistory = existingTranscript.length > 0;
+    this.transcript = this.startFresh ? [] : existingTranscript;
     this.messages = [
       this.buildSystemMessage(),
       ...this.transcript.map((message) => ({ role: message.role, content: message.content })),
@@ -634,6 +641,8 @@ class PDFChatModal extends Modal {
       this.restoreConversationHistory().catch((err) => {
         new Notice("恢复上次对话显示失败: " + (err && err.message ? err.message : String(err)));
       });
+    } else if (this.startFresh && this.hadExistingHistory) {
+      new Notice("已开始新对话(发出第一条消息后会替换掉上次保存的记录)");
     }
     this.inputEl.focus();
   }
@@ -1013,7 +1022,11 @@ class PDFChatModal extends Modal {
 
   onClose() {
     this.stopGenerating();
-    void this.persistConversation();
+    // 只在这次会话确实产生过消息时才回写存储:避免“新开对话”模式下,用户什么都没问就
+    // 直接关闭弹窗,却因为 this.transcript 一开始就是空数组而把上次保存的记录误清空。
+    if (this.transcript.length) {
+      void this.persistConversation();
+    }
     this.contentEl.empty();
   }
 }
@@ -1171,7 +1184,8 @@ class PDFChatSettingTab extends PluginSettingTab {
 
     containerEl.createEl("p", {
       text:
-        "默认快捷键: Ctrl+Alt+Q (可在 设置→快捷键→搜索 “PDF Chat” 里自行修改)。" +
+        "默认快捷键: Ctrl+Alt+Q 新开一份对话(不加载之前保存的记录);Ctrl+Q 继续上次对话(恢复之前保存的记录)。" +
+        "两个命令都可以在 设置→快捷键→搜索 “PDF Chat” 里自行修改。" +
         "使用方法: 在 PDF 或任意笔记里选中一段文字,按快捷键即可弹窗提问,弹窗内可连续追问,支持流式回答、停止生成、拖动标题栏移动位置、拖拽右下角调整大小。",
       cls: "setting-item-description",
     });
@@ -1426,23 +1440,34 @@ module.exports = class PDFChatPlugin extends Plugin {
 
     this.addCommand({
       id: "ask-about-selection",
-      name: "针对选中内容提问 (PDF Chat)",
+      name: "针对选中内容提问,新开对话 (PDF Chat)",
       hotkeys: [{ modifiers: ["Mod", "Alt"], key: "Q" }],
-      callback: () => {
-        const win = activeWindow || window;
-        const sel = win.getSelection ? win.getSelection() : null;
-        const raw = sel ? sel.toString() : "";
-        const text = cleanSelectionText(raw || "");
-
-        if (!text) {
-          new Notice("没有检测到选中的文字,请先划选一段内容再按快捷键");
-          return;
-        }
-
-        const pdfFile = getActivePdfFile(this.app);
-        new PDFChatModal(this.app, this, text, pdfFile).open();
-      },
+      callback: () => this.openChatModal(true),
     });
+
+    this.addCommand({
+      id: "continue-conversation",
+      name: "针对选中内容提问,继续上次对话 (PDF Chat)",
+      hotkeys: [{ modifiers: ["Mod"], key: "Q" }],
+      callback: () => this.openChatModal(false),
+    });
+  }
+
+  // startFresh=true: 新开一份对话,不加载这个 PDF(或选区)之前保存的记录;
+  // startFresh=false: 加载并接续之前保存的记录(如果有)。两个快捷键共用同一段取选中文字的逻辑。
+  openChatModal(startFresh) {
+    const win = activeWindow || window;
+    const sel = win.getSelection ? win.getSelection() : null;
+    const raw = sel ? sel.toString() : "";
+    const text = cleanSelectionText(raw || "");
+
+    if (!text) {
+      new Notice("没有检测到选中的文字,请先划选一段内容再按快捷键");
+      return;
+    }
+
+    const pdfFile = getActivePdfFile(this.app);
+    new PDFChatModal(this.app, this, text, pdfFile, startFresh).open();
   }
 
   async loadSettings() {
