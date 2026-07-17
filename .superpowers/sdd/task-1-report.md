@@ -55,3 +55,42 @@ The plugin now follows the official Obsidian TypeScript/esbuild release shape: `
 ## Commit SHA
 
 Implementation commit: `ed43ddec99521fd2b32944bd2f32d8050d40cb43` (`refactor: migrate PDF Chat to TypeScript modules`).
+
+## Review-fix addendum
+
+### Additional RED evidence
+
+- Command: `node --test --test-name-pattern="without file-wide suppression" tests\build-contract.test.js`
+- Expected failure: 0 passed, 1 failed; the contract listed all five suppressed files: `default-settings.ts`, `main.ts`, `modal-services.ts`, `pdf-chat-modal.ts`, and `settings-tab.ts`.
+- Command: `node --test --test-name-pattern="complete LlmRequest contract" tests\conversation-persistence.test.js`
+- Expected failure: 0 passed, 1 failed; the compatibility service sent four positional legacy arguments instead of preserving the complete `LlmRequest`, dropping `stream` and `maxTokensOverride`.
+- Command: `node --test --test-name-pattern="sole model shows a Notice" tests\conversation-persistence.test.js`
+- Expected failure: 0 passed, 1 failed with `ReferenceError: Notice is not defined` when the sole model's delete handler ran.
+
+### Fixes
+
+- Removed every `@ts-nocheck` directive under `src/` without weakening `tsconfig.json`.
+- Added explicit settings, cache, plugin, modal, injected service, Obsidian DOM element, PDF.js, request, and response types. No broad `any` remains under `src/`.
+- Typed `createPDFChatModalServices` and preserved the complete `LlmRequest` through both the direct transport and legacy plugin facade paths, including `stream` and `maxTokensOverride`.
+- Imported `Notice` in `settings-tab.ts`, so trying to delete the only model displays the existing notice and retains that model.
+- Strengthened built-bundle tests to execute the injected LLM seam on both adapter paths and to exercise the real settings-tab delete handler, in addition to the source suppression contract.
+
+### Additional GREEN and full verification
+
+- Focused suppression contract: 1/1 passed.
+- Focused LLM request forwarding and sole-model deletion regressions: 2/2 passed.
+- `npm run typecheck`: passed with 0 errors and no file-wide suppressions.
+- `npm run build`: passed.
+- `npm test`: passed 21/21 tests, 0 failures.
+- `node --check main.js`: passed.
+- `git diff --check`: passed; only Git's Windows LF-to-CRLF notices were printed.
+
+### Review self-check
+
+- The earlier UI `@ts-nocheck` concern is resolved, not deferred.
+- `rg -n "@ts-nocheck|\\bany\\b" src` returns no matches.
+- Existing runtime behavior assertions remain intact; the only behavior correction is the missing sole-model deletion notice import.
+- Release metadata, public default credentials, README, styles, installed plugin data, and private data were not changed.
+- No remaining concerns found.
+
+Review-fix commit: `d786e13c113799497f29d2708d7c78a780f095cc` (`fix: enforce typed PDF Chat service seams`).
