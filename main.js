@@ -1,22 +1,96 @@
-const {
-  Plugin,
-  Modal,
-  Notice,
-  PluginSettingTab,
-  Setting,
-  requestUrl,
-  MarkdownRenderer,
-} = require("obsidian");
+var global = globalThis;
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
 
-const DEFAULT_SETTINGS = {
+// src/main.ts
+var main_exports = {};
+__export(main_exports, {
+  ActionRegistry: () => ActionRegistry,
+  ConversationStore: () => ConversationStore,
+  DEFAULT_SETTINGS: () => DEFAULT_SETTINGS,
+  OpenAICompatibleTransport: () => OpenAICompatibleTransport,
+  PDFChatModal: () => PDFChatModal,
+  PaperContextService: () => PaperContextService,
+  bm25Retrieve: () => bm25Retrieve,
+  bm25RetrieveMulti: () => bm25RetrieveMulti,
+  chunkPdfPages: () => chunkPdfPages,
+  cleanSelectionText: () => cleanSelectionText,
+  createCompatibilityActionRegistry: () => createCompatibilityActionRegistry,
+  createPDFChatModalServices: () => createPDFChatModalServices,
+  default: () => PDFChatPlugin,
+  expandWithNeighbors: () => expandWithNeighbors,
+  extractPdfFullText: () => extractPdfFullText,
+  extractPdfPages: () => extractPdfPages,
+  getConversationKey: () => getConversationKey,
+  normalizeConversationHistories: () => normalizeConversationHistories,
+  normalizeConversationMessages: () => normalizeConversationMessages,
+  stableConversationHash: () => stableConversationHash,
+  tokenizeForBM25: () => tokenizeForBM25
+});
+module.exports = __toCommonJS(main_exports);
+var import_obsidian4 = require("obsidian");
+
+// src/actions.ts
+var ActionRegistry = class {
+  constructor() {
+    __publicField(this, "actions", /* @__PURE__ */ new Map());
+  }
+  register(action) {
+    this.actions.set(action.id, action);
+    return this;
+  }
+  get(id) {
+    return this.actions.get(id);
+  }
+  list() {
+    return Array.from(this.actions.values());
+  }
+  async execute(id, context) {
+    const action = this.get(id);
+    if (!action) throw new Error(`Unknown research action: ${id}`);
+    await action.execute(context);
+  }
+};
+function createCompatibilityActionRegistry(defaultTranslatePrompt) {
+  return new ActionRegistry().register({
+    id: "translate",
+    name: "Translate selection",
+    async execute({ settings, submit }) {
+      const configured = settings.translatePrompt;
+      const instruction = ((typeof configured === "string" ? configured : "") || defaultTranslatePrompt).trim();
+      if (!instruction) return;
+      await submit({ question: instruction, skipContextAugmentation: true });
+    }
+  });
+}
+
+// src/default-settings.ts
+var DEFAULT_SETTINGS = {
   models: [
     {
       id: "openai-compatible",
       name: "OpenAI-compatible API",
       endpoint: "",
       apiKey: "",
-      model: "",
-    },
+      model: ""
+    }
   ],
   activeModelId: "openai-compatible",
   temperature: 0.7,
@@ -27,19 +101,10 @@ const DEFAULT_SETTINGS = {
   // 记住上一次对话用的模型/阅读模式,下次打开弹窗直接沿用,不用每次重新选。
   lastModelId: "",
   lastPresetId: "",
-  systemPrompt:
-    "你是我的阅读助手。请结合下面提供的原文片段回答我的问题。\n" +
-    "1. 优先基于原文片段回答,不要脱离它另起炉灶。\n" +
-    "2. 如果问题在原文片段中找不到依据,请明确说明,不要编造。\n" +
-    "3. 直接输出回答内容,不要复述规则,不要加“根据原文...”这类套话开头。\n" +
-    "4. 后续追问要结合之前的对话上下文,保持连贯。",
+  systemPrompt: "\u4F60\u662F\u6211\u7684\u9605\u8BFB\u52A9\u624B\u3002\u8BF7\u7ED3\u5408\u4E0B\u9762\u63D0\u4F9B\u7684\u539F\u6587\u7247\u6BB5\u56DE\u7B54\u6211\u7684\u95EE\u9898\u3002\n1. \u4F18\u5148\u57FA\u4E8E\u539F\u6587\u7247\u6BB5\u56DE\u7B54,\u4E0D\u8981\u8131\u79BB\u5B83\u53E6\u8D77\u7089\u7076\u3002\n2. \u5982\u679C\u95EE\u9898\u5728\u539F\u6587\u7247\u6BB5\u4E2D\u627E\u4E0D\u5230\u4F9D\u636E,\u8BF7\u660E\u786E\u8BF4\u660E,\u4E0D\u8981\u7F16\u9020\u3002\n3. \u76F4\u63A5\u8F93\u51FA\u56DE\u7B54\u5185\u5BB9,\u4E0D\u8981\u590D\u8FF0\u89C4\u5219,\u4E0D\u8981\u52A0\u201C\u6839\u636E\u539F\u6587...\u201D\u8FD9\u7C7B\u5957\u8BDD\u5F00\u5934\u3002\n4. \u540E\u7EED\u8FFD\u95EE\u8981\u7ED3\u5408\u4E4B\u524D\u7684\u5BF9\u8BDD\u4E0A\u4E0B\u6587,\u4FDD\u6301\u8FDE\u8D2F\u3002",
   // “翻译”按钮发送的固定指令。选中的原文片段已经在系统提示词里了(见 buildSystemMessage),
   // 这里不用再重复贴一遍原文,只描述翻译要求即可。
-  translatePrompt:
-    "请把【我当前选中并想讨论的原文片段】完整翻译成中文。\n" +
-    "1. 逐段对应原文分段,不要合并或省略段落。\n" +
-    "2. 专业术语可保留英文原词(括号标注即可),公式、代码、变量名、图表编号等保持原样不翻译。\n" +
-    "3. 只输出翻译结果,不要输出原文、不要复述要求、不要加额外解释或总结。",
+  translatePrompt: "\u8BF7\u628A\u3010\u6211\u5F53\u524D\u9009\u4E2D\u5E76\u60F3\u8BA8\u8BBA\u7684\u539F\u6587\u7247\u6BB5\u3011\u5B8C\u6574\u7FFB\u8BD1\u6210\u4E2D\u6587\u3002\n1. \u9010\u6BB5\u5BF9\u5E94\u539F\u6587\u5206\u6BB5,\u4E0D\u8981\u5408\u5E76\u6216\u7701\u7565\u6BB5\u843D\u3002\n2. \u4E13\u4E1A\u672F\u8BED\u53EF\u4FDD\u7559\u82F1\u6587\u539F\u8BCD(\u62EC\u53F7\u6807\u6CE8\u5373\u53EF),\u516C\u5F0F\u3001\u4EE3\u7801\u3001\u53D8\u91CF\u540D\u3001\u56FE\u8868\u7F16\u53F7\u7B49\u4FDD\u6301\u539F\u6837\u4E0D\u7FFB\u8BD1\u3002\n3. \u53EA\u8F93\u51FA\u7FFB\u8BD1\u7ED3\u679C,\u4E0D\u8981\u8F93\u51FA\u539F\u6587\u3001\u4E0D\u8981\u590D\u8FF0\u8981\u6C42\u3001\u4E0D\u8981\u52A0\u989D\u5916\u89E3\u91CA\u6216\u603B\u7ED3\u3002",
   // 全文摘要(浓缩上下文)相关设置:先用一个快速/便宜的模型把整篇 PDF 浓缩成摘要,
   // 缓存下来,回答局部选段问题时可以选择性地附带这份摘要作为背景,
   // 而不是把全文原样塞进上下文导致跑题或超长。
@@ -47,17 +112,10 @@ const DEFAULT_SETTINGS = {
   // 打开 PDF 划词弹窗时,如果已经缓存过摘要就自动附带、没缓存就自动生成一次,
   // 不需要每次手动勾选/点击,配合下面的按文件+mtime 缓存,同一篇论文只会真正调用一次摘要模型。
   autoDocSummary: true,
-  summaryMaxChars: 100000,
+  summaryMaxChars: 1e5,
   // 摘要输出单独限制 token 数,避免和主聊天的 maxTokens 共用同一个上限导致摘要写得又长又碎。
   summaryMaxTokens: 700,
-  summaryPrompt:
-    "你是一个学术论文提炼助手。下面会给你一篇论文的全文(可能因篇幅过长被截断)。\n" +
-    "请提炼一份*极简*的背景摘要卡片,只用来给我之后针对论文里某一小段提问时提供背景参考,不是完整摘要,我不会通篇读它。\n" +
-    "硬性要求(务必遵守):\n" +
-    "1. 总字数不超过400字,宁可少写也不要多写,这是硬上限,不要因为原文长就写更多。\n" +
-    "2. 只保留:研究主题与核心贡献(1-2句)、总体结构(每节一句话带过,不展开细节)、3-5个关键术语的极简释义、核心方法/论证逻辑(2-3句)。\n" +
-    "3. 不逐段复述、不举例、不引用原文长句、不写背景知识科普段落。\n" +
-    "4. 直接输出内容,不要“好的,以下是摘要”之类的开场白或结尾总结。用中文,专业术语保留英文原词。",
+  summaryPrompt: "\u4F60\u662F\u4E00\u4E2A\u5B66\u672F\u8BBA\u6587\u63D0\u70BC\u52A9\u624B\u3002\u4E0B\u9762\u4F1A\u7ED9\u4F60\u4E00\u7BC7\u8BBA\u6587\u7684\u5168\u6587(\u53EF\u80FD\u56E0\u7BC7\u5E45\u8FC7\u957F\u88AB\u622A\u65AD)\u3002\n\u8BF7\u63D0\u70BC\u4E00\u4EFD*\u6781\u7B80*\u7684\u80CC\u666F\u6458\u8981\u5361\u7247,\u53EA\u7528\u6765\u7ED9\u6211\u4E4B\u540E\u9488\u5BF9\u8BBA\u6587\u91CC\u67D0\u4E00\u5C0F\u6BB5\u63D0\u95EE\u65F6\u63D0\u4F9B\u80CC\u666F\u53C2\u8003,\u4E0D\u662F\u5B8C\u6574\u6458\u8981,\u6211\u4E0D\u4F1A\u901A\u7BC7\u8BFB\u5B83\u3002\n\u786C\u6027\u8981\u6C42(\u52A1\u5FC5\u9075\u5B88):\n1. \u603B\u5B57\u6570\u4E0D\u8D85\u8FC7400\u5B57,\u5B81\u53EF\u5C11\u5199\u4E5F\u4E0D\u8981\u591A\u5199,\u8FD9\u662F\u786C\u4E0A\u9650,\u4E0D\u8981\u56E0\u4E3A\u539F\u6587\u957F\u5C31\u5199\u66F4\u591A\u3002\n2. \u53EA\u4FDD\u7559:\u7814\u7A76\u4E3B\u9898\u4E0E\u6838\u5FC3\u8D21\u732E(1-2\u53E5)\u3001\u603B\u4F53\u7ED3\u6784(\u6BCF\u8282\u4E00\u53E5\u8BDD\u5E26\u8FC7,\u4E0D\u5C55\u5F00\u7EC6\u8282)\u30013-5\u4E2A\u5173\u952E\u672F\u8BED\u7684\u6781\u7B80\u91CA\u4E49\u3001\u6838\u5FC3\u65B9\u6CD5/\u8BBA\u8BC1\u903B\u8F91(2-3\u53E5)\u3002\n3. \u4E0D\u9010\u6BB5\u590D\u8FF0\u3001\u4E0D\u4E3E\u4F8B\u3001\u4E0D\u5F15\u7528\u539F\u6587\u957F\u53E5\u3001\u4E0D\u5199\u80CC\u666F\u77E5\u8BC6\u79D1\u666E\u6BB5\u843D\u3002\n4. \u76F4\u63A5\u8F93\u51FA\u5185\u5BB9,\u4E0D\u8981\u201C\u597D\u7684,\u4EE5\u4E0B\u662F\u6458\u8981\u201D\u4E4B\u7C7B\u7684\u5F00\u573A\u767D\u6216\u7ED3\u5C3E\u603B\u7ED3\u3002\u7528\u4E2D\u6587,\u4E13\u4E1A\u672F\u8BED\u4FDD\u7559\u82F1\u6587\u539F\u8BCD\u3002",
   // key 是文件的 vault 相对路径,value 形如 { mtime, summary, generatedAt, fullLength, truncated }
   docSummaries: {},
   // RAG 检索(关键词/BM25,不依赖任何 embedding 模型):把全文按页切块,提问时按关键词相关性
@@ -71,21 +129,12 @@ const DEFAULT_SETTINGS = {
   // "对比/baseline"的段落(相关工作、附录补充实验等)挤到检索排名前面,漏掉真正该看的那一块。
   // 而大部分单篇论文全文并不长,直接把全文原样交给模型远比"猜哪一块"更准。所以全文长度在这个
   // 阈值以内时,直接读全文回答,只有超过阈值(全文塞不下)时才退回关键词检索。
-  ragFullTextThreshold: 180000,
+  ragFullTextThreshold: 18e4,
   // BM25 是纯字符匹配,中文问题和英文论文原文之间没有共同字符/词,直接检索基本会全部落空。
   // 开启后,提问时会先让一个快模型"思考"这个问题该从哪几个角度/说法去检索,输出多组中英双语检索词
   // (不只是逐字翻译),再拿每一组分别去检索、把结果融合排序,比单一检索词能覆盖更多角度、找得更全。
   ragQueryTranslate: true,
-  ragQueryPrompt:
-    "你是论文检索策略助手,任务是把我的问题拆解成多组“检索关键词”,用于在论文全文里做关键词检索。你不负责回答问题本身。\n" +
-    "论文原文可能是英文,也可能是中文,你并不确定,所以每一组关键词都要中英文兼顾。\n" +
-    "在心里(不要输出过程)按这个思路思考:\n" +
-    "1. 这个问题真正想知道的是什么?按论文的常见结构,答案大概率会出现在方法/数据/实验设置/结果/局限/相关工作里的哪一部分?\n" +
-    "2. 论文作者描述这个概念时,可能会用哪些不同的说法(同义词、更学术化的表达、常见缩写、对应的公式符号或变量名)?\n" +
-    "3. 如果这个问题包含多个子问题或多个概念,能不能拆成几个更具体、更容易分别命中原文的检索角度?\n" +
-    "输出恰好3行,每行是一组独立的检索关键词/短语(同一行内多个关键词用逗号分隔),3行要代表3个不同角度或不同说法的检索尝试," +
-    "不要3行都是同一个意思的重复表达。\n" +
-    "直接输出这3行,不要编号、不要解释、不要输出问题本身、不要输出这3行以外的任何文字。",
+  ragQueryPrompt: "\u4F60\u662F\u8BBA\u6587\u68C0\u7D22\u7B56\u7565\u52A9\u624B,\u4EFB\u52A1\u662F\u628A\u6211\u7684\u95EE\u9898\u62C6\u89E3\u6210\u591A\u7EC4\u201C\u68C0\u7D22\u5173\u952E\u8BCD\u201D,\u7528\u4E8E\u5728\u8BBA\u6587\u5168\u6587\u91CC\u505A\u5173\u952E\u8BCD\u68C0\u7D22\u3002\u4F60\u4E0D\u8D1F\u8D23\u56DE\u7B54\u95EE\u9898\u672C\u8EAB\u3002\n\u8BBA\u6587\u539F\u6587\u53EF\u80FD\u662F\u82F1\u6587,\u4E5F\u53EF\u80FD\u662F\u4E2D\u6587,\u4F60\u5E76\u4E0D\u786E\u5B9A,\u6240\u4EE5\u6BCF\u4E00\u7EC4\u5173\u952E\u8BCD\u90FD\u8981\u4E2D\u82F1\u6587\u517C\u987E\u3002\n\u5728\u5FC3\u91CC(\u4E0D\u8981\u8F93\u51FA\u8FC7\u7A0B)\u6309\u8FD9\u4E2A\u601D\u8DEF\u601D\u8003:\n1. \u8FD9\u4E2A\u95EE\u9898\u771F\u6B63\u60F3\u77E5\u9053\u7684\u662F\u4EC0\u4E48?\u6309\u8BBA\u6587\u7684\u5E38\u89C1\u7ED3\u6784,\u7B54\u6848\u5927\u6982\u7387\u4F1A\u51FA\u73B0\u5728\u65B9\u6CD5/\u6570\u636E/\u5B9E\u9A8C\u8BBE\u7F6E/\u7ED3\u679C/\u5C40\u9650/\u76F8\u5173\u5DE5\u4F5C\u91CC\u7684\u54EA\u4E00\u90E8\u5206?\n2. \u8BBA\u6587\u4F5C\u8005\u63CF\u8FF0\u8FD9\u4E2A\u6982\u5FF5\u65F6,\u53EF\u80FD\u4F1A\u7528\u54EA\u4E9B\u4E0D\u540C\u7684\u8BF4\u6CD5(\u540C\u4E49\u8BCD\u3001\u66F4\u5B66\u672F\u5316\u7684\u8868\u8FBE\u3001\u5E38\u89C1\u7F29\u5199\u3001\u5BF9\u5E94\u7684\u516C\u5F0F\u7B26\u53F7\u6216\u53D8\u91CF\u540D)?\n3. \u5982\u679C\u8FD9\u4E2A\u95EE\u9898\u5305\u542B\u591A\u4E2A\u5B50\u95EE\u9898\u6216\u591A\u4E2A\u6982\u5FF5,\u80FD\u4E0D\u80FD\u62C6\u6210\u51E0\u4E2A\u66F4\u5177\u4F53\u3001\u66F4\u5BB9\u6613\u5206\u522B\u547D\u4E2D\u539F\u6587\u7684\u68C0\u7D22\u89D2\u5EA6?\n\u8F93\u51FA\u6070\u597D3\u884C,\u6BCF\u884C\u662F\u4E00\u7EC4\u72EC\u7ACB\u7684\u68C0\u7D22\u5173\u952E\u8BCD/\u77ED\u8BED(\u540C\u4E00\u884C\u5185\u591A\u4E2A\u5173\u952E\u8BCD\u7528\u9017\u53F7\u5206\u9694),3\u884C\u8981\u4EE3\u88683\u4E2A\u4E0D\u540C\u89D2\u5EA6\u6216\u4E0D\u540C\u8BF4\u6CD5\u7684\u68C0\u7D22\u5C1D\u8BD5,\u4E0D\u89813\u884C\u90FD\u662F\u540C\u4E00\u4E2A\u610F\u601D\u7684\u91CD\u590D\u8868\u8FBE\u3002\n\u76F4\u63A5\u8F93\u51FA\u8FD93\u884C,\u4E0D\u8981\u7F16\u53F7\u3001\u4E0D\u8981\u89E3\u91CA\u3001\u4E0D\u8981\u8F93\u51FA\u95EE\u9898\u672C\u8EAB\u3001\u4E0D\u8981\u8F93\u51FA\u8FD93\u884C\u4EE5\u5916\u7684\u4EFB\u4F55\u6587\u5B57\u3002",
   // key 是文件的 vault 相对路径,value 形如 { mtime, chunks: [{page, text}], generatedAt }
   docChunks: {},
   // 每篇 PDF(或精确匹配的非 PDF 选区)只保存一份最近对话。这里只存用户实际看到的问答,
@@ -94,326 +143,551 @@ const DEFAULT_SETTINGS = {
   promptPresets: [
     {
       id: "paper-map",
-      name: "论文速读地图",
-      prompt:
-        "你是一位专业的学术论文速读助手。论文不是故事,不要从头读到尾——先给出全局地图,再决定哪些部分值得深读。\n" +
-        "回答时优先给出:分节速览(2-3句话/节)、核心因果链(A→B→C)、值不值得深读的优先级判断(高/中/低)。用中文,专业术语保留英文原词。",
+      name: "\u8BBA\u6587\u901F\u8BFB\u5730\u56FE",
+      prompt: "\u4F60\u662F\u4E00\u4F4D\u4E13\u4E1A\u7684\u5B66\u672F\u8BBA\u6587\u901F\u8BFB\u52A9\u624B\u3002\u8BBA\u6587\u4E0D\u662F\u6545\u4E8B,\u4E0D\u8981\u4ECE\u5934\u8BFB\u5230\u5C3E\u2014\u2014\u5148\u7ED9\u51FA\u5168\u5C40\u5730\u56FE,\u518D\u51B3\u5B9A\u54EA\u4E9B\u90E8\u5206\u503C\u5F97\u6DF1\u8BFB\u3002\n\u56DE\u7B54\u65F6\u4F18\u5148\u7ED9\u51FA:\u5206\u8282\u901F\u89C8(2-3\u53E5\u8BDD/\u8282)\u3001\u6838\u5FC3\u56E0\u679C\u94FE(A\u2192B\u2192C)\u3001\u503C\u4E0D\u503C\u5F97\u6DF1\u8BFB\u7684\u4F18\u5148\u7EA7\u5224\u65AD(\u9AD8/\u4E2D/\u4F4E)\u3002\u7528\u4E2D\u6587,\u4E13\u4E1A\u672F\u8BED\u4FDD\u7559\u82F1\u6587\u539F\u8BCD\u3002"
     },
     {
       id: "methods-decoder",
-      name: "方法论解码",
-      prompt:
-        "你是一位擅长把复杂研究方法翻译成大白话的助手,同时是挑剔的方法论审查者。\n" +
-        "回答时说明:研究设计是什么(类比讲解)、关键要素(样本/变量/分析方法)、这个设计强在哪、弱在哪(每条说明会导致结论在什么情况下不成立)。用中文,专业术语保留英文原词。",
+      name: "\u65B9\u6CD5\u8BBA\u89E3\u7801",
+      prompt: "\u4F60\u662F\u4E00\u4F4D\u64C5\u957F\u628A\u590D\u6742\u7814\u7A76\u65B9\u6CD5\u7FFB\u8BD1\u6210\u5927\u767D\u8BDD\u7684\u52A9\u624B,\u540C\u65F6\u662F\u6311\u5254\u7684\u65B9\u6CD5\u8BBA\u5BA1\u67E5\u8005\u3002\n\u56DE\u7B54\u65F6\u8BF4\u660E:\u7814\u7A76\u8BBE\u8BA1\u662F\u4EC0\u4E48(\u7C7B\u6BD4\u8BB2\u89E3)\u3001\u5173\u952E\u8981\u7D20(\u6837\u672C/\u53D8\u91CF/\u5206\u6790\u65B9\u6CD5)\u3001\u8FD9\u4E2A\u8BBE\u8BA1\u5F3A\u5728\u54EA\u3001\u5F31\u5728\u54EA(\u6BCF\u6761\u8BF4\u660E\u4F1A\u5BFC\u81F4\u7ED3\u8BBA\u5728\u4EC0\u4E48\u60C5\u51B5\u4E0B\u4E0D\u6210\u7ACB)\u3002\u7528\u4E2D\u6587,\u4E13\u4E1A\u672F\u8BED\u4FDD\u7559\u82F1\u6587\u539F\u8BCD\u3002"
     },
     {
       id: "limitations",
-      name: "局限与假设",
-      prompt:
-        "你是一位严谨的论文评审者。每篇论文都有局限——有些作者自己承认,有些藏在设计里没说。\n" +
-        "回答时区分:作者明说的局限 vs 没说但暗含的假设(每条说明假设不成立会怎样影响结论),并给出结论可信度的整体判断。用中文,专业术语保留英文原词。",
+      name: "\u5C40\u9650\u4E0E\u5047\u8BBE",
+      prompt: "\u4F60\u662F\u4E00\u4F4D\u4E25\u8C28\u7684\u8BBA\u6587\u8BC4\u5BA1\u8005\u3002\u6BCF\u7BC7\u8BBA\u6587\u90FD\u6709\u5C40\u9650\u2014\u2014\u6709\u4E9B\u4F5C\u8005\u81EA\u5DF1\u627F\u8BA4,\u6709\u4E9B\u85CF\u5728\u8BBE\u8BA1\u91CC\u6CA1\u8BF4\u3002\n\u56DE\u7B54\u65F6\u533A\u5206:\u4F5C\u8005\u660E\u8BF4\u7684\u5C40\u9650 vs \u6CA1\u8BF4\u4F46\u6697\u542B\u7684\u5047\u8BBE(\u6BCF\u6761\u8BF4\u660E\u5047\u8BBE\u4E0D\u6210\u7ACB\u4F1A\u600E\u6837\u5F71\u54CD\u7ED3\u8BBA),\u5E76\u7ED9\u51FA\u7ED3\u8BBA\u53EF\u4FE1\u5EA6\u7684\u6574\u4F53\u5224\u65AD\u3002\u7528\u4E2D\u6587,\u4E13\u4E1A\u672F\u8BED\u4FDD\u7559\u82F1\u6587\u539F\u8BCD\u3002"
     },
     {
       id: "reproducibility",
-      name: "复现性检查",
-      prompt:
-        "你是一位专注于可复现性的审查者,参考 FAIR 原则的思路,但会按论文所属领域自行判断合理标准。\n" +
-        "回答时按:数据可获得性、代码与环境、流程步骤、参数透明度四个维度评估,最后给出低/中/高复现性评级和最缺的三样东西。用中文,专业术语保留英文原词。",
+      name: "\u590D\u73B0\u6027\u68C0\u67E5",
+      prompt: "\u4F60\u662F\u4E00\u4F4D\u4E13\u6CE8\u4E8E\u53EF\u590D\u73B0\u6027\u7684\u5BA1\u67E5\u8005,\u53C2\u8003 FAIR \u539F\u5219\u7684\u601D\u8DEF,\u4F46\u4F1A\u6309\u8BBA\u6587\u6240\u5C5E\u9886\u57DF\u81EA\u884C\u5224\u65AD\u5408\u7406\u6807\u51C6\u3002\n\u56DE\u7B54\u65F6\u6309:\u6570\u636E\u53EF\u83B7\u5F97\u6027\u3001\u4EE3\u7801\u4E0E\u73AF\u5883\u3001\u6D41\u7A0B\u6B65\u9AA4\u3001\u53C2\u6570\u900F\u660E\u5EA6\u56DB\u4E2A\u7EF4\u5EA6\u8BC4\u4F30,\u6700\u540E\u7ED9\u51FA\u4F4E/\u4E2D/\u9AD8\u590D\u73B0\u6027\u8BC4\u7EA7\u548C\u6700\u7F3A\u7684\u4E09\u6837\u4E1C\u897F\u3002\u7528\u4E2D\u6587,\u4E13\u4E1A\u672F\u8BED\u4FDD\u7559\u82F1\u6587\u539F\u8BCD\u3002"
     },
     {
       id: "math",
-      name: "数学符号讲解",
-      prompt:
-        "你是一位擅长把公式和符号翻译成大白话的助手,假设我具备基础的该领域知识,但记不清具体符号约定。\n" +
-        "回答时逐个符号讲解含义、说明公式在算什么、为什么这个公式对论点关键,如果可能给一个极简数值例子帮助建立直觉。用中文,符号本身保留原样。",
+      name: "\u6570\u5B66\u7B26\u53F7\u8BB2\u89E3",
+      prompt: "\u4F60\u662F\u4E00\u4F4D\u64C5\u957F\u628A\u516C\u5F0F\u548C\u7B26\u53F7\u7FFB\u8BD1\u6210\u5927\u767D\u8BDD\u7684\u52A9\u624B,\u5047\u8BBE\u6211\u5177\u5907\u57FA\u7840\u7684\u8BE5\u9886\u57DF\u77E5\u8BC6,\u4F46\u8BB0\u4E0D\u6E05\u5177\u4F53\u7B26\u53F7\u7EA6\u5B9A\u3002\n\u56DE\u7B54\u65F6\u9010\u4E2A\u7B26\u53F7\u8BB2\u89E3\u542B\u4E49\u3001\u8BF4\u660E\u516C\u5F0F\u5728\u7B97\u4EC0\u4E48\u3001\u4E3A\u4EC0\u4E48\u8FD9\u4E2A\u516C\u5F0F\u5BF9\u8BBA\u70B9\u5173\u952E,\u5982\u679C\u53EF\u80FD\u7ED9\u4E00\u4E2A\u6781\u7B80\u6570\u503C\u4F8B\u5B50\u5E2E\u52A9\u5EFA\u7ACB\u76F4\u89C9\u3002\u7528\u4E2D\u6587,\u7B26\u53F7\u672C\u8EAB\u4FDD\u7559\u539F\u6837\u3002"
     },
     {
       id: "critic",
-      name: "批判性审读",
-      prompt:
-        "你是一位逻辑审查者和辩证分析者。你的任务不是同意论文,而是提供有价值的阻力——帮我把理解推进到能挑出毛病。\n" +
-        "回答时可以包含:被忽略的替代路径、逻辑漏洞(谬误/语义跳跃)、最有力的反方论证(Steel Man)、作者略过的关键问题(房间里的大象)。用中文,专业术语保留英文原词,不要重复原文内容。",
+      name: "\u6279\u5224\u6027\u5BA1\u8BFB",
+      prompt: "\u4F60\u662F\u4E00\u4F4D\u903B\u8F91\u5BA1\u67E5\u8005\u548C\u8FA9\u8BC1\u5206\u6790\u8005\u3002\u4F60\u7684\u4EFB\u52A1\u4E0D\u662F\u540C\u610F\u8BBA\u6587,\u800C\u662F\u63D0\u4F9B\u6709\u4EF7\u503C\u7684\u963B\u529B\u2014\u2014\u5E2E\u6211\u628A\u7406\u89E3\u63A8\u8FDB\u5230\u80FD\u6311\u51FA\u6BDB\u75C5\u3002\n\u56DE\u7B54\u65F6\u53EF\u4EE5\u5305\u542B:\u88AB\u5FFD\u7565\u7684\u66FF\u4EE3\u8DEF\u5F84\u3001\u903B\u8F91\u6F0F\u6D1E(\u8C2C\u8BEF/\u8BED\u4E49\u8DF3\u8DC3)\u3001\u6700\u6709\u529B\u7684\u53CD\u65B9\u8BBA\u8BC1(Steel Man)\u3001\u4F5C\u8005\u7565\u8FC7\u7684\u5173\u952E\u95EE\u9898(\u623F\u95F4\u91CC\u7684\u5927\u8C61)\u3002\u7528\u4E2D\u6587,\u4E13\u4E1A\u672F\u8BED\u4FDD\u7559\u82F1\u6587\u539F\u8BCD,\u4E0D\u8981\u91CD\u590D\u539F\u6587\u5185\u5BB9\u3002"
     },
     {
       id: "scaffold",
-      name: "概念脚手架",
-      prompt:
-        "你是一位认知阅读教练。你的任务不是替我总结文字,而是帮我搭建理解它所需要的脚手架——补上作者默认我已经知道、但我实际上不知道的部分。假设我在这个领域背景知识为零,除非明显不是这样。\n" +
-        "回答时可以包含:背景知识速览、术语表、暗含推理(线索/空白/置信度)、容易读错的地方、用零术语的情境模型讲解。用中文,专业术语保留英文原词。",
+      name: "\u6982\u5FF5\u811A\u624B\u67B6",
+      prompt: "\u4F60\u662F\u4E00\u4F4D\u8BA4\u77E5\u9605\u8BFB\u6559\u7EC3\u3002\u4F60\u7684\u4EFB\u52A1\u4E0D\u662F\u66FF\u6211\u603B\u7ED3\u6587\u5B57,\u800C\u662F\u5E2E\u6211\u642D\u5EFA\u7406\u89E3\u5B83\u6240\u9700\u8981\u7684\u811A\u624B\u67B6\u2014\u2014\u8865\u4E0A\u4F5C\u8005\u9ED8\u8BA4\u6211\u5DF2\u7ECF\u77E5\u9053\u3001\u4F46\u6211\u5B9E\u9645\u4E0A\u4E0D\u77E5\u9053\u7684\u90E8\u5206\u3002\u5047\u8BBE\u6211\u5728\u8FD9\u4E2A\u9886\u57DF\u80CC\u666F\u77E5\u8BC6\u4E3A\u96F6,\u9664\u975E\u660E\u663E\u4E0D\u662F\u8FD9\u6837\u3002\n\u56DE\u7B54\u65F6\u53EF\u4EE5\u5305\u542B:\u80CC\u666F\u77E5\u8BC6\u901F\u89C8\u3001\u672F\u8BED\u8868\u3001\u6697\u542B\u63A8\u7406(\u7EBF\u7D22/\u7A7A\u767D/\u7F6E\u4FE1\u5EA6)\u3001\u5BB9\u6613\u8BFB\u9519\u7684\u5730\u65B9\u3001\u7528\u96F6\u672F\u8BED\u7684\u60C5\u5883\u6A21\u578B\u8BB2\u89E3\u3002\u7528\u4E2D\u6587,\u4E13\u4E1A\u672F\u8BED\u4FDD\u7559\u82F1\u6587\u539F\u8BCD\u3002"
     },
     {
       id: "quiz",
-      name: "自测五问",
-      prompt:
-        "你是一位课程设计师和苏格拉底式引导者。你的任务不是替我解释论文,而是提炼出能检验我是否真正理解核心原理的高层次问题——用来考我,不是用来讲给我听。\n" +
-        "被要求出题时,提炼恰好5个高层次问题(避免是非题,优先用如何/为什么/如果...会怎样),最后加一个必须串联所有主题才能回答的综合问题。其余时候正常回答我的问题。用中文。",
-    },
-  ],
+      name: "\u81EA\u6D4B\u4E94\u95EE",
+      prompt: "\u4F60\u662F\u4E00\u4F4D\u8BFE\u7A0B\u8BBE\u8BA1\u5E08\u548C\u82CF\u683C\u62C9\u5E95\u5F0F\u5F15\u5BFC\u8005\u3002\u4F60\u7684\u4EFB\u52A1\u4E0D\u662F\u66FF\u6211\u89E3\u91CA\u8BBA\u6587,\u800C\u662F\u63D0\u70BC\u51FA\u80FD\u68C0\u9A8C\u6211\u662F\u5426\u771F\u6B63\u7406\u89E3\u6838\u5FC3\u539F\u7406\u7684\u9AD8\u5C42\u6B21\u95EE\u9898\u2014\u2014\u7528\u6765\u8003\u6211,\u4E0D\u662F\u7528\u6765\u8BB2\u7ED9\u6211\u542C\u3002\n\u88AB\u8981\u6C42\u51FA\u9898\u65F6,\u63D0\u70BC\u6070\u597D5\u4E2A\u9AD8\u5C42\u6B21\u95EE\u9898(\u907F\u514D\u662F\u975E\u9898,\u4F18\u5148\u7528\u5982\u4F55/\u4E3A\u4EC0\u4E48/\u5982\u679C...\u4F1A\u600E\u6837),\u6700\u540E\u52A0\u4E00\u4E2A\u5FC5\u987B\u4E32\u8054\u6240\u6709\u4E3B\u9898\u624D\u80FD\u56DE\u7B54\u7684\u7EFC\u5408\u95EE\u9898\u3002\u5176\u4F59\u65F6\u5019\u6B63\u5E38\u56DE\u7B54\u6211\u7684\u95EE\u9898\u3002\u7528\u4E2D\u6587\u3002"
+    }
+  ]
 };
 
+// src/conversation.ts
 function cleanSelectionText(raw) {
-  return raw
-    .replace(/\r\n/g, "\n")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  return raw.replace(/\r\n/g, "\n").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
 }
-
 function stableConversationHash(text) {
-  let hash = 0x811c9dc5;
+  let hash = 2166136261;
   for (let i = 0; i < text.length; i++) {
     hash ^= text.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
+    hash = Math.imul(hash, 16777619);
   }
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
-
 function normalizeConversationMessages(messages) {
   if (!Array.isArray(messages)) return [];
   const normalized = [];
-  for (const message of messages) {
-    if (!message || (message.role !== "user" && message.role !== "assistant")) continue;
+  for (const candidate of messages) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const message = candidate;
+    if (message.role !== "user" && message.role !== "assistant") continue;
     if (typeof message.content !== "string" || !message.content.trim()) continue;
     normalized.push({
       role: message.role,
       content: message.content,
-      status: message.role === "assistant" && message.status === "stopped" ? "stopped" : "complete",
+      status: message.role === "assistant" && message.status === "stopped" ? "stopped" : "complete"
     });
   }
   return normalized;
 }
-
 function normalizeConversationHistories(saved) {
   if (!saved || typeof saved !== "object" || Array.isArray(saved)) return {};
   const normalized = {};
-  for (const [key, entry] of Object.entries(saved)) {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+  for (const [key, candidate] of Object.entries(saved)) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+    const entry = candidate;
     const messages = normalizeConversationMessages(entry.messages);
     if (!messages.length) continue;
     normalized[key] = {
       version: 1,
-      updatedAt: Number.isFinite(entry.updatedAt) ? entry.updatedAt : 0,
-      messages,
+      updatedAt: typeof entry.updatedAt === "number" && Number.isFinite(entry.updatedAt) ? entry.updatedAt : 0,
+      messages
     };
   }
   return normalized;
 }
+function getConversationKey(pdfFile, contextText) {
+  if (pdfFile && typeof pdfFile.path === "string" && pdfFile.path) return `pdf:${pdfFile.path}`;
+  return `selection:${stableConversationHash(cleanSelectionText(contextText || ""))}`;
+}
+var ConversationStore = class {
+  constructor(getSettings, persistSettings, now = Date.now) {
+    this.getSettings = getSettings;
+    this.persistSettings = persistSettings;
+    this.now = now;
+  }
+  get(key) {
+    const entry = (this.getSettings().conversationHistories || {})[key];
+    return entry ? normalizeConversationMessages(entry.messages) : [];
+  }
+  async save(key, messages) {
+    const settings = this.getSettings();
+    if (!settings.conversationHistories || typeof settings.conversationHistories !== "object") {
+      settings.conversationHistories = {};
+    }
+    const normalizedMessages = normalizeConversationMessages(messages);
+    if (!normalizedMessages.length) {
+      delete settings.conversationHistories[key];
+    } else {
+      settings.conversationHistories[key] = {
+        version: 1,
+        updatedAt: this.now(),
+        messages: normalizedMessages
+      };
+    }
+    await this.persistSettings();
+  }
+  async clear(key) {
+    const histories = this.getSettings().conversationHistories;
+    if (histories && histories[key]) delete histories[key];
+    await this.persistSettings();
+  }
+};
 
-/**
- * 找到当前激活的 PDF 视图对应的文件(如果当前焦点/活动叶子不是 PDF 视图则返回 null)。
- */
+// src/llm-transport.ts
+var import_obsidian = require("obsidian");
+var OpenAICompatibleTransport = class {
+  constructor(getSettings, getModelProfile, request = import_obsidian.requestUrl, fetchRequest = fetch) {
+    this.getSettings = getSettings;
+    this.getModelProfile = getModelProfile;
+    this.request = request;
+    this.fetchRequest = fetchRequest;
+  }
+  async chat(request) {
+    var _a, _b;
+    const settings = this.getSettings();
+    const profile = request.modelProfile || this.getModelProfile(settings.activeModelId);
+    const shouldStream = (_a = request.stream) != null ? _a : settings.stream;
+    if (shouldStream) return this.chatStream(request.messages, request.onChunk, request.signal, profile);
+    const text = await this.chatOnce(request.messages, request.signal, profile, request.maxTokensOverride);
+    (_b = request.onChunk) == null ? void 0 : _b.call(request, text, text);
+    return text;
+  }
+  async chatOnce(messages, signal, profile, maxTokensOverride) {
+    const settings = this.getSettings();
+    const body = {
+      model: profile.model,
+      temperature: settings.temperature,
+      max_tokens: maxTokensOverride || settings.maxTokens,
+      stream: false,
+      messages
+    };
+    const response = await this.request({
+      url: profile.endpoint,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${profile.apiKey}`
+      },
+      body: JSON.stringify(body),
+      throw: false
+    });
+    if (signal == null ? void 0 : signal.aborted) {
+      const abortError = new Error("Aborted");
+      abortError.name = "AbortError";
+      throw abortError;
+    }
+    let data = null;
+    try {
+      data = response.json;
+    } catch (e) {
+      data = null;
+    }
+    if (response.status >= 300) {
+      const message = data && data.error && data.error.message || response.text || `HTTP ${response.status}`;
+      throw new Error(message);
+    }
+    const choice = data && data.choices && data.choices[0];
+    const content = choice && (choice.message ? choice.message.content : choice.text);
+    if (!content) throw new Error("\u6A21\u578B\u6CA1\u6709\u8FD4\u56DE\u5185\u5BB9,\u539F\u59CB\u54CD\u5E94: " + JSON.stringify(data));
+    return String(content).trim();
+  }
+  async chatStream(messages, onChunk, signal, profile) {
+    var _a, _b, _c, _d;
+    const settings = this.getSettings();
+    const response = await this.fetchRequest(profile.endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${profile.apiKey}`
+      },
+      body: JSON.stringify({
+        model: profile.model,
+        temperature: settings.temperature,
+        max_tokens: settings.maxTokens,
+        stream: true,
+        messages
+      }),
+      signal
+    });
+    if (!response.ok) {
+      let errorText = "";
+      try {
+        errorText = await response.text();
+      } catch (e) {
+      }
+      let message = errorText || `HTTP ${response.status}`;
+      try {
+        const parsed = JSON.parse(errorText);
+        message = parsed.error && parsed.error.message || message;
+      } catch (e) {
+      }
+      throw new Error(message);
+    }
+    if (!((_a = response.body) == null ? void 0 : _a.getReader)) {
+      const data = await response.json();
+      const content = ((_d = (_c = (_b = data == null ? void 0 : data.choices) == null ? void 0 : _b[0]) == null ? void 0 : _c.message) == null ? void 0 : _d.content) || "";
+      onChunk == null ? void 0 : onChunk(content, content);
+      return content;
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+    let full = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || "";
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith(":")) continue;
+        const payload = line.replace(/^data:\s*/i, "").trim();
+        if (!payload || payload === "[DONE]") continue;
+        let parsed;
+        try {
+          parsed = JSON.parse(payload);
+        } catch (e) {
+          continue;
+        }
+        if (parsed == null ? void 0 : parsed.error) throw new Error(parsed.error.message || JSON.stringify(parsed.error));
+        const choices = parsed == null ? void 0 : parsed.choices;
+        if (!(choices == null ? void 0 : choices.length)) continue;
+        const delta = choices[0].delta || choices[0].message || {};
+        const piece = delta.content || delta.reasoning_content || (typeof delta.text === "string" ? delta.text : "");
+        if (piece) {
+          full += piece;
+          onChunk == null ? void 0 : onChunk(piece, full);
+        }
+      }
+    }
+    return full;
+  }
+};
+
+// src/paper-context.ts
 function getActivePdfFile(app) {
   const leaf = app.workspace.activeLeaf;
   const view = leaf && leaf.view;
-  if (view && typeof view.getViewType === "function" && view.getViewType() === "pdf" && view.file) {
-    return view.file;
+  if (view && typeof view.getViewType === "function" && view.getViewType() === "pdf" && "file" in view) {
+    return view.file || null;
   }
   return null;
 }
-
-/**
- * 用 Obsidian 内置的 pdf.js(通过全局 window.pdfjsLib 暴露)逐页提取 PDF 文本,
- * 返回 [{ page, text }, ...],保留页码信息(全文摘要和 RAG 分块都基于这个函数)。
- */
 async function extractPdfPages(app, file) {
   const pdfjsLib = window.pdfjsLib;
-  if (!pdfjsLib || !pdfjsLib.getDocument) {
-    throw new Error("当前 Obsidian 版本没有暴露 pdfjsLib,无法提取全文");
+  if (!(pdfjsLib == null ? void 0 : pdfjsLib.getDocument)) {
+    throw new Error("\u5F53\u524D Obsidian \u7248\u672C\u6CA1\u6709\u66B4\u9732 pdfjsLib,\u65E0\u6CD5\u63D0\u53D6\u5168\u6587");
   }
   const buffer = await app.vault.readBinary(file);
   const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
   const pages = [];
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
+  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+    const page = await pdf.getPage(pageNumber);
     const content = await page.getTextContent();
-    const pageText = content.items.map((it) => it.str).join(" ");
-    pages.push({ page: i, text: pageText });
+    const pageText = content.items.map((item) => item.str || "").join(" ");
+    pages.push({ page: pageNumber, text: pageText });
   }
   return pages;
 }
-
 async function extractPdfFullText(app, file) {
   const pages = await extractPdfPages(app, file);
-  return pages.map((p) => `[第${p.page}页]\n${p.text}`).join("\n\n").trim();
+  return pages.map((page) => `[\u7B2C${page.page}\u9875]
+${page.text}`).join("\n\n").trim();
 }
-
-/**
- * 把逐页文本切成带页码的小块,用于 RAG 检索。单页文本超过 chunkSize 时按滑动窗口切开(带 overlap),
- * 不跨页合并,这样每块都能准确标出"第几页"。
- */
 function chunkPdfPages(pages, chunkSize, overlap) {
   const chunks = [];
-  for (const p of pages) {
-    const text = (p.text || "").replace(/\s+/g, " ").trim();
+  for (const page of pages) {
+    const text = (page.text || "").replace(/\s+/g, " ").trim();
     if (!text) continue;
     if (text.length <= chunkSize) {
-      chunks.push({ page: p.page, text });
+      chunks.push({ page: page.page, text });
       continue;
     }
     let start = 0;
     while (start < text.length) {
       const end = Math.min(start + chunkSize, text.length);
-      chunks.push({ page: p.page, text: text.slice(start, end) });
+      chunks.push({ page: page.page, text: text.slice(start, end) });
       if (end >= text.length) break;
       start = end - overlap;
     }
   }
-  // 记录每块在整篇文档里的顺序位置,供 expandWithNeighbors 按位置找相邻块用
-  // (固定大小滑窗切块经常会把一句话/一段列表刚好切在中间,单独查到某一块并不代表
-  // 拿到了完整的那句话,所以检索到的块还需要能找回它的邻居)。
-  chunks.forEach((c, i) => (c.idx = i));
+  chunks.forEach((chunk, index) => chunk.idx = index);
   return chunks;
 }
-
-/**
- * 检索到的块很可能刚好卡在一句话/一个列表中间(切块是固定大小滑窗,不理解语义边界)。
- * 把每个命中块的前一块、后一块也带上,能大幅降低"该出现的内容被切到邻居块里、
- * 但邻居块本身检索分数不够高排不进 topK"导致的漏读,代价只是多带一点上下文文字。
- */
 function expandWithNeighbors(allChunks, retrieved) {
-  if (!retrieved || !retrieved.length) return retrieved;
-  const wanted = new Set();
-  retrieved.forEach((c) => {
-    if (typeof c.idx !== "number") return;
-    wanted.add(c.idx - 1);
-    wanted.add(c.idx);
-    wanted.add(c.idx + 1);
+  if (!(retrieved == null ? void 0 : retrieved.length)) return retrieved;
+  const wanted = /* @__PURE__ */ new Set();
+  retrieved.forEach((chunk) => {
+    if (typeof chunk.idx !== "number") return;
+    wanted.add(chunk.idx - 1);
+    wanted.add(chunk.idx);
+    wanted.add(chunk.idx + 1);
   });
-  return allChunks.filter((c) => wanted.has(c.idx)).sort((a, b) => a.idx - b.idx);
+  return allChunks.filter((chunk) => typeof chunk.idx === "number" && wanted.has(chunk.idx)).sort((left, right) => (left.idx || 0) - (right.idx || 0));
 }
-
-/**
- * 极简的中英混合分词:英文/数字按单词切,中文没有空格分词,退化成单字 + 双字 bigram,
- * 不依赖任何分词库,足够给 BM25 打分用。
- */
 function tokenizeForBM25(text) {
   const lower = (text || "").toLowerCase();
   const tokens = [];
-  const wordRe = /[a-z0-9]+/g;
-  let m;
-  while ((m = wordRe.exec(lower))) {
-    tokens.push(m[0]);
-  }
+  const wordPattern = /[a-z0-9]+/g;
+  let match;
+  while (match = wordPattern.exec(lower)) tokens.push(match[0]);
   const cjk = lower.match(/[\u4e00-\u9fff]/g) || [];
-  for (let i = 0; i < cjk.length; i++) {
-    tokens.push(cjk[i]);
-    if (i + 1 < cjk.length) tokens.push(cjk[i] + cjk[i + 1]);
+  for (let index = 0; index < cjk.length; index++) {
+    tokens.push(cjk[index]);
+    if (index + 1 < cjk.length) tokens.push(cjk[index] + cjk[index + 1]);
   }
   return tokens;
 }
-
-/**
- * 对一组文本块按 BM25 相关性给 query 打分,返回分数从高到低排序、且分数 > 0 的前 topK 个块。
- * 每次调用都会重新分词计算(块数量通常就几十个,现算完全够快,不需要额外持久化倒排索引)。
- */
 function bm25Retrieve(chunks, query, topK) {
-  if (!chunks || !chunks.length) return [];
-  const docsTokens = chunks.map((c) => tokenizeForBM25(c.text));
-  const df = new Map();
-  docsTokens.forEach((tokens) => {
-    new Set(tokens).forEach((t) => df.set(t, (df.get(t) || 0) + 1));
+  if (!(chunks == null ? void 0 : chunks.length)) return [];
+  const documentTokens = chunks.map((chunk) => tokenizeForBM25(chunk.text));
+  const documentFrequency = /* @__PURE__ */ new Map();
+  documentTokens.forEach((tokens) => {
+    new Set(tokens).forEach(
+      (token) => documentFrequency.set(token, (documentFrequency.get(token) || 0) + 1)
+    );
   });
-  const N = docsTokens.length;
-  const avgLen = docsTokens.reduce((s, d) => s + d.length, 0) / (N || 1) || 1;
+  const documentCount = documentTokens.length;
+  const averageLength = documentTokens.reduce((total, tokens) => total + tokens.length, 0) / (documentCount || 1) || 1;
   const k1 = 1.5;
   const b = 0.75;
   const queryTokens = Array.from(new Set(tokenizeForBM25(query)));
-
-  const scored = chunks.map((chunk, idx) => {
-    const docTokens = docsTokens[idx];
-    const docLen = docTokens.length || 1;
-    const tf = new Map();
-    docTokens.forEach((t) => tf.set(t, (tf.get(t) || 0) + 1));
-
+  const scored = chunks.map((chunk, index) => {
+    const tokens = documentTokens[index];
+    const documentLength = tokens.length || 1;
+    const termFrequency = /* @__PURE__ */ new Map();
+    tokens.forEach((token) => termFrequency.set(token, (termFrequency.get(token) || 0) + 1));
     let score = 0;
-    for (const qt of queryTokens) {
-      const f = tf.get(qt) || 0;
-      if (!f) continue;
-      const n = df.get(qt) || 0;
-      const idf = Math.log(1 + (N - n + 0.5) / (n + 0.5));
-      const denom = f + k1 * (1 - b + (b * docLen) / avgLen);
-      score += idf * ((f * (k1 + 1)) / denom);
+    for (const queryToken of queryTokens) {
+      const frequency = termFrequency.get(queryToken) || 0;
+      if (!frequency) continue;
+      const containingDocuments = documentFrequency.get(queryToken) || 0;
+      const inverseFrequency = Math.log(
+        1 + (documentCount - containingDocuments + 0.5) / (containingDocuments + 0.5)
+      );
+      const denominator = frequency + k1 * (1 - b + b * documentLength / averageLength);
+      score += inverseFrequency * (frequency * (k1 + 1) / denominator);
     }
     return { chunk, score };
   });
-
-  scored.sort((a, b2) => b2.score - a.score);
-  return scored
-    .filter((s) => s.score > 0)
-    .slice(0, topK)
-    .map((s) => s.chunk);
+  return scored.sort((left, right) => right.score - left.score).filter((entry) => entry.score > 0).slice(0, topK).map((entry) => entry.chunk);
 }
-
-/**
- * 对多个检索词变体分别做一次 BM25 检索,再按“每个变体里的排名”做简单的融合排序
- * (reciprocal rank fusion:排名越靠前权重越高,同一块在多个变体里都排前面就会被加权累加),
- * 取融合后最靠前的 topK 个块。比只用单一检索词能覆盖更多角度、找得更全,也能避免某一个
- * 检索词变体质量不佳时(比如翻译得不准)拖累整体结果。
- */
 function bm25RetrieveMulti(chunks, queries, topK) {
   const uniqueQueries = Array.from(new Set((queries || []).filter(Boolean)));
   if (!uniqueQueries.length) return [];
-
   const keyOf = (chunk) => chunk.page + "::" + chunk.text.slice(0, 60);
-  const fused = new Map(); // key -> { chunk, score }
-
-  for (const q of uniqueQueries) {
-    const ranked = bm25Retrieve(chunks, q, Math.max(topK * 2, 8));
+  const fused = /* @__PURE__ */ new Map();
+  for (const query of uniqueQueries) {
+    const ranked = bm25Retrieve(chunks, query, Math.max(topK * 2, 8));
     ranked.forEach((chunk, rank) => {
       const key = keyOf(chunk);
-      const weight = 1 / (rank + 1);
       const entry = fused.get(key) || { chunk, score: 0 };
-      entry.score += weight;
+      entry.score += 1 / (rank + 1);
       fused.set(key, entry);
     });
   }
+  return Array.from(fused.values()).sort((left, right) => right.score - left.score).slice(0, topK).map((entry) => entry.chunk);
+}
+var PaperContextService = class {
+  constructor(app, getSettings, persistSettings, transport, getModelProfile) {
+    this.app = app;
+    this.getSettings = getSettings;
+    this.persistSettings = persistSettings;
+    this.transport = transport;
+    this.getModelProfile = getModelProfile;
+  }
+  createContext(file, selectedText, conversationKey) {
+    return { app: this.app, file, selectedText, conversationKey };
+  }
+  extractFullText(file) {
+    return extractPdfFullText(this.app, file);
+  }
+  async generateDocSummary(file) {
+    const settings = this.getSettings();
+    const fullText = await this.extractFullText(file);
+    let textForSummary = fullText;
+    let truncated = false;
+    const maxChars = settings.summaryMaxChars || DEFAULT_SETTINGS.summaryMaxChars;
+    if (textForSummary.length > maxChars) {
+      textForSummary = textForSummary.slice(0, maxChars);
+      truncated = true;
+    }
+    const profile = this.getModelProfile(settings.summaryModelId) || this.getModelProfile(settings.activeModelId);
+    const systemPrompt = settings.summaryPrompt + (truncated ? "\n\n(\u6CE8\u610F:\u539F\u6587\u8FC7\u957F,\u4EE5\u4E0B\u53EA\u662F\u622A\u65AD\u540E\u7684\u524D\u9762\u90E8\u5206)" : "");
+    const summary = await this.transport.chat({
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: textForSummary || "(\u672A\u80FD\u63D0\u53D6\u5230\u6587\u672C\u5185\u5BB9)" }
+      ],
+      modelProfile: profile,
+      maxTokensOverride: settings.summaryMaxTokens || DEFAULT_SETTINGS.summaryMaxTokens,
+      stream: false
+    });
+    return { summary, fullLength: fullText.length, truncated };
+  }
+  async getOrCreateDocSummary(file, forceRefresh) {
+    const settings = this.getSettings();
+    const mtime = file.stat && file.stat.mtime;
+    const cached = settings.docSummaries[file.path];
+    if (!forceRefresh && cached && cached.mtime === mtime) return cached;
+    const { summary, fullLength, truncated } = await this.generateDocSummary(file);
+    const entry = { mtime, summary, generatedAt: Date.now(), fullLength, truncated };
+    settings.docSummaries[file.path] = entry;
+    await this.persistSettings();
+    return entry;
+  }
+  async generateDocChunks(file) {
+    const settings = this.getSettings();
+    const pages = await extractPdfPages(this.app, file);
+    const chunks = chunkPdfPages(
+      pages,
+      settings.ragChunkSize || DEFAULT_SETTINGS.ragChunkSize,
+      settings.ragChunkOverlap || DEFAULT_SETTINGS.ragChunkOverlap
+    );
+    const fullTextLength = pages.reduce((total, page) => total + (page.text ? page.text.length : 0), 0);
+    return { chunks, fullTextLength };
+  }
+  async planRagQueries(question) {
+    const settings = this.getSettings();
+    const profile = this.getModelProfile(settings.summaryModelId) || this.getModelProfile(settings.activeModelId);
+    const raw = await this.transport.chat({
+      messages: [
+        { role: "system", content: settings.ragQueryPrompt },
+        { role: "user", content: question }
+      ],
+      modelProfile: profile,
+      maxTokensOverride: 300,
+      stream: false
+    });
+    return (raw || "").split(/\r?\n/).map((line) => line.replace(/^[\s\-*•\d.、)]+/, "").trim()).filter(Boolean);
+  }
+  async getOrCreateDocChunks(file, forceRefresh) {
+    var _a;
+    const settings = this.getSettings();
+    const mtime = file.stat && file.stat.mtime;
+    const cached = settings.docChunks[file.path];
+    if (!forceRefresh && cached && cached.mtime === mtime) {
+      if (((_a = cached.chunks) == null ? void 0 : _a.length) && typeof cached.chunks[0].idx !== "number") {
+        cached.chunks.forEach((chunk, index) => chunk.idx = index);
+      }
+      return cached;
+    }
+    const { chunks, fullTextLength } = await this.generateDocChunks(file);
+    const entry = { mtime, chunks, fullTextLength, generatedAt: Date.now() };
+    settings.docChunks[file.path] = entry;
+    await this.persistSettings();
+    return entry;
+  }
+  retrieveContext(chunks, queries, topK) {
+    return expandWithNeighbors(chunks, bm25RetrieveMulti(chunks, queries, topK));
+  }
+};
 
-  return Array.from(fused.values())
-    .sort((a, b) => b.score - a.score)
-    .slice(0, topK)
-    .map((e) => e.chunk);
+// src/modal-services.ts
+function createPDFChatModalServices(plugin, overrides = {}) {
+  const compatibility = {
+    conversations: {
+      getKey: (file, selectedText) => plugin.getConversationKey(file, selectedText),
+      get: (key) => plugin.getConversation(key),
+      save: (key, messages) => plugin.saveConversation(key, messages),
+      clear: (key) => plugin.clearConversation(key)
+    },
+    papers: {
+      getOrCreateDocSummary: (file, forceRefresh) => plugin.getOrCreateDocSummary(file, forceRefresh),
+      getOrCreateDocChunks: (file, forceRefresh) => plugin.getOrCreateDocChunks(file, forceRefresh),
+      extractFullText: (file) => plugin.paperContextService ? plugin.paperContextService.extractFullText(file) : extractPdfFullText(plugin.app || {}, file),
+      planRagQueries: (question) => plugin.planRagQueries(question),
+      retrieveContext: (chunks, queries, topK) => expandWithNeighbors(chunks, bm25RetrieveMulti(chunks, queries, topK))
+    },
+    llm: {
+      chat: (request) => plugin.chat(request.messages, request.onChunk, request.signal, request.modelProfile)
+    },
+    models: {
+      get: (id) => plugin.getModelProfile(id)
+    },
+    actions: plugin.actionRegistry || createCompatibilityActionRegistry(DEFAULT_SETTINGS.translatePrompt)
+  };
+  return {
+    ...compatibility,
+    ...overrides,
+    conversations: { ...compatibility.conversations, ...overrides.conversations || {} },
+    papers: { ...compatibility.papers, ...overrides.papers || {} },
+    llm: { ...compatibility.llm, ...overrides.llm || {} },
+    models: { ...compatibility.models, ...overrides.models || {} }
+  };
 }
 
+// src/pdf-chat-modal.ts
+var import_obsidian2 = require("obsidian");
 async function renderMarkdownInto(app, component, el, text) {
   el.empty();
-  // 加上 Obsidian 阅读视图用的样式类,公式(MathJax)、代码块、列表等才会套用主题自带的排版样式。
   el.addClass("markdown-rendered");
   try {
-    if (MarkdownRenderer.render) {
-      await MarkdownRenderer.render(app, text, el, "", component);
+    if (import_obsidian2.MarkdownRenderer.render) {
+      await import_obsidian2.MarkdownRenderer.render(app, text, el, "", component);
       return;
     }
-    if (MarkdownRenderer.renderMarkdown) {
-      await MarkdownRenderer.renderMarkdown(text, el, "", component);
+    if (import_obsidian2.MarkdownRenderer.renderMarkdown) {
+      await import_obsidian2.MarkdownRenderer.renderMarkdown(text, el, "", component);
       return;
     }
   } catch (e) {
-    // fall through to plain text below
   }
   el.setText(text);
 }
-
-class PDFChatModal extends Modal {
-  constructor(app, plugin, contextText, pdfFile, startFresh) {
+var PDFChatModal = class extends import_obsidian2.Modal {
+  constructor(app, plugin, contextText, pdfFile, startFresh, services) {
     super(app);
     this.plugin = plugin;
-    this.contextText = contextText;
-    this.pdfFile = pdfFile || null;
+    this.services = services || createPDFChatModalServices(plugin);
+    const paperContext = contextText && typeof contextText === "object" && typeof contextText.selectedText === "string" ? contextText : {
+      app,
+      file: pdfFile || null,
+      selectedText: contextText,
+      conversationKey: this.services.conversations.getKey(pdfFile || null, contextText)
+    };
+    this.paperContext = paperContext;
+    this.contextText = paperContext.selectedText;
+    this.pdfFile = paperContext.file || null;
     this.startFresh = !!startFresh;
-
     const lastPresetId = this.plugin.settings.lastPresetId;
-    this.currentPresetId =
-      lastPresetId &&
-      (lastPresetId === "__default__" || this.plugin.settings.promptPresets.find((p) => p.id === lastPresetId))
-        ? lastPresetId
-        : "__default__";
-
+    this.currentPresetId = lastPresetId && (lastPresetId === "__default__" || this.plugin.settings.promptPresets.find((p) => p.id === lastPresetId)) ? lastPresetId : "__default__";
     const lastModelId = this.plugin.settings.lastModelId;
-    this.currentModelId =
-      lastModelId && this.plugin.settings.models.find((m) => m.id === lastModelId)
-        ? lastModelId
-        : this.plugin.settings.activeModelId;
-
+    this.currentModelId = lastModelId && this.plugin.settings.models.find((m) => m.id === lastModelId) ? lastModelId : this.plugin.settings.activeModelId;
     this.useDocSummary = false;
     this.docSummaryEntry = null;
     this.isGeneratingSummary = false;
@@ -422,125 +696,104 @@ class PDFChatModal extends Modal {
     this.isIndexingRag = false;
     this.useFullTextMode = false;
     this.fullTextForQA = null;
-    // 全文只需要在对话历史里出现一次:聊天接口是无状态的,每轮都会把 this.messages 整个重新发送,
-    // 已经进过历史的第一轮全文会随着后续每轮继续被带上,不需要再重复拼接一份,否则每多聊一轮,
-    // 实际发给模型的内容就多一份完整全文,输入越滚越大、越聊越慢、越聊越贵。
     this.fullTextAttached = false;
-    this.conversationKey = this.plugin.getConversationKey(this.pdfFile, this.contextText);
-    // “新开对话”按快捷键触发时不加载旧记录:这次会话从空白开始,只要发出第一条消息,
-    // 旧的这份记录就会被 recordTranscriptTurn 整份替换掉(每个 key 只保留一份最近对话)。
-    // 如果只是打开看看什么都没问就关闭,onClose 里的保存会因为 transcript 仍是空数组而跳过,
-    // 不会误删旧记录。
-    const existingTranscript = this.plugin.getConversation(this.conversationKey);
+    this.conversationKey = paperContext.conversationKey;
+    const existingTranscript = this.services.conversations.get(this.conversationKey);
     this.hadExistingHistory = existingTranscript.length > 0;
     this.transcript = this.startFresh ? [] : existingTranscript;
     this.messages = [
       this.buildSystemMessage(),
-      ...this.transcript.map((message) => ({ role: message.role, content: message.content })),
+      ...this.transcript.map((message) => ({ role: message.role, content: message.content }))
     ];
   }
-
   buildSystemMessage() {
-    const preset =
-      this.currentPresetId === "__default__"
-        ? null
-        : this.plugin.settings.promptPresets.find((p) => p.id === this.currentPresetId);
-    const promptText = (preset && preset.prompt) || this.plugin.settings.systemPrompt;
-
+    const preset = this.currentPresetId === "__default__" ? null : this.plugin.settings.promptPresets.find((p) => p.id === this.currentPresetId);
+    const promptText = preset && preset.prompt || this.plugin.settings.systemPrompt;
     let content = promptText;
     if (this.useDocSummary && this.docSummaryEntry && this.docSummaryEntry.summary) {
-      content +=
-        "\n\n【全文背景摘要】(由快速模型浓缩整篇 PDF 得到,仅供理解背景,不是我当前问题的具体内容):\n" +
-        this.docSummaryEntry.summary;
+      content += "\n\n\u3010\u5168\u6587\u80CC\u666F\u6458\u8981\u3011(\u7531\u5FEB\u901F\u6A21\u578B\u6D53\u7F29\u6574\u7BC7 PDF \u5F97\u5230,\u4EC5\u4F9B\u7406\u89E3\u80CC\u666F,\u4E0D\u662F\u6211\u5F53\u524D\u95EE\u9898\u7684\u5177\u4F53\u5185\u5BB9):\n" + this.docSummaryEntry.summary;
     }
-    content += `\n\n【我当前选中并想讨论的原文片段】:\n${this.contextText}`;
+    content += `
+
+\u3010\u6211\u5F53\u524D\u9009\u4E2D\u5E76\u60F3\u8BA8\u8BBA\u7684\u539F\u6587\u7247\u6BB5\u3011:
+${this.contextText}`;
     return { role: "system", content };
   }
-
   onOpen() {
     const { contentEl } = this;
     contentEl.empty();
     this.modalEl.addClass("pdf-chat-modal");
-
     const titleRow = contentEl.createDiv({ cls: "pdf-chat-title-row" });
     titleRow.createEl("h3", { text: "PDF Chat" });
-
     const titleActions = titleRow.createDiv({ cls: "pdf-chat-title-actions" });
-
     const zoomGroup = titleActions.createDiv({ cls: "pdf-chat-zoom-group" });
-    this.zoomOutBtn = zoomGroup.createEl("button", { text: "A−", cls: "pdf-chat-zoom-btn" });
+    this.zoomOutBtn = zoomGroup.createEl("button", { text: "A\u2212", cls: "pdf-chat-zoom-btn" });
     this.zoomLabel = zoomGroup.createEl("span", { text: "100%", cls: "pdf-chat-zoom-label" });
     this.zoomInBtn = zoomGroup.createEl("button", { text: "A+", cls: "pdf-chat-zoom-btn" });
-    this.zoomOutBtn.setAttr("title", "缩小内容字体");
-    this.zoomInBtn.setAttr("title", "放大内容字体");
-    this.zoomLabel.setAttr("title", "点击重置为 100%");
-
+    this.zoomOutBtn.setAttr("title", "\u7F29\u5C0F\u5185\u5BB9\u5B57\u4F53");
+    this.zoomInBtn.setAttr("title", "\u653E\u5927\u5185\u5BB9\u5B57\u4F53");
+    this.zoomLabel.setAttr("title", "\u70B9\u51FB\u91CD\u7F6E\u4E3A 100%");
     const resetBtn = titleActions.createEl("button", {
-      text: "清空对话",
-      cls: "pdf-chat-reset-btn",
+      text: "\u6E05\u7A7A\u5BF9\u8BDD",
+      cls: "pdf-chat-reset-btn"
     });
     resetBtn.addEventListener("click", () => this.resetConversation());
     this.setupDragging(titleRow);
-
-    this.zoomOutBtn.addEventListener("click", () =>
-      this.applyFontScale((this.plugin.settings.fontScale || 1) - 0.1)
+    this.zoomOutBtn.addEventListener(
+      "click",
+      () => this.applyFontScale((this.plugin.settings.fontScale || 1) - 0.1)
     );
-    this.zoomInBtn.addEventListener("click", () =>
-      this.applyFontScale((this.plugin.settings.fontScale || 1) + 0.1)
+    this.zoomInBtn.addEventListener(
+      "click",
+      () => this.applyFontScale((this.plugin.settings.fontScale || 1) + 0.1)
     );
     this.zoomLabel.addEventListener("click", () => this.applyFontScale(1));
     this.applyFontScale(this.plugin.settings.fontScale || 1);
-
     const modelRow = contentEl.createDiv({ cls: "pdf-chat-model-row" });
-    modelRow.createEl("span", { text: "模型：", cls: "pdf-chat-select-label" });
+    modelRow.createEl("span", { text: "\u6A21\u578B\uFF1A", cls: "pdf-chat-select-label" });
     this.modelSelect = modelRow.createEl("select", { cls: "dropdown pdf-chat-select" });
     for (const m of this.plugin.settings.models) {
       this.modelSelect.createEl("option", { text: m.name, value: m.id });
     }
     this.modelSelect.value = this.currentModelId;
     this.modelSelect.addEventListener("change", () => this.applyModel(this.modelSelect.value));
-
     const modeRow = contentEl.createDiv({ cls: "pdf-chat-mode-row" });
-    modeRow.createEl("span", { text: "阅读模式：", cls: "pdf-chat-select-label" });
+    modeRow.createEl("span", { text: "\u9605\u8BFB\u6A21\u5F0F\uFF1A", cls: "pdf-chat-select-label" });
     this.modeSelect = modeRow.createEl("select", { cls: "dropdown pdf-chat-select" });
-    this.modeSelect.createEl("option", { text: "默认(设置里的系统提示词)", value: "__default__" });
+    this.modeSelect.createEl("option", { text: "\u9ED8\u8BA4(\u8BBE\u7F6E\u91CC\u7684\u7CFB\u7EDF\u63D0\u793A\u8BCD)", value: "__default__" });
     for (const preset of this.plugin.settings.promptPresets) {
       this.modeSelect.createEl("option", { text: preset.name, value: preset.id });
     }
     this.modeSelect.value = this.currentPresetId;
     this.modeSelect.addEventListener("change", () => this.applyPreset(this.modeSelect.value));
-
     const ctxWrapper = contentEl.createDiv({ cls: "pdf-chat-context-wrapper" });
     const toggle = ctxWrapper.createEl("p", {
       cls: "pdf-chat-context-toggle",
-      text: `📄 已捕获选中内容(${this.contextText.length} 字) · 点击展开/收起`,
+      text: `\u{1F4C4} \u5DF2\u6355\u83B7\u9009\u4E2D\u5185\u5BB9(${this.contextText.length} \u5B57) \xB7 \u70B9\u51FB\u5C55\u5F00/\u6536\u8D77`
     });
     const ctxText = ctxWrapper.createDiv({
       cls: "pdf-chat-context-text is-collapsed",
-      text: this.contextText,
+      text: this.contextText
     });
     toggle.addEventListener("click", () => {
       ctxText.toggleClass("is-collapsed", !ctxText.hasClass("is-collapsed"));
     });
-
     if (this.pdfFile) {
       const summaryRow = contentEl.createDiv({ cls: "pdf-chat-summary-row" });
       this.summaryCheckbox = summaryRow.createEl("input", {
         type: "checkbox",
-        attr: { id: "pdf-chat-summary-toggle" },
+        attr: { id: "pdf-chat-summary-toggle" }
       });
       summaryRow.createEl("label", {
-        text: "附带全文摘要作为背景",
-        attr: { for: "pdf-chat-summary-toggle" },
+        text: "\u9644\u5E26\u5168\u6587\u6458\u8981\u4F5C\u4E3A\u80CC\u666F",
+        attr: { for: "pdf-chat-summary-toggle" }
       });
       this.summaryStatusEl = summaryRow.createEl("span", { cls: "pdf-chat-summary-status" });
       this.summaryRefreshBtn = summaryRow.createEl("button", {
-        text: "生成/刷新摘要",
-        cls: "pdf-chat-summary-btn",
+        text: "\u751F\u6210/\u5237\u65B0\u6458\u8981",
+        cls: "pdf-chat-summary-btn"
       });
-
       this.refreshSummaryStatus();
-
       this.summaryCheckbox.addEventListener("change", async () => {
         if (this.summaryCheckbox.checked) {
           await this.ensureDocSummary(false);
@@ -558,9 +811,6 @@ class PDFChatModal extends Modal {
         }
         this.messages[0] = this.buildSystemMessage();
       });
-
-      // 自动模式:已缓存过的直接秒用,没缓存过的自动生成一次,不需要每次手动勾选/点击。
-      // 缓存以文件路径+修改时间为 key,同一篇论文之后打开弹窗基本是瞬间命中缓存。
       if (this.plugin.settings.autoDocSummary) {
         this.summaryCheckbox.checked = true;
         this.useDocSummary = true;
@@ -570,24 +820,21 @@ class PDFChatModal extends Modal {
           this.messages[0] = this.buildSystemMessage();
         });
       }
-
       const ragRow = contentEl.createDiv({ cls: "pdf-chat-summary-row" });
       this.ragCheckbox = ragRow.createEl("input", {
         type: "checkbox",
-        attr: { id: "pdf-chat-rag-toggle" },
+        attr: { id: "pdf-chat-rag-toggle" }
       });
       ragRow.createEl("label", {
-        text: "全文/检索相关片段",
-        attr: { for: "pdf-chat-rag-toggle" },
+        text: "\u5168\u6587/\u68C0\u7D22\u76F8\u5173\u7247\u6BB5",
+        attr: { for: "pdf-chat-rag-toggle" }
       });
       this.ragStatusEl = ragRow.createEl("span", { cls: "pdf-chat-summary-status" });
       this.ragRefreshBtn = ragRow.createEl("button", {
-        text: "建立/刷新索引",
-        cls: "pdf-chat-summary-btn",
+        text: "\u5EFA\u7ACB/\u5237\u65B0\u7D22\u5F15",
+        cls: "pdf-chat-summary-btn"
       });
-
       this.refreshRagStatus();
-
       this.ragCheckbox.addEventListener("change", async () => {
         if (this.ragCheckbox.checked) {
           await this.ensureDocChunks(false);
@@ -603,8 +850,6 @@ class PDFChatModal extends Modal {
           this.useRag = !!(this.docChunksEntry && this.docChunksEntry.chunks && this.docChunksEntry.chunks.length);
         }
       });
-
-      // 建索引是纯本地文本切块,不调用模型,很快,可以放心自动做。
       if (this.plugin.settings.autoRag) {
         this.ragCheckbox.checked = true;
         this.useRag = true;
@@ -614,20 +859,15 @@ class PDFChatModal extends Modal {
         });
       }
     }
-
     this.historyEl = contentEl.createDiv({ cls: "pdf-chat-history" });
-
     const inputRow = contentEl.createDiv({ cls: "pdf-chat-input-row" });
     this.inputEl = inputRow.createEl("textarea", {
       cls: "pdf-chat-input",
-      attr: { placeholder: "针对上面选中的内容提问,按 Enter 提交,Shift+Enter 换行…" },
+      attr: { placeholder: "\u9488\u5BF9\u4E0A\u9762\u9009\u4E2D\u7684\u5185\u5BB9\u63D0\u95EE,\u6309 Enter \u63D0\u4EA4,Shift+Enter \u6362\u884C\u2026" }
     });
-    // “翻译”不需要在输入框里打字:选中的原文片段已经在系统提示词里,点一下就直接把固定的
-    // 翻译指令当作这一轮的问题发出去,走的还是同一套发送/流式/历史记录逻辑。
-    this.translateBtn = inputRow.createEl("button", { text: "翻译", cls: "pdf-chat-translate-btn" });
-    this.translateBtn.setAttr("title", "直接翻译当前选中的原文片段,无需输入内容");
-    this.sendBtn = inputRow.createEl("button", { text: "发送", cls: "mod-cta" });
-
+    this.translateBtn = inputRow.createEl("button", { text: "\u7FFB\u8BD1", cls: "pdf-chat-translate-btn" });
+    this.translateBtn.setAttr("title", "\u76F4\u63A5\u7FFB\u8BD1\u5F53\u524D\u9009\u4E2D\u7684\u539F\u6587\u7247\u6BB5,\u65E0\u9700\u8F93\u5165\u5185\u5BB9");
+    this.sendBtn = inputRow.createEl("button", { text: "\u53D1\u9001", cls: "mod-cta" });
     const submit = () => this.handleSubmit();
     this.sendBtn.addEventListener("click", () => {
       if (this.isSending) {
@@ -649,22 +889,19 @@ class PDFChatModal extends Modal {
         submit();
       }
     });
-
     contentEl.createEl("p", {
       cls: "pdf-chat-hint",
-      text: "多轮追问会带着完整对话历史一起发送给模型,答案会实时流式显示。点「翻译」可直接翻译选中内容,不用输入任何文字。",
+      text: "\u591A\u8F6E\u8FFD\u95EE\u4F1A\u5E26\u7740\u5B8C\u6574\u5BF9\u8BDD\u5386\u53F2\u4E00\u8D77\u53D1\u9001\u7ED9\u6A21\u578B,\u7B54\u6848\u4F1A\u5B9E\u65F6\u6D41\u5F0F\u663E\u793A\u3002\u70B9\u300C\u7FFB\u8BD1\u300D\u53EF\u76F4\u63A5\u7FFB\u8BD1\u9009\u4E2D\u5185\u5BB9,\u4E0D\u7528\u8F93\u5165\u4EFB\u4F55\u6587\u5B57\u3002"
     });
-
     if (this.transcript.length) {
       this.restoreConversationHistory().catch((err) => {
-        new Notice("恢复上次对话显示失败: " + (err && err.message ? err.message : String(err)));
+        new import_obsidian2.Notice("\u6062\u590D\u4E0A\u6B21\u5BF9\u8BDD\u663E\u793A\u5931\u8D25: " + (err && err.message ? err.message : String(err)));
       });
     } else if (this.startFresh && this.hadExistingHistory) {
-      new Notice("已开始新对话(发出第一条消息后会替换掉上次保存的记录)");
+      new import_obsidian2.Notice("\u5DF2\u5F00\u59CB\u65B0\u5BF9\u8BDD(\u53D1\u51FA\u7B2C\u4E00\u6761\u6D88\u606F\u540E\u4F1A\u66FF\u6362\u6389\u4E0A\u6B21\u4FDD\u5B58\u7684\u8BB0\u5F55)");
     }
     this.inputEl.focus();
   }
-
   async restoreConversationHistory() {
     const renderJobs = [];
     for (const message of this.transcript) {
@@ -678,27 +915,25 @@ class PDFChatModal extends Modal {
         renderMarkdownInto(this.app, this.plugin, bubble, message.content).then(() => {
           if (message.status === "stopped") {
             bubble.addClass("is-stopped");
-            bubble.createEl("p", { cls: "pdf-chat-stopped-label", text: "[已停止生成]" });
+            bubble.createEl("p", { cls: "pdf-chat-stopped-label", text: "[\u5DF2\u505C\u6B62\u751F\u6210]" });
           }
         })
       );
     }
     await Promise.all(renderJobs);
     this.historyEl.scrollTo({ top: this.historyEl.scrollHeight, behavior: "auto" });
-    const scope = this.pdfFile ? "本 PDF" : "当前选区";
-    new Notice(`已恢复${scope}上次对话(${this.transcript.length} 条消息)`);
+    const scope = this.pdfFile ? "\u672C PDF" : "\u5F53\u524D\u9009\u533A";
+    new import_obsidian2.Notice(`\u5DF2\u6062\u590D${scope}\u4E0A\u6B21\u5BF9\u8BDD(${this.transcript.length} \u6761\u6D88\u606F)`);
   }
-
   async persistConversation() {
     try {
-      await this.plugin.saveConversation(this.conversationKey, this.transcript);
+      await this.services.conversations.save(this.conversationKey, this.transcript);
       return true;
     } catch (err) {
-      new Notice("保存对话失败: " + (err && err.message ? err.message : String(err)));
+      new import_obsidian2.Notice("\u4FDD\u5B58\u5BF9\u8BDD\u5931\u8D25: " + (err && err.message ? err.message : String(err)));
       return false;
     }
   }
-
   async recordTranscriptTurn(question, answer, status) {
     if (typeof answer !== "string" || !answer.trim()) return false;
     this.transcript.push(
@@ -708,10 +943,9 @@ class PDFChatModal extends Modal {
     await this.persistConversation();
     return true;
   }
-
   async resetConversation() {
     if (this.isSending) {
-      new Notice("正在生成中,请先停止或等待完成后再清空");
+      new import_obsidian2.Notice("\u6B63\u5728\u751F\u6210\u4E2D,\u8BF7\u5148\u505C\u6B62\u6216\u7B49\u5F85\u5B8C\u6210\u540E\u518D\u6E05\u7A7A");
       return;
     }
     this.transcript = [];
@@ -719,16 +953,15 @@ class PDFChatModal extends Modal {
     this.fullTextAttached = false;
     this.historyEl.empty();
     try {
-      await this.plugin.clearConversation(this.conversationKey);
-      new Notice("对话已清空,原文上下文保留");
+      await this.services.conversations.clear(this.conversationKey);
+      new import_obsidian2.Notice("\u5BF9\u8BDD\u5DF2\u6E05\u7A7A,\u539F\u6587\u4E0A\u4E0B\u6587\u4FDD\u7559");
     } catch (err) {
-      new Notice("界面已清空,但删除已保存对话失败: " + (err && err.message ? err.message : String(err)));
+      new import_obsidian2.Notice("\u754C\u9762\u5DF2\u6E05\u7A7A,\u4F46\u5220\u9664\u5DF2\u4FDD\u5B58\u5BF9\u8BDD\u5931\u8D25: " + (err && err.message ? err.message : String(err)));
     }
   }
-
   applyPreset(id) {
     if (this.isSending) {
-      new Notice("正在生成中,请先停止或等待完成后再切换阅读模式");
+      new import_obsidian2.Notice("\u6B63\u5728\u751F\u6210\u4E2D,\u8BF7\u5148\u505C\u6B62\u6216\u7B49\u5F85\u5B8C\u6210\u540E\u518D\u5207\u6362\u9605\u8BFB\u6A21\u5F0F");
       this.modeSelect.value = this.currentPresetId;
       return;
     }
@@ -737,13 +970,12 @@ class PDFChatModal extends Modal {
     this.plugin.saveSettings();
     this.messages[0] = this.buildSystemMessage();
     const preset = this.plugin.settings.promptPresets.find((p) => p.id === id);
-    const name = id === "__default__" ? "默认" : (preset && preset.name) || id;
-    new Notice(`已切换到「${name}」模式,后续回答会按新设定进行`);
+    const name = id === "__default__" ? "\u9ED8\u8BA4" : preset && preset.name || id;
+    new import_obsidian2.Notice(`\u5DF2\u5207\u6362\u5230\u300C${name}\u300D\u6A21\u5F0F,\u540E\u7EED\u56DE\u7B54\u4F1A\u6309\u65B0\u8BBE\u5B9A\u8FDB\u884C`);
   }
-
   applyModel(id) {
     if (this.isSending) {
-      new Notice("正在生成中,请先停止或等待完成后再切换模型");
+      new import_obsidian2.Notice("\u6B63\u5728\u751F\u6210\u4E2D,\u8BF7\u5148\u505C\u6B62\u6216\u7B49\u5F85\u5B8C\u6210\u540E\u518D\u5207\u6362\u6A21\u578B");
       this.modelSelect.value = this.currentModelId;
       return;
     }
@@ -751,9 +983,8 @@ class PDFChatModal extends Modal {
     this.plugin.settings.lastModelId = id;
     this.plugin.saveSettings();
     const m = this.plugin.settings.models.find((x) => x.id === id);
-    new Notice(`已切换到模型「${(m && m.name) || id}」`);
+    new import_obsidian2.Notice(`\u5DF2\u5207\u6362\u5230\u6A21\u578B\u300C${m && m.name || id}\u300D`);
   }
-
   applyFontScale(scale) {
     const clamped = Math.round(Math.min(1.6, Math.max(0.7, scale)) * 100) / 100;
     this.plugin.settings.fontScale = clamped;
@@ -761,24 +992,21 @@ class PDFChatModal extends Modal {
     if (this.zoomLabel) this.zoomLabel.setText(Math.round(clamped * 100) + "%");
     this.plugin.saveSettings();
   }
-
   refreshSummaryStatus() {
     if (!this.summaryStatusEl || !this.pdfFile) return;
     const cached = this.plugin.settings.docSummaries[this.pdfFile.path];
     if (cached && cached.summary) {
       this.docSummaryEntry = cached;
       const date = new Date(cached.generatedAt);
-      const truncatedNote = cached.truncated ? " · 原文过长,仅摘要了前面部分" : "";
-      this.summaryStatusEl.setText(`(已缓存 · ${date.toLocaleString()}${truncatedNote})`);
+      const truncatedNote = cached.truncated ? " \xB7 \u539F\u6587\u8FC7\u957F,\u4EC5\u6458\u8981\u4E86\u524D\u9762\u90E8\u5206" : "";
+      this.summaryStatusEl.setText(`(\u5DF2\u7F13\u5B58 \xB7 ${date.toLocaleString()}${truncatedNote})`);
     } else {
       this.docSummaryEntry = null;
-      this.summaryStatusEl.setText("(尚未生成)");
+      this.summaryStatusEl.setText("(\u5C1A\u672A\u751F\u6210)");
     }
   }
-
   async ensureDocSummary(forceRefresh) {
     if (this.isGeneratingSummary || !this.pdfFile) return;
-
     const cached = this.plugin.settings.docSummaries[this.pdfFile.path];
     const currentMtime = this.pdfFile.stat && this.pdfFile.stat.mtime;
     if (!forceRefresh && cached && cached.mtime === currentMtime) {
@@ -786,35 +1014,32 @@ class PDFChatModal extends Modal {
       this.refreshSummaryStatus();
       return;
     }
-
     this.isGeneratingSummary = true;
     if (this.summaryRefreshBtn) {
-      this.summaryRefreshBtn.setText("生成中…");
+      this.summaryRefreshBtn.setText("\u751F\u6210\u4E2D\u2026");
       this.summaryRefreshBtn.disabled = true;
     }
     if (this.summaryCheckbox) this.summaryCheckbox.disabled = true;
-    const notice = new Notice("正在用快速模型提炼全文摘要,可能需要几十秒…", 0);
-
+    const notice = new import_obsidian2.Notice("\u6B63\u5728\u7528\u5FEB\u901F\u6A21\u578B\u63D0\u70BC\u5168\u6587\u6458\u8981,\u53EF\u80FD\u9700\u8981\u51E0\u5341\u79D2\u2026", 0);
     try {
-      this.docSummaryEntry = await this.plugin.getOrCreateDocSummary(this.pdfFile, forceRefresh);
+      this.docSummaryEntry = await this.services.papers.getOrCreateDocSummary(this.pdfFile, forceRefresh);
       this.refreshSummaryStatus();
       notice.hide();
-      new Notice("全文摘要已生成/更新");
+      new import_obsidian2.Notice("\u5168\u6587\u6458\u8981\u5DF2\u751F\u6210/\u66F4\u65B0");
     } catch (err) {
       notice.hide();
-      new Notice("生成摘要失败: " + (err && err.message ? err.message : String(err)));
+      new import_obsidian2.Notice("\u751F\u6210\u6458\u8981\u5931\u8D25: " + (err && err.message ? err.message : String(err)));
       if (this.summaryCheckbox) this.summaryCheckbox.checked = false;
       this.useDocSummary = false;
     } finally {
       this.isGeneratingSummary = false;
       if (this.summaryRefreshBtn) {
-        this.summaryRefreshBtn.setText("生成/刷新摘要");
+        this.summaryRefreshBtn.setText("\u751F\u6210/\u5237\u65B0\u6458\u8981");
         this.summaryRefreshBtn.disabled = false;
       }
       if (this.summaryCheckbox) this.summaryCheckbox.disabled = false;
     }
   }
-
   refreshRagStatus() {
     if (!this.ragStatusEl || !this.pdfFile) return;
     const cached = this.plugin.settings.docChunks[this.pdfFile.path];
@@ -824,20 +1049,18 @@ class PDFChatModal extends Modal {
       this.useFullTextMode = !!(cached.fullTextLength && cached.fullTextLength <= threshold);
       const date = new Date(cached.generatedAt);
       if (this.useFullTextMode) {
-        this.ragStatusEl.setText(`(全文约${cached.fullTextLength}字,较短 · 直接读全文回答,更准 · ${date.toLocaleString()})`);
+        this.ragStatusEl.setText(`(\u5168\u6587\u7EA6${cached.fullTextLength}\u5B57,\u8F83\u77ED \xB7 \u76F4\u63A5\u8BFB\u5168\u6587\u56DE\u7B54,\u66F4\u51C6 \xB7 ${date.toLocaleString()})`);
       } else {
-        this.ragStatusEl.setText(`(已建索引 · ${cached.chunks.length} 块 · ${date.toLocaleString()})`);
+        this.ragStatusEl.setText(`(\u5DF2\u5EFA\u7D22\u5F15 \xB7 ${cached.chunks.length} \u5757 \xB7 ${date.toLocaleString()})`);
       }
     } else {
       this.docChunksEntry = null;
       this.useFullTextMode = false;
-      this.ragStatusEl.setText("(尚未建立索引)");
+      this.ragStatusEl.setText("(\u5C1A\u672A\u5EFA\u7ACB\u7D22\u5F15)");
     }
   }
-
   async ensureDocChunks(forceRefresh) {
     if (this.isIndexingRag || !this.pdfFile) return;
-
     const cached = this.plugin.settings.docChunks[this.pdfFile.path];
     const currentMtime = this.pdfFile.stat && this.pdfFile.stat.mtime;
     if (!forceRefresh && cached && cached.mtime === currentMtime) {
@@ -845,37 +1068,33 @@ class PDFChatModal extends Modal {
       this.refreshRagStatus();
       return;
     }
-
     this.isIndexingRag = true;
     if (this.ragRefreshBtn) {
-      this.ragRefreshBtn.setText("建立中…");
+      this.ragRefreshBtn.setText("\u5EFA\u7ACB\u4E2D\u2026");
       this.ragRefreshBtn.disabled = true;
     }
     if (this.ragCheckbox) this.ragCheckbox.disabled = true;
-
     try {
-      this.docChunksEntry = await this.plugin.getOrCreateDocChunks(this.pdfFile, forceRefresh);
+      this.docChunksEntry = await this.services.papers.getOrCreateDocChunks(this.pdfFile, forceRefresh);
       this.refreshRagStatus();
     } catch (err) {
-      new Notice("建立检索索引失败: " + (err && err.message ? err.message : String(err)));
+      new import_obsidian2.Notice("\u5EFA\u7ACB\u68C0\u7D22\u7D22\u5F15\u5931\u8D25: " + (err && err.message ? err.message : String(err)));
       if (this.ragCheckbox) this.ragCheckbox.checked = false;
       this.useRag = false;
     } finally {
       this.isIndexingRag = false;
       if (this.ragRefreshBtn) {
-        this.ragRefreshBtn.setText("建立/刷新索引");
+        this.ragRefreshBtn.setText("\u5EFA\u7ACB/\u5237\u65B0\u7D22\u5F15");
         this.ragRefreshBtn.disabled = false;
       }
       if (this.ragCheckbox) this.ragCheckbox.disabled = false;
     }
   }
-
   setupDragging(handleEl) {
     handleEl.addClass("pdf-chat-drag-handle");
     handleEl.addEventListener("mousedown", (evt) => {
       if (evt.target.closest && evt.target.closest("button, select, .pdf-chat-title-actions")) return;
       evt.preventDefault();
-
       const modalEl = this.modalEl;
       const doc = modalEl.ownerDocument;
       const rect = modalEl.getBoundingClientRect();
@@ -883,12 +1102,10 @@ class PDFChatModal extends Modal {
       modalEl.style.margin = "0";
       modalEl.style.left = rect.left + "px";
       modalEl.style.top = rect.top + "px";
-
       const startX = evt.clientX;
       const startY = evt.clientY;
       const startLeft = rect.left;
       const startTop = rect.top;
-
       const onMouseMove = (moveEvt) => {
         modalEl.style.left = startLeft + (moveEvt.clientX - startX) + "px";
         modalEl.style.top = startTop + (moveEvt.clientY - startY) + "px";
@@ -901,104 +1118,82 @@ class PDFChatModal extends Modal {
       doc.addEventListener("mouseup", onMouseUp);
     });
   }
-
   stopGenerating() {
     if (this.abortController) {
       this.abortController.abort();
     }
   }
-
   setSendingState(sending) {
     this.isSending = sending;
-    this.sendBtn.setText(sending ? "停止" : "发送");
+    this.sendBtn.setText(sending ? "\u505C\u6B62" : "\u53D1\u9001");
     this.sendBtn.toggleClass("is-stop", sending);
   }
-
   // 点「翻译」按钮触发:不读输入框,直接用固定的翻译指令当作这一轮的问题发出去。
   // 选中的原文片段已经在系统提示词里(见 buildSystemMessage),跳过 RAG/全文检索拼接——
   // 那是给"回答具体问题"用的,翻译只需要针对已经在上下文里的选中片段,不需要额外找相关内容。
   handleTranslate() {
-    const instruction = (this.plugin.settings.translatePrompt || DEFAULT_SETTINGS.translatePrompt).trim();
-    if (!instruction) return;
-    this.handleSubmit({ question: instruction, skipContextAugmentation: true });
+    void this.services.actions.execute("translate", {
+      settings: this.plugin.settings,
+      submit: (options) => this.handleSubmit(options)
+    });
   }
-
   async handleSubmit(options) {
     const opts = options || {};
     const usingOverride = typeof opts.question === "string";
     const question = usingOverride ? opts.question.trim() : this.inputEl.value.trim();
     if (!question) return;
     if (this.isSending) {
-      new Notice("上一个问题还在生成中,请稍候或点击停止");
+      new import_obsidian2.Notice("\u4E0A\u4E00\u4E2A\u95EE\u9898\u8FD8\u5728\u751F\u6210\u4E2D,\u8BF7\u7A0D\u5019\u6216\u70B9\u51FB\u505C\u6B62");
       return;
     }
-
     this.addBubble("user", question);
     if (!usingOverride) this.inputEl.value = "";
     this.setSendingState(true);
-
-    const loadingBubble = this.addBubble("assistant", "思考中…", { loading: true });
-
+    const loadingBubble = this.addBubble("assistant", "\u601D\u8003\u4E2D\u2026", { loading: true });
     let outgoingContent = question;
     if (opts.skipContextAugmentation) {
-      // 跳过下面的 RAG/全文拼接逻辑,原样发送。
     } else if (this.useRag && this.useFullTextMode && this.pdfFile && !this.fullTextAttached) {
-      // 全文足够短,直接把全文交给模型,不做"猜哪一块相关"的检索——实测发现关键词检索对
-      // "列举类"问题(比如"论文对比了哪些基线算法")经常检索不全或检索错块,直接给全文更可靠。
-      // 只在对话的第一轮附带一次:之后每轮 this.messages 都会带着这一轮的历史一起重新发送,
-      // 不需要也不应该重复拼接,否则输入会随聊天轮数线性膨胀。
-      loadingBubble.setText("正在读取全文…");
+      loadingBubble.setText("\u6B63\u5728\u8BFB\u53D6\u5168\u6587\u2026");
       try {
         if (!this.fullTextForQA) {
-          this.fullTextForQA = await extractPdfFullText(this.app, this.pdfFile);
+          this.fullTextForQA = await this.services.papers.extractFullText(this.pdfFile);
         }
-        outgoingContent = "【论文全文】:\n" + this.fullTextForQA + "\n\n【我的问题】:\n" + question;
+        outgoingContent = "\u3010\u8BBA\u6587\u5168\u6587\u3011:\n" + this.fullTextForQA + "\n\n\u3010\u6211\u7684\u95EE\u9898\u3011:\n" + question;
         this.fullTextAttached = true;
       } catch (err) {
-        // 全文提取失败就退回原始问题,不阻塞正常提问
       }
-      loadingBubble.setText("思考中…");
-    } else if (
-      !this.useFullTextMode &&
-      this.useRag &&
-      this.docChunksEntry &&
-      this.docChunksEntry.chunks &&
-      this.docChunksEntry.chunks.length
-    ) {
+      loadingBubble.setText("\u601D\u8003\u4E2D\u2026");
+    } else if (!this.useFullTextMode && this.useRag && this.docChunksEntry && this.docChunksEntry.chunks && this.docChunksEntry.chunks.length) {
       const retrievalQueries = [question];
       if (this.plugin.settings.ragQueryTranslate) {
-        loadingBubble.setText("正在思考检索角度…");
+        loadingBubble.setText("\u6B63\u5728\u601D\u8003\u68C0\u7D22\u89D2\u5EA6\u2026");
         try {
-          const variants = await this.plugin.planRagQueries(question);
+          const variants = await this.services.papers.planRagQueries(question);
           if (variants && variants.length) retrievalQueries.push(...variants);
         } catch (err) {
-          // 检索词规划失败就退回只用原始问题直接检索,不阻塞正常提问
         }
       }
-
       const topK = this.plugin.settings.ragTopK || DEFAULT_SETTINGS.ragTopK;
-      const retrieved = bm25RetrieveMulti(this.docChunksEntry.chunks, retrievalQueries, topK);
-      const expanded = expandWithNeighbors(this.docChunksEntry.chunks, retrieved);
+      const expanded = this.services.papers.retrieveContext(
+        this.docChunksEntry.chunks,
+        retrievalQueries,
+        topK
+      );
       if (expanded.length) {
-        const retrievedText = expanded.map((c) => `[第${c.page}页]\n${c.text}`).join("\n\n---\n\n");
-        outgoingContent =
-          "【从全文中按关键词检索到的可能相关片段(不一定完全准确,仅供参考)】:\n" +
-          retrievedText +
-          "\n\n【我的问题】:\n" +
-          question;
+        const retrievedText = expanded.map((c) => `[\u7B2C${c.page}\u9875]
+${c.text}`).join("\n\n---\n\n");
+        outgoingContent = "\u3010\u4ECE\u5168\u6587\u4E2D\u6309\u5173\u952E\u8BCD\u68C0\u7D22\u5230\u7684\u53EF\u80FD\u76F8\u5173\u7247\u6BB5(\u4E0D\u4E00\u5B9A\u5B8C\u5168\u51C6\u786E,\u4EC5\u4F9B\u53C2\u8003)\u3011:\n" + retrievedText + "\n\n\u3010\u6211\u7684\u95EE\u9898\u3011:\n" + question;
       }
-      loadingBubble.setText("思考中…");
+      loadingBubble.setText("\u601D\u8003\u4E2D\u2026");
     }
-
     this.messages.push({ role: "user", content: outgoingContent });
     this.abortController = new AbortController();
     let fullText = "";
     let firstChunkArrived = false;
-
     try {
-      fullText = await this.plugin.chat(
-        this.messages,
-        (piece, acc) => {
+      fullText = await this.services.llm.chat({
+        messages: this.messages,
+        onChunk: (piece, acc) => {
           fullText = acc;
           if (!firstChunkArrived) {
             firstChunkArrived = true;
@@ -1007,13 +1202,10 @@ class PDFChatModal extends Modal {
           loadingBubble.setText(acc);
           this.historyEl.scrollTo({ top: this.historyEl.scrollHeight, behavior: "auto" });
         },
-        this.abortController.signal,
-        this.plugin.getModelProfile(this.currentModelId)
-      );
-
+        signal: this.abortController.signal,
+        modelProfile: this.services.models.get(this.currentModelId)
+      });
       loadingBubble.removeClass("is-loading");
-      // 切到最终渲染状态后去掉 pre-wrap,避免和渲染出来的 HTML(公式/段落/代码块)标签间的
-      // 空白文本节点叠加,出现多余换行或挤成一团的问题。
       loadingBubble.addClass("is-rendered");
       this.messages.push({ role: "assistant", content: fullText });
       await renderMarkdownInto(this.app, this.plugin, loadingBubble, fullText);
@@ -1022,7 +1214,7 @@ class PDFChatModal extends Modal {
       loadingBubble.removeClass("is-loading");
       if (err && err.name === "AbortError") {
         loadingBubble.addClass("is-stopped");
-        loadingBubble.setText((fullText || "") + "\n\n[已停止生成]");
+        loadingBubble.setText((fullText || "") + "\n\n[\u5DF2\u505C\u6B62\u751F\u6210]");
         if (fullText) {
           this.messages.push({ role: "assistant", content: fullText });
           await this.recordTranscriptTurn(question, fullText, "stopped");
@@ -1031,7 +1223,7 @@ class PDFChatModal extends Modal {
         }
       } else {
         loadingBubble.addClass("is-error");
-        loadingBubble.setText("请求失败: " + (err && err.message ? err.message : String(err)));
+        loadingBubble.setText("\u8BF7\u6C42\u5931\u8D25: " + (err && err.message ? err.message : String(err)));
         this.messages.pop();
       }
     } finally {
@@ -1040,7 +1232,6 @@ class PDFChatModal extends Modal {
       this.inputEl.focus();
     }
   }
-
   addBubble(role, text, opts) {
     const bubble = this.historyEl.createDiv({ cls: `pdf-chat-bubble ${role}` });
     if (opts && opts.loading) bubble.addClass("is-loading");
@@ -1050,245 +1241,216 @@ class PDFChatModal extends Modal {
     }
     return bubble;
   }
-
   onClose() {
     this.stopGenerating();
-    // 只在这次会话确实产生过消息时才回写存储:避免“新开对话”模式下,用户什么都没问就
-    // 直接关闭弹窗,却因为 this.transcript 一开始就是空数组而把上次保存的记录误清空。
     if (this.transcript.length) {
       void this.persistConversation();
     }
     this.contentEl.empty();
   }
+};
+
+// src/settings.ts
+function migrateSettings(savedValue, now = Date.now) {
+  const saved = savedValue && typeof savedValue === "object" && !Array.isArray(savedValue) ? savedValue : null;
+  const settings = Object.assign({}, DEFAULT_SETTINGS, saved);
+  settings.models = saved && Array.isArray(saved.models) && saved.models.length ? saved.models.map((model) => ({ ...model })) : DEFAULT_SETTINGS.models.map((model) => ({ ...model }));
+  settings.promptPresets = saved && Array.isArray(saved.promptPresets) && saved.promptPresets.length ? saved.promptPresets.map((preset) => ({ ...preset })) : DEFAULT_SETTINGS.promptPresets.map((preset) => ({ ...preset }));
+  settings.docSummaries = saved && saved.docSummaries && typeof saved.docSummaries === "object" ? { ...saved.docSummaries } : {};
+  settings.docChunks = saved && saved.docChunks && typeof saved.docChunks === "object" ? { ...saved.docChunks } : {};
+  settings.conversationHistories = normalizeConversationHistories(saved && saved.conversationHistories);
+  let needsSave = false;
+  if (saved && (saved.endpoint || saved.apiKey || saved.model) && !(saved.models && saved.models.length)) {
+    const migrated = {
+      id: "migrated-" + now(),
+      name: "\u8FC1\u79FB\u81EA\u65E7\u8BBE\u7F6E",
+      endpoint: saved.endpoint || DEFAULT_SETTINGS.models[0].endpoint,
+      apiKey: saved.apiKey || DEFAULT_SETTINGS.models[0].apiKey,
+      model: saved.model || DEFAULT_SETTINGS.models[0].model
+    };
+    settings.models = [migrated, ...DEFAULT_SETTINGS.models.map((model) => ({ ...model }))];
+    settings.activeModelId = migrated.id;
+    needsSave = true;
+  }
+  if (!settings.models.length) {
+    settings.models = DEFAULT_SETTINGS.models.map((model) => ({ ...model }));
+    needsSave = true;
+  }
+  if (!settings.models.find((model) => model.id === settings.activeModelId)) {
+    settings.activeModelId = settings.models[0].id;
+    needsSave = true;
+  }
+  if (settings.endpoint !== void 0 || settings.apiKey !== void 0 || settings.model !== void 0) {
+    delete settings.endpoint;
+    delete settings.apiKey;
+    delete settings.model;
+    needsSave = true;
+  }
+  return { settings, needsSave };
+}
+function enqueueSettingsSave(owner) {
+  const previousSave = owner._saveQueue || Promise.resolve();
+  const nextSave = previousSave.catch(() => void 0).then(() => owner.saveData(owner.settings));
+  owner._saveQueue = nextSave;
+  return nextSave;
 }
 
-class PDFChatSettingTab extends PluginSettingTab {
+// src/settings-tab.ts
+var import_obsidian3 = require("obsidian");
+var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
   }
-
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "PDF Chat 设置" });
-
-    containerEl.createEl("h3", { text: "模型列表" });
+    containerEl.createEl("h2", { text: "PDF Chat \u8BBE\u7F6E" });
+    containerEl.createEl("h3", { text: "\u6A21\u578B\u5217\u8868" });
     containerEl.createEl("p", {
-      text:
-        "可以添加多套模型配置(不同的 endpoint / API Key / 模型名),弹窗里的“模型”下拉框会列出这里全部条目。" +
-        "标了“默认”的那一条是新建对话时默认使用的模型。",
-      cls: "setting-item-description",
+      text: "\u53EF\u4EE5\u6DFB\u52A0\u591A\u5957\u6A21\u578B\u914D\u7F6E(\u4E0D\u540C\u7684 endpoint / API Key / \u6A21\u578B\u540D),\u5F39\u7A97\u91CC\u7684\u201C\u6A21\u578B\u201D\u4E0B\u62C9\u6846\u4F1A\u5217\u51FA\u8FD9\u91CC\u5168\u90E8\u6761\u76EE\u3002\u6807\u4E86\u201C\u9ED8\u8BA4\u201D\u7684\u90A3\u4E00\u6761\u662F\u65B0\u5EFA\u5BF9\u8BDD\u65F6\u9ED8\u8BA4\u4F7F\u7528\u7684\u6A21\u578B\u3002",
+      cls: "setting-item-description"
     });
-
     this.plugin.settings.models.forEach((m, idx) => {
       const isActive = m.id === this.plugin.settings.activeModelId;
-      const header = new Setting(containerEl).setName(`模型 ${idx + 1}${isActive ? " · 默认" : ""}`);
-      header.addText((text) =>
-        text
-          .setPlaceholder("名称")
-          .setValue(m.name)
-          .onChange(async (value) => {
-            m.name = value;
-            await this.plugin.saveSettings();
-          })
+      const header = new import_obsidian3.Setting(containerEl).setName(`\u6A21\u578B ${idx + 1}${isActive ? " \xB7 \u9ED8\u8BA4" : ""}`);
+      header.addText(
+        (text) => text.setPlaceholder("\u540D\u79F0").setValue(m.name).onChange(async (value) => {
+          m.name = value;
+          await this.plugin.saveSettings();
+        })
       );
       if (!isActive) {
-        header.addExtraButton((btn) =>
-          btn
-            .setIcon("star")
-            .setTooltip("设为默认")
-            .onClick(async () => {
-              this.plugin.settings.activeModelId = m.id;
-              await this.plugin.saveSettings();
-              this.display();
-            })
-        );
-      }
-      header.addExtraButton((btn) =>
-        btn
-          .setIcon("trash")
-          .setTooltip("删除这个模型")
-          .onClick(async () => {
-            if (this.plugin.settings.models.length <= 1) {
-              new Notice("至少要保留一个模型配置");
-              return;
-            }
-            this.plugin.settings.models.splice(idx, 1);
-            if (this.plugin.settings.activeModelId === m.id) {
-              this.plugin.settings.activeModelId = this.plugin.settings.models[0].id;
-            }
+        header.addExtraButton(
+          (btn) => btn.setIcon("star").setTooltip("\u8BBE\u4E3A\u9ED8\u8BA4").onClick(async () => {
+            this.plugin.settings.activeModelId = m.id;
             await this.plugin.saveSettings();
             this.display();
           })
-      );
-
-      new Setting(containerEl).setName("Endpoint").addText((text) =>
-        text
-          .setPlaceholder("OpenAI 兼容的 chat/completions 接口地址")
-          .setValue(m.endpoint)
-          .onChange(async (value) => {
-            m.endpoint = value.trim();
-            await this.plugin.saveSettings();
-          })
-      );
-
-      new Setting(containerEl).setName("API Key").addText((text) => {
-        text.inputEl.type = "password";
-        text
-          .setValue(m.apiKey)
-          .onChange(async (value) => {
-            m.apiKey = value.trim();
-            await this.plugin.saveSettings();
-          });
-      });
-
-      new Setting(containerEl).setName("模型名(model 字段)").addText((text) =>
-        text
-          .setValue(m.model)
-          .onChange(async (value) => {
-            m.model = value.trim();
-            await this.plugin.saveSettings();
-          })
-      );
-
-      containerEl.createEl("hr");
-    });
-
-    new Setting(containerEl).addButton((btn) =>
-      btn
-        .setButtonText("+ 添加模型")
-        .setCta()
-        .onClick(async () => {
-          this.plugin.settings.models.push({
-            id: "model-" + Date.now(),
-            name: "新模型",
-            endpoint: "",
-            apiKey: "",
-            model: "",
-          });
+        );
+      }
+      header.addExtraButton(
+        (btn) => btn.setIcon("trash").setTooltip("\u5220\u9664\u8FD9\u4E2A\u6A21\u578B").onClick(async () => {
+          if (this.plugin.settings.models.length <= 1) {
+            new Notice("\u81F3\u5C11\u8981\u4FDD\u7559\u4E00\u4E2A\u6A21\u578B\u914D\u7F6E");
+            return;
+          }
+          this.plugin.settings.models.splice(idx, 1);
+          if (this.plugin.settings.activeModelId === m.id) {
+            this.plugin.settings.activeModelId = this.plugin.settings.models[0].id;
+          }
           await this.plugin.saveSettings();
           this.display();
         })
+      );
+      new import_obsidian3.Setting(containerEl).setName("Endpoint").addText(
+        (text) => text.setPlaceholder("OpenAI \u517C\u5BB9\u7684 chat/completions \u63A5\u53E3\u5730\u5740").setValue(m.endpoint).onChange(async (value) => {
+          m.endpoint = value.trim();
+          await this.plugin.saveSettings();
+        })
+      );
+      new import_obsidian3.Setting(containerEl).setName("API Key").addText((text) => {
+        text.inputEl.type = "password";
+        text.setValue(m.apiKey).onChange(async (value) => {
+          m.apiKey = value.trim();
+          await this.plugin.saveSettings();
+        });
+      });
+      new import_obsidian3.Setting(containerEl).setName("\u6A21\u578B\u540D(model \u5B57\u6BB5)").addText(
+        (text) => text.setValue(m.model).onChange(async (value) => {
+          m.model = value.trim();
+          await this.plugin.saveSettings();
+        })
+      );
+      containerEl.createEl("hr");
+    });
+    new import_obsidian3.Setting(containerEl).addButton(
+      (btn) => btn.setButtonText("+ \u6DFB\u52A0\u6A21\u578B").setCta().onClick(async () => {
+        this.plugin.settings.models.push({
+          id: "model-" + Date.now(),
+          name: "\u65B0\u6A21\u578B",
+          endpoint: "",
+          apiKey: "",
+          model: ""
+        });
+        await this.plugin.saveSettings();
+        this.display();
+      })
     );
-
-    new Setting(containerEl)
-      .setName("流式输出")
-      .setDesc("开启后答案会一边生成一边显示;关闭则等生成完再一次性显示")
-      .addToggle((toggle) =>
-        toggle.setValue(this.plugin.settings.stream).onChange(async (value) => {
-          this.plugin.settings.stream = value;
-          await this.plugin.saveSettings();
-        })
-      );
-
-    new Setting(containerEl)
-      .setName("Temperature")
-      .addText((text) =>
-        text.setValue(String(this.plugin.settings.temperature)).onChange(async (value) => {
-          const n = parseFloat(value);
-          this.plugin.settings.temperature = Number.isFinite(n) ? n : DEFAULT_SETTINGS.temperature;
-          await this.plugin.saveSettings();
-        })
-      );
-
-    new Setting(containerEl)
-      .setName("Max Tokens")
-      .addText((text) =>
-        text.setValue(String(this.plugin.settings.maxTokens)).onChange(async (value) => {
-          const n = parseInt(value, 10);
-          this.plugin.settings.maxTokens = Number.isFinite(n) ? n : DEFAULT_SETTINGS.maxTokens;
-          await this.plugin.saveSettings();
-        })
-      );
-
-    new Setting(containerEl)
-      .setName("系统提示词")
-      .setDesc("会自动附加选中的原文片段在其后")
-      .addTextArea((text) => {
-        text.inputEl.rows = 6;
-        text.setValue(this.plugin.settings.systemPrompt).onChange(async (value) => {
-          this.plugin.settings.systemPrompt = value;
-          await this.plugin.saveSettings();
-        });
+    new import_obsidian3.Setting(containerEl).setName("\u6D41\u5F0F\u8F93\u51FA").setDesc("\u5F00\u542F\u540E\u7B54\u6848\u4F1A\u4E00\u8FB9\u751F\u6210\u4E00\u8FB9\u663E\u793A;\u5173\u95ED\u5219\u7B49\u751F\u6210\u5B8C\u518D\u4E00\u6B21\u6027\u663E\u793A").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.stream).onChange(async (value) => {
+        this.plugin.settings.stream = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian3.Setting(containerEl).setName("Temperature").addText(
+      (text) => text.setValue(String(this.plugin.settings.temperature)).onChange(async (value) => {
+        const n = parseFloat(value);
+        this.plugin.settings.temperature = Number.isFinite(n) ? n : DEFAULT_SETTINGS.temperature;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian3.Setting(containerEl).setName("Max Tokens").addText(
+      (text) => text.setValue(String(this.plugin.settings.maxTokens)).onChange(async (value) => {
+        const n = parseInt(value, 10);
+        this.plugin.settings.maxTokens = Number.isFinite(n) ? n : DEFAULT_SETTINGS.maxTokens;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian3.Setting(containerEl).setName("\u7CFB\u7EDF\u63D0\u793A\u8BCD").setDesc("\u4F1A\u81EA\u52A8\u9644\u52A0\u9009\u4E2D\u7684\u539F\u6587\u7247\u6BB5\u5728\u5176\u540E").addTextArea((text) => {
+      text.inputEl.rows = 6;
+      text.setValue(this.plugin.settings.systemPrompt).onChange(async (value) => {
+        this.plugin.settings.systemPrompt = value;
+        await this.plugin.saveSettings();
       });
-
-    new Setting(containerEl)
-      .setName("「翻译」按钮的指令")
-      .setDesc("点弹窗里的「翻译」按钮时直接发送的固定指令,不需要在输入框里打字。选中的原文片段已经在系统提示词里,这里只需要描述翻译要求。")
-      .addTextArea((text) => {
-        text.inputEl.rows = 4;
-        text.setValue(this.plugin.settings.translatePrompt).onChange(async (value) => {
-          this.plugin.settings.translatePrompt = value;
-          await this.plugin.saveSettings();
-        });
-      });
-
-    containerEl.createEl("p", {
-      text:
-        "默认快捷键: Ctrl+Alt+Q 新开一份对话(不加载之前保存的记录);Ctrl+Q 继续上次对话(恢复之前保存的记录)。" +
-        "两个命令都可以在 设置→快捷键→搜索 “PDF Chat” 里自行修改。" +
-        "使用方法: 在 PDF 或任意笔记里选中一段文字,按快捷键即可弹窗提问,弹窗内可连续追问,支持流式回答、停止生成、拖动标题栏移动位置、拖拽右下角调整大小。",
-      cls: "setting-item-description",
     });
-
-    containerEl.createEl("h3", { text: "全文摘要(浓缩上下文)" });
-    containerEl.createEl("p", {
-      text:
-        "在 PDF 里划词唤起弹窗后,可以勾选“附带全文摘要作为背景”:会先用下面选的模型把当前 PDF 全文浓缩成一份摘要" +
-        "(按文件路径+修改时间缓存,文件不变就不用重新生成),再连同你选中的那段原文一起发给主模型回答问题," +
-        "既有全局背景,又不会因为直接把整篇论文塞进上下文而让回答跑题或超长。仅对 PDF 视图里的划词生效。",
-      cls: "setting-item-description",
-    });
-
-    new Setting(containerEl)
-      .setName("打开 PDF 划词弹窗时自动附带全文摘要")
-      .setDesc(
-        "开启后不需要每次手动勾选/点击:已缓存过摘要的论文直接自动附带,没缓存过的会自动生成一次" +
-          "(按文件+修改时间缓存,同一篇论文之后基本秒开)。关闭则改回手动勾选“附带全文摘要作为背景”。"
-      )
-      .addToggle((toggle) =>
-        toggle.setValue(this.plugin.settings.autoDocSummary).onChange(async (value) => {
-          this.plugin.settings.autoDocSummary = value;
-          await this.plugin.saveSettings();
-        })
-      );
-
-    new Setting(containerEl)
-      .setName("摘要生成用的模型")
-      .setDesc("建议选一个速度快、成本低的模型,专门用来浓缩全文(和聊天主模型可以不同)")
-      .addDropdown((dropdown) => {
-        this.plugin.settings.models.forEach((m) => dropdown.addOption(m.id, m.name));
-        dropdown.setValue(this.plugin.settings.summaryModelId || this.plugin.settings.activeModelId);
-        dropdown.onChange(async (value) => {
-          this.plugin.settings.summaryModelId = value;
-          await this.plugin.saveSettings();
-        });
+    new import_obsidian3.Setting(containerEl).setName("\u300C\u7FFB\u8BD1\u300D\u6309\u94AE\u7684\u6307\u4EE4").setDesc("\u70B9\u5F39\u7A97\u91CC\u7684\u300C\u7FFB\u8BD1\u300D\u6309\u94AE\u65F6\u76F4\u63A5\u53D1\u9001\u7684\u56FA\u5B9A\u6307\u4EE4,\u4E0D\u9700\u8981\u5728\u8F93\u5165\u6846\u91CC\u6253\u5B57\u3002\u9009\u4E2D\u7684\u539F\u6587\u7247\u6BB5\u5DF2\u7ECF\u5728\u7CFB\u7EDF\u63D0\u793A\u8BCD\u91CC,\u8FD9\u91CC\u53EA\u9700\u8981\u63CF\u8FF0\u7FFB\u8BD1\u8981\u6C42\u3002").addTextArea((text) => {
+      text.inputEl.rows = 4;
+      text.setValue(this.plugin.settings.translatePrompt).onChange(async (value) => {
+        this.plugin.settings.translatePrompt = value;
+        await this.plugin.saveSettings();
       });
-
-    new Setting(containerEl)
-      .setName("全文截断字符数上限")
-      .setDesc("超过这个长度的全文会先截断再送去生成摘要,避免超出模型上下文窗口(这个是输入侧限制,不影响输出摘要的长短)")
-      .addText((text) =>
-        text.setValue(String(this.plugin.settings.summaryMaxChars)).onChange(async (value) => {
-          const n = parseInt(value, 10);
-          this.plugin.settings.summaryMaxChars = Number.isFinite(n) ? n : DEFAULT_SETTINGS.summaryMaxChars;
-          await this.plugin.saveSettings();
-        })
-      );
-
-    new Setting(containerEl)
-      .setName("摘要最大输出 token 数")
-      .setDesc("单独限制摘要本身的输出长度,不和下面聊天的 Max Tokens 共用,避免摘要写得又长又碎")
-      .addText((text) =>
-        text.setValue(String(this.plugin.settings.summaryMaxTokens)).onChange(async (value) => {
-          const n = parseInt(value, 10);
-          this.plugin.settings.summaryMaxTokens = Number.isFinite(n) ? n : DEFAULT_SETTINGS.summaryMaxTokens;
-          await this.plugin.saveSettings();
-        })
-      );
-
-    new Setting(containerEl).setName("摘要生成提示词").addTextArea((text) => {
+    });
+    containerEl.createEl("p", {
+      text: "\u9ED8\u8BA4\u5FEB\u6377\u952E: Ctrl+Alt+Q \u65B0\u5F00\u4E00\u4EFD\u5BF9\u8BDD(\u4E0D\u52A0\u8F7D\u4E4B\u524D\u4FDD\u5B58\u7684\u8BB0\u5F55);Ctrl+Q \u7EE7\u7EED\u4E0A\u6B21\u5BF9\u8BDD(\u6062\u590D\u4E4B\u524D\u4FDD\u5B58\u7684\u8BB0\u5F55)\u3002\u4E24\u4E2A\u547D\u4EE4\u90FD\u53EF\u4EE5\u5728 \u8BBE\u7F6E\u2192\u5FEB\u6377\u952E\u2192\u641C\u7D22 \u201CPDF Chat\u201D \u91CC\u81EA\u884C\u4FEE\u6539\u3002\u4F7F\u7528\u65B9\u6CD5: \u5728 PDF \u6216\u4EFB\u610F\u7B14\u8BB0\u91CC\u9009\u4E2D\u4E00\u6BB5\u6587\u5B57,\u6309\u5FEB\u6377\u952E\u5373\u53EF\u5F39\u7A97\u63D0\u95EE,\u5F39\u7A97\u5185\u53EF\u8FDE\u7EED\u8FFD\u95EE,\u652F\u6301\u6D41\u5F0F\u56DE\u7B54\u3001\u505C\u6B62\u751F\u6210\u3001\u62D6\u52A8\u6807\u9898\u680F\u79FB\u52A8\u4F4D\u7F6E\u3001\u62D6\u62FD\u53F3\u4E0B\u89D2\u8C03\u6574\u5927\u5C0F\u3002",
+      cls: "setting-item-description"
+    });
+    containerEl.createEl("h3", { text: "\u5168\u6587\u6458\u8981(\u6D53\u7F29\u4E0A\u4E0B\u6587)" });
+    containerEl.createEl("p", {
+      text: "\u5728 PDF \u91CC\u5212\u8BCD\u5524\u8D77\u5F39\u7A97\u540E,\u53EF\u4EE5\u52FE\u9009\u201C\u9644\u5E26\u5168\u6587\u6458\u8981\u4F5C\u4E3A\u80CC\u666F\u201D:\u4F1A\u5148\u7528\u4E0B\u9762\u9009\u7684\u6A21\u578B\u628A\u5F53\u524D PDF \u5168\u6587\u6D53\u7F29\u6210\u4E00\u4EFD\u6458\u8981(\u6309\u6587\u4EF6\u8DEF\u5F84+\u4FEE\u6539\u65F6\u95F4\u7F13\u5B58,\u6587\u4EF6\u4E0D\u53D8\u5C31\u4E0D\u7528\u91CD\u65B0\u751F\u6210),\u518D\u8FDE\u540C\u4F60\u9009\u4E2D\u7684\u90A3\u6BB5\u539F\u6587\u4E00\u8D77\u53D1\u7ED9\u4E3B\u6A21\u578B\u56DE\u7B54\u95EE\u9898,\u65E2\u6709\u5168\u5C40\u80CC\u666F,\u53C8\u4E0D\u4F1A\u56E0\u4E3A\u76F4\u63A5\u628A\u6574\u7BC7\u8BBA\u6587\u585E\u8FDB\u4E0A\u4E0B\u6587\u800C\u8BA9\u56DE\u7B54\u8DD1\u9898\u6216\u8D85\u957F\u3002\u4EC5\u5BF9 PDF \u89C6\u56FE\u91CC\u7684\u5212\u8BCD\u751F\u6548\u3002",
+      cls: "setting-item-description"
+    });
+    new import_obsidian3.Setting(containerEl).setName("\u6253\u5F00 PDF \u5212\u8BCD\u5F39\u7A97\u65F6\u81EA\u52A8\u9644\u5E26\u5168\u6587\u6458\u8981").setDesc(
+      "\u5F00\u542F\u540E\u4E0D\u9700\u8981\u6BCF\u6B21\u624B\u52A8\u52FE\u9009/\u70B9\u51FB:\u5DF2\u7F13\u5B58\u8FC7\u6458\u8981\u7684\u8BBA\u6587\u76F4\u63A5\u81EA\u52A8\u9644\u5E26,\u6CA1\u7F13\u5B58\u8FC7\u7684\u4F1A\u81EA\u52A8\u751F\u6210\u4E00\u6B21(\u6309\u6587\u4EF6+\u4FEE\u6539\u65F6\u95F4\u7F13\u5B58,\u540C\u4E00\u7BC7\u8BBA\u6587\u4E4B\u540E\u57FA\u672C\u79D2\u5F00)\u3002\u5173\u95ED\u5219\u6539\u56DE\u624B\u52A8\u52FE\u9009\u201C\u9644\u5E26\u5168\u6587\u6458\u8981\u4F5C\u4E3A\u80CC\u666F\u201D\u3002"
+    ).addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.autoDocSummary).onChange(async (value) => {
+        this.plugin.settings.autoDocSummary = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian3.Setting(containerEl).setName("\u6458\u8981\u751F\u6210\u7528\u7684\u6A21\u578B").setDesc("\u5EFA\u8BAE\u9009\u4E00\u4E2A\u901F\u5EA6\u5FEB\u3001\u6210\u672C\u4F4E\u7684\u6A21\u578B,\u4E13\u95E8\u7528\u6765\u6D53\u7F29\u5168\u6587(\u548C\u804A\u5929\u4E3B\u6A21\u578B\u53EF\u4EE5\u4E0D\u540C)").addDropdown((dropdown) => {
+      this.plugin.settings.models.forEach((m) => dropdown.addOption(m.id, m.name));
+      dropdown.setValue(this.plugin.settings.summaryModelId || this.plugin.settings.activeModelId);
+      dropdown.onChange(async (value) => {
+        this.plugin.settings.summaryModelId = value;
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian3.Setting(containerEl).setName("\u5168\u6587\u622A\u65AD\u5B57\u7B26\u6570\u4E0A\u9650").setDesc("\u8D85\u8FC7\u8FD9\u4E2A\u957F\u5EA6\u7684\u5168\u6587\u4F1A\u5148\u622A\u65AD\u518D\u9001\u53BB\u751F\u6210\u6458\u8981,\u907F\u514D\u8D85\u51FA\u6A21\u578B\u4E0A\u4E0B\u6587\u7A97\u53E3(\u8FD9\u4E2A\u662F\u8F93\u5165\u4FA7\u9650\u5236,\u4E0D\u5F71\u54CD\u8F93\u51FA\u6458\u8981\u7684\u957F\u77ED)").addText(
+      (text) => text.setValue(String(this.plugin.settings.summaryMaxChars)).onChange(async (value) => {
+        const n = parseInt(value, 10);
+        this.plugin.settings.summaryMaxChars = Number.isFinite(n) ? n : DEFAULT_SETTINGS.summaryMaxChars;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian3.Setting(containerEl).setName("\u6458\u8981\u6700\u5927\u8F93\u51FA token \u6570").setDesc("\u5355\u72EC\u9650\u5236\u6458\u8981\u672C\u8EAB\u7684\u8F93\u51FA\u957F\u5EA6,\u4E0D\u548C\u4E0B\u9762\u804A\u5929\u7684 Max Tokens \u5171\u7528,\u907F\u514D\u6458\u8981\u5199\u5F97\u53C8\u957F\u53C8\u788E").addText(
+      (text) => text.setValue(String(this.plugin.settings.summaryMaxTokens)).onChange(async (value) => {
+        const n = parseInt(value, 10);
+        this.plugin.settings.summaryMaxTokens = Number.isFinite(n) ? n : DEFAULT_SETTINGS.summaryMaxTokens;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian3.Setting(containerEl).setName("\u6458\u8981\u751F\u6210\u63D0\u793A\u8BCD").addTextArea((text) => {
       text.inputEl.rows = 5;
       text.inputEl.style.width = "100%";
       text.setValue(this.plugin.settings.summaryPrompt).onChange(async (value) => {
@@ -1296,76 +1458,48 @@ class PDFChatSettingTab extends PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-
-    new Setting(containerEl)
-      .setName("清空已缓存的全文摘要")
-      .setDesc(`当前已缓存 ${Object.keys(this.plugin.settings.docSummaries || {}).length} 篇文档的摘要`)
-      .addButton((btn) =>
-        btn.setButtonText("清空缓存").onClick(async () => {
-          this.plugin.settings.docSummaries = {};
-          await this.plugin.saveSettings();
-          this.display();
-        })
-      );
-
-    containerEl.createEl("h3", { text: "RAG 检索(关键词/BM25,无需 embedding 模型)" });
+    new import_obsidian3.Setting(containerEl).setName("\u6E05\u7A7A\u5DF2\u7F13\u5B58\u7684\u5168\u6587\u6458\u8981").setDesc(`\u5F53\u524D\u5DF2\u7F13\u5B58 ${Object.keys(this.plugin.settings.docSummaries || {}).length} \u7BC7\u6587\u6863\u7684\u6458\u8981`).addButton(
+      (btn) => btn.setButtonText("\u6E05\u7A7A\u7F13\u5B58").onClick(async () => {
+        this.plugin.settings.docSummaries = {};
+        await this.plugin.saveSettings();
+        this.display();
+      })
+    );
+    containerEl.createEl("h3", { text: "RAG \u68C0\u7D22(\u5173\u952E\u8BCD/BM25,\u65E0\u9700 embedding \u6A21\u578B)" });
     containerEl.createEl("p", {
-      text:
-        "跟上面的“全文摘要”是互补关系:摘要给一份全局背景,这里则是针对你当前问的具体问题," +
-        "在全文里定位相关内容塞进上下文,更适合“论文里具体某个数字/术语/方法是什么”这类细节问题。" +
-        "纯本地计算,不需要任何 embedding 模型或额外接口。仅对 PDF 视图里的划词生效。",
-      cls: "setting-item-description",
+      text: "\u8DDF\u4E0A\u9762\u7684\u201C\u5168\u6587\u6458\u8981\u201D\u662F\u4E92\u8865\u5173\u7CFB:\u6458\u8981\u7ED9\u4E00\u4EFD\u5168\u5C40\u80CC\u666F,\u8FD9\u91CC\u5219\u662F\u9488\u5BF9\u4F60\u5F53\u524D\u95EE\u7684\u5177\u4F53\u95EE\u9898,\u5728\u5168\u6587\u91CC\u5B9A\u4F4D\u76F8\u5173\u5185\u5BB9\u585E\u8FDB\u4E0A\u4E0B\u6587,\u66F4\u9002\u5408\u201C\u8BBA\u6587\u91CC\u5177\u4F53\u67D0\u4E2A\u6570\u5B57/\u672F\u8BED/\u65B9\u6CD5\u662F\u4EC0\u4E48\u201D\u8FD9\u7C7B\u7EC6\u8282\u95EE\u9898\u3002\u7EAF\u672C\u5730\u8BA1\u7B97,\u4E0D\u9700\u8981\u4EFB\u4F55 embedding \u6A21\u578B\u6216\u989D\u5916\u63A5\u53E3\u3002\u4EC5\u5BF9 PDF \u89C6\u56FE\u91CC\u7684\u5212\u8BCD\u751F\u6548\u3002",
+      cls: "setting-item-description"
     });
     containerEl.createEl("p", {
-      text:
-        "实测发现关键词(BM25)检索对“列举类”问题(比如“论文对比了哪些基线算法”)经常检索不准——" +
-        "真正答案段落里全是专有名词,反而会被论文里其他大量提到相同通用词(相关工作、附录补充实验等)的段落挤掉。" +
-        "而大部分单篇论文全文本身不长,直接读全文远比“猜哪一块”更可靠。所以下面设了一个字数阈值:" +
-        "全文长度在阈值以内时直接把全文交给模型回答;只有超过阈值(全文塞不下)才退回关键词检索。",
-      cls: "setting-item-description",
+      text: "\u5B9E\u6D4B\u53D1\u73B0\u5173\u952E\u8BCD(BM25)\u68C0\u7D22\u5BF9\u201C\u5217\u4E3E\u7C7B\u201D\u95EE\u9898(\u6BD4\u5982\u201C\u8BBA\u6587\u5BF9\u6BD4\u4E86\u54EA\u4E9B\u57FA\u7EBF\u7B97\u6CD5\u201D)\u7ECF\u5E38\u68C0\u7D22\u4E0D\u51C6\u2014\u2014\u771F\u6B63\u7B54\u6848\u6BB5\u843D\u91CC\u5168\u662F\u4E13\u6709\u540D\u8BCD,\u53CD\u800C\u4F1A\u88AB\u8BBA\u6587\u91CC\u5176\u4ED6\u5927\u91CF\u63D0\u5230\u76F8\u540C\u901A\u7528\u8BCD(\u76F8\u5173\u5DE5\u4F5C\u3001\u9644\u5F55\u8865\u5145\u5B9E\u9A8C\u7B49)\u7684\u6BB5\u843D\u6324\u6389\u3002\u800C\u5927\u90E8\u5206\u5355\u7BC7\u8BBA\u6587\u5168\u6587\u672C\u8EAB\u4E0D\u957F,\u76F4\u63A5\u8BFB\u5168\u6587\u8FDC\u6BD4\u201C\u731C\u54EA\u4E00\u5757\u201D\u66F4\u53EF\u9760\u3002\u6240\u4EE5\u4E0B\u9762\u8BBE\u4E86\u4E00\u4E2A\u5B57\u6570\u9608\u503C:\u5168\u6587\u957F\u5EA6\u5728\u9608\u503C\u4EE5\u5185\u65F6\u76F4\u63A5\u628A\u5168\u6587\u4EA4\u7ED9\u6A21\u578B\u56DE\u7B54;\u53EA\u6709\u8D85\u8FC7\u9608\u503C(\u5168\u6587\u585E\u4E0D\u4E0B)\u624D\u9000\u56DE\u5173\u952E\u8BCD\u68C0\u7D22\u3002",
+      cls: "setting-item-description"
     });
-
-    new Setting(containerEl)
-      .setName("全文直读的字数阈值")
-      .setDesc("全文字符数不超过这个值时,直接把全文交给模型回答(更准);超过时才退回下面的关键词检索")
-      .addText((text) =>
-        text.setValue(String(this.plugin.settings.ragFullTextThreshold)).onChange(async (value) => {
-          const n = parseInt(value, 10);
-          this.plugin.settings.ragFullTextThreshold = Number.isFinite(n) ? n : DEFAULT_SETTINGS.ragFullTextThreshold;
-          await this.plugin.saveSettings();
-        })
-      );
-
-    new Setting(containerEl)
-      .setName("打开 PDF 划词弹窗时自动建立检索索引")
-      .setDesc("开启后不需要手动勾选/点击“建立索引”,纯本地计算,几乎不耗时间")
-      .addToggle((toggle) =>
-        toggle.setValue(this.plugin.settings.autoRag).onChange(async (value) => {
-          this.plugin.settings.autoRag = value;
-          await this.plugin.saveSettings();
-        })
-      );
-
+    new import_obsidian3.Setting(containerEl).setName("\u5168\u6587\u76F4\u8BFB\u7684\u5B57\u6570\u9608\u503C").setDesc("\u5168\u6587\u5B57\u7B26\u6570\u4E0D\u8D85\u8FC7\u8FD9\u4E2A\u503C\u65F6,\u76F4\u63A5\u628A\u5168\u6587\u4EA4\u7ED9\u6A21\u578B\u56DE\u7B54(\u66F4\u51C6);\u8D85\u8FC7\u65F6\u624D\u9000\u56DE\u4E0B\u9762\u7684\u5173\u952E\u8BCD\u68C0\u7D22").addText(
+      (text) => text.setValue(String(this.plugin.settings.ragFullTextThreshold)).onChange(async (value) => {
+        const n = parseInt(value, 10);
+        this.plugin.settings.ragFullTextThreshold = Number.isFinite(n) ? n : DEFAULT_SETTINGS.ragFullTextThreshold;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian3.Setting(containerEl).setName("\u6253\u5F00 PDF \u5212\u8BCD\u5F39\u7A97\u65F6\u81EA\u52A8\u5EFA\u7ACB\u68C0\u7D22\u7D22\u5F15").setDesc("\u5F00\u542F\u540E\u4E0D\u9700\u8981\u624B\u52A8\u52FE\u9009/\u70B9\u51FB\u201C\u5EFA\u7ACB\u7D22\u5F15\u201D,\u7EAF\u672C\u5730\u8BA1\u7B97,\u51E0\u4E4E\u4E0D\u8017\u65F6\u95F4").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.autoRag).onChange(async (value) => {
+        this.plugin.settings.autoRag = value;
+        await this.plugin.saveSettings();
+      })
+    );
     containerEl.createEl("p", {
-      text: "以下几项只在全文超过上面阈值、退回关键词检索时才会用到:",
-      cls: "setting-item-description",
+      text: "\u4EE5\u4E0B\u51E0\u9879\u53EA\u5728\u5168\u6587\u8D85\u8FC7\u4E0A\u9762\u9608\u503C\u3001\u9000\u56DE\u5173\u952E\u8BCD\u68C0\u7D22\u65F6\u624D\u4F1A\u7528\u5230:",
+      cls: "setting-item-description"
     });
-
-    new Setting(containerEl)
-      .setName("提问前先让快模型思考检索角度")
-      .setDesc(
-        "BM25 是纯字符匹配,中文问题和英文论文原文之间没有共同字符,直接检索基本会落空。开启后每次提问会先用" +
-          "“摘要生成用的模型”思考这个问题该从哪几个角度/说法去检索(不只是逐字翻译),生成 3 组中英双语检索词," +
-          "分别检索后再融合排序,取最终最相关的几块——比单一检索词覆盖更全,代价是每次提问多一次模型调用(通常一两秒)。"
-      )
-      .addToggle((toggle) =>
-        toggle.setValue(this.plugin.settings.ragQueryTranslate).onChange(async (value) => {
-          this.plugin.settings.ragQueryTranslate = value;
-          await this.plugin.saveSettings();
-        })
-      );
-
-    new Setting(containerEl).setName("检索角度规划提示词").addTextArea((text) => {
+    new import_obsidian3.Setting(containerEl).setName("\u63D0\u95EE\u524D\u5148\u8BA9\u5FEB\u6A21\u578B\u601D\u8003\u68C0\u7D22\u89D2\u5EA6").setDesc(
+      "BM25 \u662F\u7EAF\u5B57\u7B26\u5339\u914D,\u4E2D\u6587\u95EE\u9898\u548C\u82F1\u6587\u8BBA\u6587\u539F\u6587\u4E4B\u95F4\u6CA1\u6709\u5171\u540C\u5B57\u7B26,\u76F4\u63A5\u68C0\u7D22\u57FA\u672C\u4F1A\u843D\u7A7A\u3002\u5F00\u542F\u540E\u6BCF\u6B21\u63D0\u95EE\u4F1A\u5148\u7528\u201C\u6458\u8981\u751F\u6210\u7528\u7684\u6A21\u578B\u201D\u601D\u8003\u8FD9\u4E2A\u95EE\u9898\u8BE5\u4ECE\u54EA\u51E0\u4E2A\u89D2\u5EA6/\u8BF4\u6CD5\u53BB\u68C0\u7D22(\u4E0D\u53EA\u662F\u9010\u5B57\u7FFB\u8BD1),\u751F\u6210 3 \u7EC4\u4E2D\u82F1\u53CC\u8BED\u68C0\u7D22\u8BCD,\u5206\u522B\u68C0\u7D22\u540E\u518D\u878D\u5408\u6392\u5E8F,\u53D6\u6700\u7EC8\u6700\u76F8\u5173\u7684\u51E0\u5757\u2014\u2014\u6BD4\u5355\u4E00\u68C0\u7D22\u8BCD\u8986\u76D6\u66F4\u5168,\u4EE3\u4EF7\u662F\u6BCF\u6B21\u63D0\u95EE\u591A\u4E00\u6B21\u6A21\u578B\u8C03\u7528(\u901A\u5E38\u4E00\u4E24\u79D2)\u3002"
+    ).addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.ragQueryTranslate).onChange(async (value) => {
+        this.plugin.settings.ragQueryTranslate = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian3.Setting(containerEl).setName("\u68C0\u7D22\u89D2\u5EA6\u89C4\u5212\u63D0\u793A\u8BCD").addTextArea((text) => {
       text.inputEl.rows = 5;
       text.inputEl.style.width = "100%";
       text.setValue(this.plugin.settings.ragQueryPrompt).onChange(async (value) => {
@@ -1373,128 +1507,130 @@ class PDFChatSettingTab extends PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-
-    new Setting(containerEl)
-      .setName("每次检索返回的片段数(Top K)")
-      .addText((text) =>
-        text.setValue(String(this.plugin.settings.ragTopK)).onChange(async (value) => {
-          const n = parseInt(value, 10);
-          this.plugin.settings.ragTopK = Number.isFinite(n) ? n : DEFAULT_SETTINGS.ragTopK;
+    new import_obsidian3.Setting(containerEl).setName("\u6BCF\u6B21\u68C0\u7D22\u8FD4\u56DE\u7684\u7247\u6BB5\u6570(Top K)").addText(
+      (text) => text.setValue(String(this.plugin.settings.ragTopK)).onChange(async (value) => {
+        const n = parseInt(value, 10);
+        this.plugin.settings.ragTopK = Number.isFinite(n) ? n : DEFAULT_SETTINGS.ragTopK;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian3.Setting(containerEl).setName("\u5355\u5757\u6700\u5927\u5B57\u7B26\u6570").setDesc("\u5168\u6587\u6309\u9875\u5207\u5757,\u8D85\u8FC7\u8FD9\u4E2A\u957F\u5EA6\u7684\u9875\u4F1A\u5728\u9875\u5185\u518D\u5207\u5F00(\u5E26\u4E00\u70B9\u91CD\u53E0),\u4E0D\u4F1A\u8DE8\u9875\u5408\u5E76").addText(
+      (text) => text.setValue(String(this.plugin.settings.ragChunkSize)).onChange(async (value) => {
+        const n = parseInt(value, 10);
+        this.plugin.settings.ragChunkSize = Number.isFinite(n) ? n : DEFAULT_SETTINGS.ragChunkSize;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian3.Setting(containerEl).setName("\u5207\u5757\u91CD\u53E0\u5B57\u7B26\u6570").addText(
+      (text) => text.setValue(String(this.plugin.settings.ragChunkOverlap)).onChange(async (value) => {
+        const n = parseInt(value, 10);
+        this.plugin.settings.ragChunkOverlap = Number.isFinite(n) ? n : DEFAULT_SETTINGS.ragChunkOverlap;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian3.Setting(containerEl).setName("\u6E05\u7A7A\u5DF2\u7F13\u5B58\u7684\u68C0\u7D22\u7D22\u5F15").setDesc(`\u5F53\u524D\u5DF2\u4E3A ${Object.keys(this.plugin.settings.docChunks || {}).length} \u7BC7\u6587\u6863\u5EFA\u7ACB\u8FC7\u7D22\u5F15`).addButton(
+      (btn) => btn.setButtonText("\u6E05\u7A7A\u7F13\u5B58").onClick(async () => {
+        this.plugin.settings.docChunks = {};
+        await this.plugin.saveSettings();
+        this.display();
+      })
+    );
+    containerEl.createEl("h3", { text: "\u9605\u8BFB\u6A21\u5F0F\u9884\u8BBE" });
+    containerEl.createEl("p", {
+      text: "\u5F39\u7A97\u91CC\u7684\u201C\u9605\u8BFB\u6A21\u5F0F\u201D\u4E0B\u62C9\u6846\u4F1A\u5217\u51FA\u4E0B\u9762\u8FD9\u4E9B\u9884\u8BBE,\u5207\u6362\u540E\u4F1A\u66FF\u6362\u5F53\u524D\u5BF9\u8BDD\u7684\u7CFB\u7EDF\u63D0\u793A\u8BCD(\u539F\u6587\u7247\u6BB5\u4F9D\u7136\u4F1A\u81EA\u52A8\u9644\u52A0\u5728\u540E\u9762)\u3002",
+      cls: "setting-item-description"
+    });
+    this.plugin.settings.promptPresets.forEach((preset, idx) => {
+      const nameSetting = new import_obsidian3.Setting(containerEl).setName(`\u9884\u8BBE ${idx + 1}`);
+      nameSetting.addText(
+        (text) => text.setPlaceholder("\u540D\u79F0").setValue(preset.name).onChange(async (value) => {
+          preset.name = value;
           await this.plugin.saveSettings();
         })
       );
-
-    new Setting(containerEl)
-      .setName("单块最大字符数")
-      .setDesc("全文按页切块,超过这个长度的页会在页内再切开(带一点重叠),不会跨页合并")
-      .addText((text) =>
-        text.setValue(String(this.plugin.settings.ragChunkSize)).onChange(async (value) => {
-          const n = parseInt(value, 10);
-          this.plugin.settings.ragChunkSize = Number.isFinite(n) ? n : DEFAULT_SETTINGS.ragChunkSize;
-          await this.plugin.saveSettings();
-        })
-      );
-
-    new Setting(containerEl)
-      .setName("切块重叠字符数")
-      .addText((text) =>
-        text.setValue(String(this.plugin.settings.ragChunkOverlap)).onChange(async (value) => {
-          const n = parseInt(value, 10);
-          this.plugin.settings.ragChunkOverlap = Number.isFinite(n) ? n : DEFAULT_SETTINGS.ragChunkOverlap;
-          await this.plugin.saveSettings();
-        })
-      );
-
-    new Setting(containerEl)
-      .setName("清空已缓存的检索索引")
-      .setDesc(`当前已为 ${Object.keys(this.plugin.settings.docChunks || {}).length} 篇文档建立过索引`)
-      .addButton((btn) =>
-        btn.setButtonText("清空缓存").onClick(async () => {
-          this.plugin.settings.docChunks = {};
+      nameSetting.addExtraButton(
+        (btn) => btn.setIcon("trash").setTooltip("\u5220\u9664\u8FD9\u4E2A\u9884\u8BBE").onClick(async () => {
+          this.plugin.settings.promptPresets.splice(idx, 1);
           await this.plugin.saveSettings();
           this.display();
         })
       );
-
-    containerEl.createEl("h3", { text: "阅读模式预设" });
-    containerEl.createEl("p", {
-      text: "弹窗里的“阅读模式”下拉框会列出下面这些预设,切换后会替换当前对话的系统提示词(原文片段依然会自动附加在后面)。",
-      cls: "setting-item-description",
-    });
-
-    this.plugin.settings.promptPresets.forEach((preset, idx) => {
-      const nameSetting = new Setting(containerEl).setName(`预设 ${idx + 1}`);
-      nameSetting.addText((text) =>
-        text
-          .setPlaceholder("名称")
-          .setValue(preset.name)
-          .onChange(async (value) => {
-            preset.name = value;
-            await this.plugin.saveSettings();
-          })
-      );
-      nameSetting.addExtraButton((btn) =>
-        btn
-          .setIcon("trash")
-          .setTooltip("删除这个预设")
-          .onClick(async () => {
-            this.plugin.settings.promptPresets.splice(idx, 1);
-            await this.plugin.saveSettings();
-            this.display();
-          })
-      );
-
-      new Setting(containerEl).addTextArea((text) => {
+      new import_obsidian3.Setting(containerEl).addTextArea((text) => {
         text.inputEl.rows = 4;
         text.inputEl.style.width = "100%";
-        text
-          .setPlaceholder("这套模式的系统提示词/指令")
-          .setValue(preset.prompt)
-          .onChange(async (value) => {
-            preset.prompt = value;
-            await this.plugin.saveSettings();
-          });
+        text.setPlaceholder("\u8FD9\u5957\u6A21\u5F0F\u7684\u7CFB\u7EDF\u63D0\u793A\u8BCD/\u6307\u4EE4").setValue(preset.prompt).onChange(async (value) => {
+          preset.prompt = value;
+          await this.plugin.saveSettings();
+        });
       });
     });
-
-    new Setting(containerEl).addButton((btn) =>
-      btn
-        .setButtonText("+ 添加预设")
-        .setCta()
-        .onClick(async () => {
-          this.plugin.settings.promptPresets.push({
-            id: "preset-" + Date.now(),
-            name: "新预设",
-            prompt: "",
-          });
-          await this.plugin.saveSettings();
-          this.display();
-        })
+    new import_obsidian3.Setting(containerEl).addButton(
+      (btn) => btn.setButtonText("+ \u6DFB\u52A0\u9884\u8BBE").setCta().onClick(async () => {
+        this.plugin.settings.promptPresets.push({
+          id: "preset-" + Date.now(),
+          name: "\u65B0\u9884\u8BBE",
+          prompt: ""
+        });
+        await this.plugin.saveSettings();
+        this.display();
+      })
     );
   }
-}
+};
 
-module.exports = class PDFChatPlugin extends Plugin {
+// src/main.ts
+var PDFChatPlugin = class extends import_obsidian4.Plugin {
   async onload() {
     this._saveQueue = Promise.resolve();
     await this.loadSettings();
+    this.conversationStore = new ConversationStore(
+      () => this.settings,
+      () => this.saveSettings()
+    );
+    this.llmTransport = new OpenAICompatibleTransport(
+      () => this.settings,
+      (id) => this.getModelProfile(id)
+    );
+    this.paperContextService = new PaperContextService(
+      this.app,
+      () => this.settings,
+      () => this.saveSettings(),
+      this.llmTransport,
+      (id) => this.getModelProfile(id)
+    );
+    this.actionRegistry = createCompatibilityActionRegistry(DEFAULT_SETTINGS.translatePrompt);
+    this.modalServices = createPDFChatModalServices(this, {
+      conversations: {
+        getKey: (file, selectedText) => getConversationKey(file, selectedText),
+        get: (key) => this.conversationStore.get(key),
+        save: (key, messages) => this.conversationStore.save(key, messages),
+        clear: (key) => this.conversationStore.clear(key)
+      },
+      papers: {
+        getOrCreateDocSummary: (file, forceRefresh) => this.paperContextService.getOrCreateDocSummary(file, forceRefresh),
+        getOrCreateDocChunks: (file, forceRefresh) => this.paperContextService.getOrCreateDocChunks(file, forceRefresh),
+        extractFullText: (file) => this.paperContextService.extractFullText(file),
+        planRagQueries: (question) => this.paperContextService.planRagQueries(question),
+        retrieveContext: (chunks, queries, topK) => this.paperContextService.retrieveContext(chunks, queries, topK)
+      },
+      llm: { chat: (request) => this.llmTransport.chat(request) },
+      models: { get: (id) => this.getModelProfile(id) },
+      actions: this.actionRegistry
+    });
     this.addSettingTab(new PDFChatSettingTab(this.app, this));
-
     this.addCommand({
       id: "ask-about-selection",
-      name: "针对选中内容提问,新开对话 (PDF Chat)",
+      name: "\u9488\u5BF9\u9009\u4E2D\u5185\u5BB9\u63D0\u95EE,\u65B0\u5F00\u5BF9\u8BDD (PDF Chat)",
       hotkeys: [{ modifiers: ["Mod", "Alt"], key: "Q" }],
-      callback: () => this.openChatModal(true),
+      callback: () => this.openChatModal(true)
     });
-
     this.addCommand({
       id: "continue-conversation",
-      name: "针对选中内容提问,继续上次对话 (PDF Chat)",
+      name: "\u9488\u5BF9\u9009\u4E2D\u5185\u5BB9\u63D0\u95EE,\u7EE7\u7EED\u4E0A\u6B21\u5BF9\u8BDD (PDF Chat)",
       hotkeys: [{ modifiers: ["Mod"], key: "Q" }],
-      callback: () => this.openChatModal(false),
+      callback: () => this.openChatModal(false)
     });
   }
-
   // startFresh=true: 新开一份对话,不加载这个 PDF(或选区)之前保存的记录;
   // startFresh=false: 加载并接续之前保存的记录(如果有)。两个快捷键共用同一段取选中文字的逻辑。
   openChatModal(startFresh) {
@@ -1502,371 +1638,81 @@ module.exports = class PDFChatPlugin extends Plugin {
     const sel = win.getSelection ? win.getSelection() : null;
     const raw = sel ? sel.toString() : "";
     const text = cleanSelectionText(raw || "");
-
     if (!text) {
-      new Notice("没有检测到选中的文字,请先划选一段内容再按快捷键");
+      new import_obsidian4.Notice("\u6CA1\u6709\u68C0\u6D4B\u5230\u9009\u4E2D\u7684\u6587\u5B57,\u8BF7\u5148\u5212\u9009\u4E00\u6BB5\u5185\u5BB9\u518D\u6309\u5FEB\u6377\u952E");
       return;
     }
-
     const pdfFile = getActivePdfFile(this.app);
-    new PDFChatModal(this.app, this, text, pdfFile, startFresh).open();
-  }
-
-  async loadSettings() {
-    const saved = await this.loadData();
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, saved);
-    // 数组字段要显式深拷贝,否则在没有存档时会直接引用 DEFAULT_SETTINGS 里的数组,
-    // 后续在设置里增删会连带改到默认值上。
-    this.settings.models =
-      saved && Array.isArray(saved.models) && saved.models.length
-        ? saved.models.map((m) => ({ ...m }))
-        : DEFAULT_SETTINGS.models.map((m) => ({ ...m }));
-    this.settings.promptPresets =
-      saved && Array.isArray(saved.promptPresets) && saved.promptPresets.length
-        ? saved.promptPresets.map((p) => ({ ...p }))
-        : DEFAULT_SETTINGS.promptPresets.map((p) => ({ ...p }));
-    this.settings.docSummaries =
-      saved && saved.docSummaries && typeof saved.docSummaries === "object"
-        ? { ...saved.docSummaries }
-        : {};
-    this.settings.docChunks =
-      saved && saved.docChunks && typeof saved.docChunks === "object" ? { ...saved.docChunks } : {};
-    this.settings.conversationHistories = normalizeConversationHistories(
-      saved && saved.conversationHistories
+    const paperContext = this.paperContextService.createContext(
+      pdfFile,
+      text,
+      getConversationKey(pdfFile, text)
     );
-    let needsSave = false;
-
-    // 迁移旧版本(单一 endpoint/apiKey/model 字段)到模型列表
-    if (saved && (saved.endpoint || saved.apiKey || saved.model) && !(saved.models && saved.models.length)) {
-      const migrated = {
-        id: "migrated-" + Date.now(),
-        name: "迁移自旧设置",
-        endpoint: saved.endpoint || DEFAULT_SETTINGS.models[0].endpoint,
-        apiKey: saved.apiKey || DEFAULT_SETTINGS.models[0].apiKey,
-        model: saved.model || DEFAULT_SETTINGS.models[0].model,
-      };
-      this.settings.models = [migrated, ...DEFAULT_SETTINGS.models.map((m) => ({ ...m }))];
-      this.settings.activeModelId = migrated.id;
-      needsSave = true;
-    }
-
-    if (!this.settings.models || !this.settings.models.length) {
-      this.settings.models = DEFAULT_SETTINGS.models.map((m) => ({ ...m }));
-      needsSave = true;
-    }
-    if (!this.settings.models.find((m) => m.id === this.settings.activeModelId)) {
-      this.settings.activeModelId = this.settings.models[0].id;
-      needsSave = true;
-    }
-
-    if (this.settings.endpoint !== undefined || this.settings.apiKey !== undefined || this.settings.model !== undefined) {
-      delete this.settings.endpoint;
-      delete this.settings.apiKey;
-      delete this.settings.model;
-      needsSave = true;
-    }
-
+    new PDFChatModal(this.app, this, paperContext, null, startFresh, this.modalServices).open();
+  }
+  async loadSettings() {
+    const { settings, needsSave } = migrateSettings(await this.loadData());
+    this.settings = settings;
     if (needsSave) await this.saveSettings();
   }
-
   async saveSettings() {
-    const previousSave = this._saveQueue || Promise.resolve();
-    const nextSave = previousSave.catch(() => {}).then(() => this.saveData(this.settings));
-    this._saveQueue = nextSave;
-    return nextSave;
+    return enqueueSettingsSave(this);
   }
-
   getConversationKey(pdfFile, contextText) {
-    if (pdfFile && typeof pdfFile.path === "string" && pdfFile.path) {
-      return `pdf:${pdfFile.path}`;
-    }
-    const normalizedSelection = cleanSelectionText(contextText || "");
-    return `selection:${stableConversationHash(normalizedSelection)}`;
+    return getConversationKey(pdfFile, contextText);
   }
-
   getConversation(key) {
+    if (this.conversationStore) return this.conversationStore.get(key);
     const histories = this.settings.conversationHistories || {};
     const entry = histories[key];
     return entry ? normalizeConversationMessages(entry.messages) : [];
   }
-
   async saveConversation(key, messages) {
-    if (!this.settings.conversationHistories || typeof this.settings.conversationHistories !== "object") {
-      this.settings.conversationHistories = {};
-    }
-    const normalizedMessages = normalizeConversationMessages(messages);
-    if (!normalizedMessages.length) {
-      delete this.settings.conversationHistories[key];
-    } else {
-      this.settings.conversationHistories[key] = {
-        version: 1,
-        updatedAt: Date.now(),
-        messages: normalizedMessages,
-      };
-    }
-    await this.saveSettings();
+    if (this.conversationStore) return this.conversationStore.save(key, messages);
+    const fallbackStore = new ConversationStore(
+      () => this.settings,
+      () => this.saveSettings()
+    );
+    return fallbackStore.save(key, messages);
   }
-
   async clearConversation(key) {
-    if (this.settings.conversationHistories && this.settings.conversationHistories[key]) {
-      delete this.settings.conversationHistories[key];
-    }
-    await this.saveSettings();
+    if (this.conversationStore) return this.conversationStore.clear(key);
+    const fallbackStore = new ConversationStore(
+      () => this.settings,
+      () => this.saveSettings()
+    );
+    return fallbackStore.clear(key);
   }
-
   getModelProfile(id) {
     return this.settings.models.find((m) => m.id === id) || this.settings.models[0];
   }
-
-  /**
-   * 提取 PDF 全文,用(通常更快/更便宜的)摘要模型浓缩成一份背景摘要。
-   * 不写缓存,纯粹生成,调用方(getOrCreateDocSummary)负责缓存。
-   */
   async generateDocSummary(file) {
-    const fullText = await extractPdfFullText(this.app, file);
-    const maxChars = this.settings.summaryMaxChars || DEFAULT_SETTINGS.summaryMaxChars;
-    let textForSummary = fullText;
-    let truncated = false;
-    if (textForSummary.length > maxChars) {
-      textForSummary = textForSummary.slice(0, maxChars);
-      truncated = true;
-    }
-
-    const profile =
-      this.getModelProfile(this.settings.summaryModelId) || this.getModelProfile(this.settings.activeModelId);
-    const systemPrompt =
-      this.settings.summaryPrompt + (truncated ? "\n\n(注意:原文过长,以下只是截断后的前面部分)" : "");
-    const messages = [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: textForSummary || "(未能提取到文本内容)" },
-    ];
-
-    const summaryMaxTokens = this.settings.summaryMaxTokens || DEFAULT_SETTINGS.summaryMaxTokens;
-    const summary = await this.chatOnce(messages, undefined, profile, summaryMaxTokens);
-    return { summary, fullLength: fullText.length, truncated };
+    return this.paperContextService.generateDocSummary(file);
   }
-
-  /**
-   * 按文件路径 + mtime 缓存摘要;文件没变就直接复用,forceRefresh 时强制重新生成。
-   */
   async getOrCreateDocSummary(file, forceRefresh) {
-    const mtime = file.stat && file.stat.mtime;
-    const cached = this.settings.docSummaries[file.path];
-    if (!forceRefresh && cached && cached.mtime === mtime) {
-      return cached;
-    }
-
-    const { summary, fullLength, truncated } = await this.generateDocSummary(file);
-    const entry = { mtime, summary, generatedAt: Date.now(), fullLength, truncated };
-    this.settings.docSummaries[file.path] = entry;
-    await this.saveSettings();
-    return entry;
+    return this.paperContextService.getOrCreateDocSummary(file, forceRefresh);
   }
-
-  /**
-   * 提取 PDF 全文并按页切块,用于 RAG 关键词检索。纯本地计算,不调用任何模型,速度很快。
-   */
   async generateDocChunks(file) {
-    const pages = await extractPdfPages(this.app, file);
-    const chunkSize = this.settings.ragChunkSize || DEFAULT_SETTINGS.ragChunkSize;
-    const overlap = this.settings.ragChunkOverlap || DEFAULT_SETTINGS.ragChunkOverlap;
-    const chunks = chunkPdfPages(pages, chunkSize, overlap);
-    const fullTextLength = pages.reduce((s, p) => s + (p.text ? p.text.length : 0), 0);
-    return { chunks, fullTextLength };
+    return this.paperContextService.generateDocChunks(file);
   }
-
-  /**
-   * 用快模型"思考"这个问题该从哪几个角度/说法去检索,返回多组中英双语检索词变体(不是单纯翻译)。
-   * 解决两个问题:1) 中文问、英文论文导致 BM25 纯字符匹配天然检索不到;2) 单一检索词覆盖面太窄,
-   * 容易漏掉论文里用不同措辞表达同一件事的段落。
-   * 失败时返回空数组,调用方应该 fallback 到只用原始问题直接检索,不阻塞正常提问流程。
-   */
   async planRagQueries(question) {
-    const profile =
-      this.getModelProfile(this.settings.summaryModelId) || this.getModelProfile(this.settings.activeModelId);
-    const messages = [
-      { role: "system", content: this.settings.ragQueryPrompt },
-      { role: "user", content: question },
-    ];
-    const raw = await this.chatOnce(messages, undefined, profile, 300);
-    return (raw || "")
-      .split(/\r?\n/)
-      .map((line) => line.replace(/^[\s\-*•\d.、)]+/, "").trim())
-      .filter(Boolean);
+    return this.paperContextService.planRagQueries(question);
   }
-
-  /**
-   * 按文件路径 + mtime 缓存分块结果;文件没变就直接复用,forceRefresh 时强制重新切块。
-   */
   async getOrCreateDocChunks(file, forceRefresh) {
-    const mtime = file.stat && file.stat.mtime;
-    const cached = this.settings.docChunks[file.path];
-    if (!forceRefresh && cached && cached.mtime === mtime) {
-      // 旧版本缓存下来的块可能还没有 idx 字段(用于检索后找相邻块),补上即可,顺序就是数组顺序
-      if (cached.chunks && cached.chunks.length && typeof cached.chunks[0].idx !== "number") {
-        cached.chunks.forEach((c, i) => (c.idx = i));
-      }
-      return cached;
-    }
-
-    const { chunks, fullTextLength } = await this.generateDocChunks(file);
-    const entry = { mtime, chunks, fullTextLength, generatedAt: Date.now() };
-    this.settings.docChunks[file.path] = entry;
-    await this.saveSettings();
-    return entry;
+    return this.paperContextService.getOrCreateDocChunks(file, forceRefresh);
   }
-
-  /**
-   * Sends the full conversation (messages array) to the LLM.
-   * onChunk(piece, accumulatedText) is called for every streamed piece when streaming is enabled.
-   * Returns the full response text. Throws on error (including AbortError when aborted).
-   */
   async chat(messages, onChunk, signal, modelProfile) {
-    const profile = modelProfile || this.getModelProfile(this.settings.activeModelId);
-    if (this.settings.stream) {
-      return this.chatStream(messages, onChunk, signal, profile);
-    }
-    const text = await this.chatOnce(messages, signal, profile);
-    if (onChunk) onChunk(text, text);
-    return text;
-  }
-
-  async chatOnce(messages, signal, profile, maxTokensOverride) {
-    const body = {
-      model: profile.model,
-      temperature: this.settings.temperature,
-      max_tokens: maxTokensOverride || this.settings.maxTokens,
-      stream: false,
+    return this.llmTransport.chat({
       messages,
-    };
-
-    const res = await requestUrl({
-      url: profile.endpoint,
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${profile.apiKey}`,
-      },
-      body: JSON.stringify(body),
-      throw: false,
-    });
-
-    if (signal && signal.aborted) {
-      const abortErr = new Error("Aborted");
-      abortErr.name = "AbortError";
-      throw abortErr;
-    }
-
-    let data;
-    try {
-      data = res.json;
-    } catch (e) {
-      data = null;
-    }
-
-    if (res.status >= 300) {
-      const msg = (data && data.error && data.error.message) || res.text || `HTTP ${res.status}`;
-      throw new Error(msg);
-    }
-
-    const choice = data && data.choices && data.choices[0];
-    const content = choice && (choice.message ? choice.message.content : choice.text);
-    if (!content) {
-      throw new Error("模型没有返回内容,原始响应: " + JSON.stringify(data));
-    }
-    return content.trim();
-  }
-
-  async chatStream(messages, onChunk, signal, profile) {
-    const body = {
-      model: profile.model,
-      temperature: this.settings.temperature,
-      max_tokens: this.settings.maxTokens,
-      stream: true,
-      messages,
-    };
-
-    const resp = await fetch(profile.endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${profile.apiKey}`,
-      },
-      body: JSON.stringify(body),
+      onChunk,
       signal,
+      modelProfile
     });
-
-    if (!resp.ok) {
-      let errText = "";
-      try {
-        errText = await resp.text();
-      } catch (e) {
-        // ignore
-      }
-      let msg = errText || `HTTP ${resp.status}`;
-      try {
-        const j = JSON.parse(errText);
-        msg = (j.error && j.error.message) || msg;
-      } catch (e) {
-        // not json, keep raw text
-      }
-      throw new Error(msg);
-    }
-
-    if (!resp.body || !resp.body.getReader) {
-      const data = await resp.json();
-      const content =
-        (data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) ||
-        "";
-      if (onChunk) onChunk(content, content);
-      return content;
-    }
-
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder("utf-8");
-    let buffer = "";
-    let full = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split(/\r?\n/);
-      buffer = lines.pop() || "";
-
-      for (const rawLine of lines) {
-        const line = rawLine.trim();
-        if (!line || line.startsWith(":")) continue;
-
-        const payload = line.replace(/^data:\s*/i, "").trim();
-        if (!payload || payload === "[DONE]") continue;
-
-        let parsed;
-        try {
-          parsed = JSON.parse(payload);
-        } catch (e) {
-          continue;
-        }
-
-        if (parsed && parsed.error) {
-          throw new Error(parsed.error.message || JSON.stringify(parsed.error));
-        }
-
-        const choices = parsed && parsed.choices;
-        if (!choices || !choices.length) continue;
-
-        const delta = choices[0].delta || choices[0].message || {};
-        const piece =
-          delta.content || delta.reasoning_content || (typeof delta.text === "string" ? delta.text : "");
-
-        if (piece) {
-          full += piece;
-          if (onChunk) onChunk(piece, full);
-        }
-      }
-    }
-
-    return full;
+  }
+  async chatOnce(messages, signal, profile, maxTokensOverride) {
+    return this.llmTransport.chatOnce(messages, signal, profile, maxTokensOverride);
+  }
+  async chatStream(messages, onChunk, signal, profile) {
+    return this.llmTransport.chatStream(messages, onChunk, signal, profile);
   }
 };

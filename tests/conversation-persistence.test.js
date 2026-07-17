@@ -12,13 +12,7 @@ function plain(value) {
 
 function loadPluginModule() {
   const filename = path.join(projectRoot, "main.js");
-  const source =
-    fs.readFileSync(filename, "utf8") +
-    `\nmodule.exports.__test = {\n` +
-    `  normalizeConversationHistories:\n` +
-    `    typeof normalizeConversationHistories === "function" ? normalizeConversationHistories : undefined,\n` +
-    `  PDFChatModal: typeof PDFChatModal === "function" ? PDFChatModal : undefined,\n` +
-    `};\n`;
+  const source = fs.readFileSync(filename, "utf8");
 
   class Plugin {}
   class Modal {
@@ -57,7 +51,15 @@ function loadPluginModule() {
   sandbox.exports = sandbox.module.exports;
 
   vm.runInNewContext(source, sandbox, { filename });
-  return sandbox.module.exports;
+  const bundle = sandbox.module.exports;
+  const PluginClass = bundle.default || bundle;
+  PluginClass.__test = {
+    createCompatibilityActionRegistry: bundle.createCompatibilityActionRegistry,
+    normalizeConversationHistories: bundle.normalizeConversationHistories,
+    OpenAICompatibleTransport: bundle.OpenAICompatibleTransport,
+    PDFChatModal: bundle.PDFChatModal,
+  };
+  return PluginClass;
 }
 
 test("normalizes persisted histories to visible user and assistant messages", () => {
@@ -564,6 +566,47 @@ test("handleTranslate sends the fixed translate instruction without reading the 
   assert.equal(bubbles[0].text, "请把选中的原文片段翻译成中文。");
   assert.equal(apiMessages.at(-1).content, "请把选中的原文片段翻译成中文。");
   assert.equal(modal.inputEl.value, "leave me alone");
+});
+
+test("translate compatibility action falls back to the default instruction when the saved field is empty", async () => {
+  const PluginClass = loadPluginModule();
+  const createRegistry = PluginClass.__test.createCompatibilityActionRegistry;
+  const registry = createRegistry("default translation instruction");
+  let submitted = null;
+
+  await registry.execute("translate", {
+    settings: { translatePrompt: "" },
+    async submit(options) {
+      submitted = plain(options);
+    },
+  });
+
+  assert.deepEqual(submitted, {
+    question: "default translation instruction",
+    skipContextAugmentation: true,
+  });
+});
+
+test("non-streaming transport preserves endpoint error text when the JSON body is invalid", async () => {
+  const PluginClass = loadPluginModule();
+  const Transport = PluginClass.__test.OpenAICompatibleTransport;
+  const profile = { id: "model-a", endpoint: "", apiKey: "", model: "model-a" };
+  const transport = new Transport(
+    () => ({ activeModelId: "model-a", temperature: 0.7, maxTokens: 100, stream: false }),
+    () => profile,
+    async () => ({
+      status: 502,
+      text: "gateway down",
+      get json() {
+        throw new Error("invalid JSON");
+      },
+    })
+  );
+
+  await assert.rejects(
+    transport.chat({ messages: [{ role: "user", content: "Question" }] }),
+    /gateway down/
+  );
 });
 
 test("onload registers separate new-conversation and continue-conversation hotkeys", async () => {
