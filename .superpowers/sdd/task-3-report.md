@@ -105,3 +105,51 @@ A legacy single-model deletion test initially exposed that its deliberately mini
 Verified implementation commit: `a0ecdb9c470fdc32ffc8a84f0586978e58f1e9ee`.
 
 The report itself is committed separately so it can record the immutable implementation SHA without a circular self-reference.
+
+## Task 3 review-fix follow-up
+
+### Review findings verified
+
+- The expanded context body had no internal height cap or overflow, so a short modal could allocate excessive height to context and squeeze the history/composer.
+- The history had `min-height: 80px`; changing it to `min-height: 0` was necessary for the middle flex region to yield space while the composer remains fixed.
+- Restored history already kept `aria-live="off"` until `Promise.all` completed, but the original test resolved Markdown immediately and did not prove the timing boundary.
+- Normal submit cleared the textarea value but immediately recomputed its height from the stub's stale `scrollHeight`, leaving `height: 120px` inline.
+- The grouped settings implementation retained the pre-refactor inventory, but the original test checked only the five headings and no callbacks.
+
+### Follow-up RED evidence
+
+After adding deferred-render, real-submit, full settings-inventory/callback, and short/narrow CSS contracts:
+
+- `node --test tests/workbench-ui.test.js` — expected exit 1, 5 tests, 3 pass, 2 fail.
+- Composer failure: expected cleared inline height `""`, received `"120px"`.
+- Layout failure: `.pdf-chat-context-panel` lacked flex-column/cap/min-height rules; subsequent contract assertions also required an internally scrolling capped body, shrinkable history, and narrow/`max-height: 620px` caps.
+- Deferred restore and settings inventory tests passed immediately because production already had the behavior; these tests close the review's evidence gaps without unnecessary production changes.
+
+### Follow-up implementation and proof
+
+- Context panel is a capped flex column (`180px` base, `160px` narrow, `140px` for viewports up to `620px`).
+- Context body is the internally scrollable flex child with `min-height: 0`, retaining continuous access to source, summary/RAG tools, and extension actions.
+- Source text no longer creates a competing nested scroll area; the whole expanded body scrolls instead.
+- History now has `min-height: 0`; the sticky composer remains a non-shrinking sibling.
+- Normal submission clears both the textarea value and inline height after a real stubbed LLM request.
+- Deferred Markdown proof holds `aria-live="off"` after the first of two renders resolves and switches to `polite` only after the second settles.
+- Settings proof inventories all 23 static legacy names plus dynamic model/preset rows in their exact sections, verifies every named row still has a control, checks unnamed add buttons/textareas and shortcut guidance, and invokes representative callbacks from all five sections.
+
+### Follow-up GREEN and full verification
+
+- Focused GREEN: `node --test tests/workbench-ui.test.js` — 5/5 pass.
+- `npm run typecheck` — exit 0.
+- `npm run build` — exit 0.
+- `npm test` — 42/42 pass, 0 fail.
+- `node --check main.js` — exit 0.
+- `git diff --check` — exit 0; only Windows LF-to-CRLF notices were emitted.
+
+### Follow-up self-review
+
+- Compared settings assertions directly with `a0ecdb9^:src/settings-tab.ts`; no legacy setting name/control or callback was removed.
+- Confirmed context caps apply independently to base, narrow-container, and short-viewport cases.
+- Confirmed collapsed behavior remains unchanged and expanded content remains reachable by scrolling the context body.
+- Confirmed no translation semantics/defaults, request/history behavior, manifest/version, README, CI/deploy/security files, installed plugin, or private data changed.
+- No push or deployment was performed.
+
+Review-fix implementation commit: `0907b53a373677298389c359894ca3541501b53d`.
