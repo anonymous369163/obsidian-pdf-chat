@@ -153,3 +153,55 @@ After adding deferred-render, real-submit, full settings-inventory/callback, and
 - No push or deployment was performed.
 
 Review-fix implementation commit: `0907b53a373677298389c359894ca3541501b53d`.
+
+## Task 3 second re-review follow-up
+
+### Second-review findings verified
+
+- The previous caps still depended on viewport height. A manually shortened modal in a tall viewport did not match the short-viewport query, while the context panel retained `flex: 0 0 auto` and therefore could not participate in shrinking.
+- The existing runtime toggle already synchronized the panel's `is-expanded` class with `aria-expanded` and the body's `is-collapsed` class, but the focused test did not prove that state contract.
+- The earlier grouped-settings test invoked one representative callback per section, but did not prove that every rendered input/select/textarea/button registered the appropriate callable callback. In particular, that left extra model buttons, add/delete actions, and cache-clear actions under-specified.
+
+### Second-review RED and mutation evidence
+
+After strengthening the panel-state, shrink, and exhaustive callback contracts but before changing CSS:
+
+- `node --test tests/workbench-ui.test.js` — expected exit 1, 5 tests, 4 pass, 1 fail.
+- The CSS test failed because the collapsed/base panel still had `min-height: 0` instead of the toggle-preserving `34px`; the expanded-state contract additionally required a shrink factor, bounded basis, and fixed cap independent of viewport height.
+- The modal state assertions and exhaustive settings callback assertions passed against current runtime behavior.
+
+After the CSS test was GREEN, a representative production mutation temporarily removed `.onChange(...)` from the translation-target text control, followed by a bundle rebuild:
+
+- `npm run build` — exit 0.
+- `node --test tests/workbench-ui.test.js` — expected exit 1, 5 tests, 4 pass, 1 fail.
+- Exact failure: `missing onChange callback in 翻译目标语言 section for 翻译目标语言`; actual type was `undefined`, expected `function`.
+- The callback was immediately restored, `npm run build` exited 0, and focused tests returned to 5/5. The temporary mutation is absent from both the implementation commit and final diff.
+
+### Second-review implementation and proof
+
+- Collapsed context remains content-sized and non-shrinking with `flex: 0 0 auto` and a `34px` minimum that preserves its toggle.
+- Expanded context uses `flex: 0 1 180px`, `min-height: 34px`, `max-height: 180px`, and contained overflow, so it has a bounded preferred size but yields space in any manually shortened modal. This behavior no longer relies on a viewport-height query.
+- The narrow-container variant changes the expanded basis/cap to `160px`; it is keyed to modal container width, not viewport height.
+- The context body remains the internally scrolling `flex: 1 1 auto` child with `min-height: 0`; history remains shrinkable with `min-height: 0`; header and composer remain `flex: 0 0 auto`.
+- The DOM test now proves `aria-expanded`, root `is-expanded`, and body `is-collapsed` stay synchronized across expansion and collapse.
+- The settings stub records real callable registrations. The test renders a second model so the non-default star action is present, then asserts every input/select/textarea in all five sections has an `onChange` callback and every button—including add/delete, model extras, and both cache-clear buttons—has an `onClick` callback.
+
+### Second-review GREEN and full verification
+
+- Focused GREEN: `node --test tests/workbench-ui.test.js` — 5/5 pass, 0 fail.
+- `npm run typecheck` — exit 0.
+- `npm run build` — exit 0.
+- `npm test` — 42/42 pass, 0 fail.
+- `node --check main.js` — exit 0.
+- `git diff --check` — exit 0; only Windows LF-to-CRLF notices were emitted.
+
+### Second-review self-review
+
+- Re-read the final two-file implementation diff and confirmed it is limited to the state-specific flex contract plus focused test coverage; no settings runtime code remains changed.
+- Confirmed the expanded panel itself has a nonzero shrink factor and bounded basis, rather than merely another cap declaration.
+- Confirmed no context-panel rule remains in the viewport-height query; the query still only compacts unrelated short-viewport spacing/input dimensions.
+- Confirmed every rendered interactive settings control is covered by type-appropriate callback registration assertions, while representative callbacks still exercise persisted mutations in each section.
+- Confirmed `main.js` rebuilt cleanly but is byte-identical to the checked-in bundle for this CSS/test-only change.
+- No README, manifest/version, translation defaults/semantics, CI/deploy/security files, installed plugin, or private data changed. No push or deployment was performed.
+
+Second-review implementation commit: `196b62478cd923e85ee2faf75727df127f778788`.
