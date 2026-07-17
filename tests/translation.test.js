@@ -633,10 +633,14 @@ test("completed translation uses one bubble, runtime follow-up messages, and sep
   assert.equal(taskRequest.source, completed.source);
   assert.deepEqual(completed.resolvedModelIds, ["translation-model"]);
   assert.equal(taskRequest.settings.targetLanguage, "zh-CN");
-  assert.equal(completed.bubbles.length, 2);
-  assert.equal(completed.bubbles[0].text, friendlyLabel);
-  assert.equal(completed.bubbles[1].text, "第一段\n\n第二段");
-  assert.doesNotMatch(completed.bubbles[1].text, /正在翻译/);
+  const messageBubbles = completed.bubbles.filter((bubble) =>
+    String(bubble.cls || "").includes("pdf-chat-bubble") ||
+    bubble.classes.includes("pdf-chat-bubble")
+  );
+  assert.equal(messageBubbles.length, 2);
+  assert.equal(messageBubbles[0].text, friendlyLabel);
+  assert.equal(messageBubbles[1].text, "第一段\n\n第二段");
+  assert.doesNotMatch(messageBubbles[1].text, /正在翻译/);
   assert.deepEqual(plain(completed.modal.messages.slice(-2)), [
     { role: "user", content: friendlyLabel },
     { role: "assistant", content: "第一段\n\n第二段" },

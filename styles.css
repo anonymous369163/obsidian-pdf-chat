@@ -1,18 +1,27 @@
 .pdf-chat-modal.modal {
-  --pdf-chat-space: 10px;
+  --pdf-chat-space: 12px;
   --pdf-chat-space-small: 6px;
-  --pdf-chat-radius: 8px;
+  --pdf-chat-radius-sm: 8px;
+  --pdf-chat-radius-md: 12px;
+  --pdf-chat-radius-lg: 16px;
+  --pdf-chat-radius: var(--pdf-chat-radius-md);
   --pdf-chat-border: 1px solid var(--background-modifier-border);
   --pdf-chat-panel-background: var(--background-secondary);
-  --pdf-chat-readable-width: 72ch;
+  --pdf-chat-readable-width: 860px;
+  --pdf-chat-accent-soft: color-mix(in srgb, var(--interactive-accent) 12%, var(--background-primary));
+  --pdf-chat-accent-border: color-mix(in srgb, var(--interactive-accent) 26%, var(--background-modifier-border));
+  --pdf-chat-accent-muted: color-mix(in srgb, var(--interactive-accent) 72%, var(--text-normal));
+  --pdf-chat-card-background: var(--background-primary);
+  --pdf-chat-context-background: color-mix(in srgb, var(--interactive-accent) 5%, var(--background-secondary));
+  --pdf-chat-shadow-soft: 0 2px 12px color-mix(in srgb, var(--text-normal) 8%, transparent);
   resize: both;
   overflow: hidden;
   display: flex;
   flex-direction: column;
   min-width: 420px;
   min-height: 380px;
-  width: 760px;
-  height: 680px;
+  width: 900px;
+  height: 720px;
   max-width: 95vw;
   max-height: 92vh;
 }
@@ -29,23 +38,23 @@
 }
 
 .pdf-chat-workbench-header {
-  display: flex;
-  align-items: center;
-  gap: var(--pdf-chat-space);
   flex: 0 0 auto;
   min-width: 0;
+  min-height: 40px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--pdf-chat-space);
   cursor: move;
   -webkit-user-select: none;
   user-select: none;
 }
 
 .pdf-chat-identity {
+  min-width: 0;
   display: flex;
-  flex: 0 1 auto;
-  min-width: 7rem;
-  max-width: 15rem;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
   overflow: hidden;
 }
 
@@ -53,31 +62,40 @@
   margin: 0;
   font-size: 1rem;
   line-height: 1.1;
+  font-weight: var(--font-semibold);
 }
 
 .pdf-chat-document-name {
   overflow: hidden;
   color: var(--text-muted);
-  font-size: 0.72rem;
+  font-size: 0.74rem;
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.pdf-chat-header-controls {
+.pdf-chat-header-primary-controls,
+.pdf-chat-header-secondary-controls {
   display: flex;
-  flex: 1 1 auto;
   min-width: 0;
   align-items: center;
-  justify-content: flex-end;
   gap: var(--pdf-chat-space-small);
   cursor: default;
 }
 
+.pdf-chat-header-primary-controls {
+  justify-content: center;
+}
+
+.pdf-chat-header-secondary-controls {
+  justify-content: flex-end;
+}
+
 .pdf-chat-control-group,
 .pdf-chat-zoom-group {
-  display: flex;
   min-width: 0;
+  min-height: 40px;
+  display: inline-flex;
   align-items: center;
   gap: 4px;
 }
@@ -90,57 +108,98 @@
 }
 
 .pdf-chat-select {
-  min-width: 6rem;
-  max-width: 11rem;
+  min-width: 8rem;
+  max-width: 12rem;
+  min-height: 40px;
+  border-radius: var(--pdf-chat-radius-sm);
   cursor: pointer;
 }
 
 .pdf-chat-zoom-group {
-  flex: 0 0 auto;
+  padding: 2px;
+  border: var(--pdf-chat-border);
+  border-radius: var(--pdf-chat-radius-md);
+  background: var(--background-primary-alt);
 }
 
 .pdf-chat-zoom-btn,
 .pdf-chat-zoom-label,
+.pdf-chat-more-button,
 .pdf-chat-reset-btn {
-  min-height: 28px;
-  padding: 2px 7px;
-  font-size: 0.75rem;
+  min-height: 36px;
+  padding: 4px 9px;
+  border-radius: var(--pdf-chat-radius-sm);
+  font-size: 0.78rem;
   line-height: 1;
   cursor: pointer;
 }
 
 .pdf-chat-zoom-label {
-  min-width: 3.5rem;
+  min-width: 3.6rem;
   text-align: center;
+}
+
+.pdf-chat-more-wrapper {
+  position: relative;
+}
+
+.pdf-chat-more-button {
+  min-width: 38px;
+}
+
+.pdf-chat-more-menu {
+  position: absolute;
+  z-index: var(--layer-popover, 1000);
+  inset-inline-end: 0;
+  top: calc(100% + 4px);
+  min-width: 9rem;
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+  border: var(--pdf-chat-border);
+  border-radius: var(--pdf-chat-radius-md);
+  background: var(--background-primary);
+  box-shadow: var(--shadow-s);
+}
+
+.pdf-chat-more-menu.is-hidden {
+  display: none;
+}
+
+.pdf-chat-menu-item {
+  width: 100%;
+  justify-content: flex-start;
+  color: var(--text-muted);
 }
 
 .pdf-chat-context-panel {
   flex: 0 0 auto;
-  min-height: 34px;
+  min-height: 42px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: var(--pdf-chat-border);
-  border-radius: var(--pdf-chat-radius);
-  background: var(--pdf-chat-panel-background);
+  border: 1px solid transparent;
+  border-radius: var(--pdf-chat-radius-lg);
+  background: var(--pdf-chat-context-background);
 }
 
 .pdf-chat-context-panel.is-expanded {
   flex: 0 1 180px;
-  min-height: 34px;
+  min-height: 42px;
   max-height: 180px;
+  border-color: color-mix(in srgb, var(--interactive-accent) 10%, var(--background-modifier-border));
 }
 
 .pdf-chat-context-toggle {
   flex: 0 0 auto;
   width: 100%;
-  min-height: 34px;
+  min-height: 42px;
   display: flex;
   align-items: center;
   gap: var(--pdf-chat-space-small);
   border: 0;
-  border-radius: var(--pdf-chat-radius);
-  background: var(--pdf-chat-panel-background);
+  border-radius: var(--pdf-chat-radius-lg);
+  background: transparent;
   color: var(--text-muted);
   text-align: left;
   cursor: pointer;
@@ -148,21 +207,45 @@
   user-select: none;
 }
 
+.pdf-chat-context-toggle:hover {
+  background: color-mix(in srgb, var(--interactive-accent) 6%, transparent);
+}
+
 .pdf-chat-context-title {
   color: var(--text-normal);
-  font-size: 0.82rem;
+  font-size: 1rem;
   font-weight: var(--font-semibold);
+  white-space: nowrap;
 }
 
 .pdf-chat-status-chip {
-  padding: 2px 6px;
-  border: var(--pdf-chat-border);
-  border-radius: var(--pdf-chat-radius);
-  background: var(--background-primary-alt);
-  color: var(--text-muted);
-  font-size: 0.68rem;
+  padding: 3px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--pdf-chat-radius-sm);
+  font-size: 0.7rem;
   line-height: 1.2;
   white-space: nowrap;
+}
+
+.pdf-chat-status-chip.is-neutral {
+  background: var(--background-primary-alt);
+  color: var(--text-muted);
+}
+
+.pdf-chat-status-chip.is-success {
+  background: color-mix(in srgb, var(--text-success) 12%, var(--background-primary));
+  color: color-mix(in srgb, var(--text-success) 72%, var(--text-normal));
+}
+
+.pdf-chat-status-chip.is-accent {
+  background: var(--pdf-chat-accent-soft);
+  color: var(--pdf-chat-accent-muted);
+  border-color: var(--pdf-chat-accent-border);
+}
+
+.pdf-chat-status-chip.is-pending {
+  background: color-mix(in srgb, var(--text-muted) 10%, var(--background-primary));
+  color: var(--text-muted);
 }
 
 .pdf-chat-context-chevron {
@@ -183,7 +266,7 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 0 var(--pdf-chat-space) var(--pdf-chat-space);
-  border-top: var(--pdf-chat-border);
+  border-top: 1px solid color-mix(in srgb, var(--interactive-accent) 9%, var(--background-modifier-border));
 }
 
 .pdf-chat-context-body.is-collapsed {
@@ -193,7 +276,7 @@
 .pdf-chat-context-heading {
   margin: var(--pdf-chat-space-small) 0 0;
   color: var(--text-muted);
-  font-size: 0.75rem;
+  font-size: 0.76rem;
 }
 
 .pdf-chat-context-text {
@@ -202,7 +285,7 @@
   white-space: pre-wrap;
   color: var(--text-muted);
   font-size: calc(0.84em * var(--pdf-chat-font-scale, 1));
-  line-height: 1.45;
+  line-height: 1.55;
   cursor: text;
   -webkit-user-select: text;
   user-select: text;
@@ -232,6 +315,7 @@
 .pdf-chat-summary-btn,
 .pdf-chat-research-action-btn {
   flex: 0 0 auto;
+  border-radius: var(--pdf-chat-radius-sm);
   font-size: 0.75rem;
   white-space: nowrap;
   cursor: pointer;
@@ -253,8 +337,9 @@
   overflow-y: auto;
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: var(--pdf-chat-space);
-  padding: var(--pdf-chat-space-small);
+  padding: var(--pdf-chat-space-small) var(--pdf-chat-space);
   font-size: calc(1em * var(--pdf-chat-font-scale, 1));
   cursor: text;
   -webkit-user-select: text;
@@ -263,11 +348,11 @@
 }
 
 .pdf-chat-empty-state {
-  max-width: var(--pdf-chat-readable-width);
+  width: min(100%, var(--pdf-chat-readable-width));
   margin: auto;
   padding: calc(var(--pdf-chat-space) * 2);
   border: var(--pdf-chat-border);
-  border-radius: var(--pdf-chat-radius);
+  border-radius: var(--pdf-chat-radius-lg);
   background: var(--pdf-chat-panel-background);
   color: var(--text-muted);
   text-align: center;
@@ -281,20 +366,35 @@
 
 .pdf-chat-bubble {
   box-sizing: border-box;
-  width: fit-content;
+  width: min(100%, var(--pdf-chat-readable-width));
   max-width: min(100%, var(--pdf-chat-readable-width));
-  padding: 8px 12px;
-  border-radius: var(--pdf-chat-radius);
-  white-space: pre-wrap;
+  border-radius: var(--pdf-chat-radius-lg);
   color: var(--text-normal);
-  line-height: 1.55;
+  line-height: 1.75;
   cursor: text;
 }
 
 .pdf-chat-bubble.user {
-  align-self: flex-end;
-  background: var(--background-modifier-hover);
-  border-inline-end: 3px solid var(--interactive-accent);
+  align-self: center;
+  width: fit-content;
+  max-width: min(88%, var(--pdf-chat-readable-width));
+  margin-inline-start: auto;
+  padding: 12px 16px;
+  border: 1px solid var(--pdf-chat-accent-border);
+  border-inline-end: 0;
+  background: var(--pdf-chat-accent-soft);
+  color: var(--text-normal);
+}
+
+.pdf-chat-user-message-title {
+  font-weight: var(--font-semibold);
+  color: var(--pdf-chat-accent-muted);
+}
+
+.pdf-chat-user-message-meta {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 0.76rem;
 }
 
 .pdf-chat-quick-translate-marker {
@@ -306,7 +406,7 @@
   min-width: 32px;
   min-height: 32px;
   padding: 4px;
-  border: 1px solid var(--background-modifier-border);
+  border: 1px solid var(--pdf-chat-accent-border);
   border-radius: 50%;
   background: var(--interactive-accent);
   color: var(--text-on-accent);
@@ -332,26 +432,64 @@
 }
 
 .pdf-chat-bubble.assistant {
-  align-self: flex-start;
-  background: var(--pdf-chat-panel-background);
-  border-inline-start: 3px solid var(--background-modifier-border-hover);
+  align-self: center;
+  display: grid;
+  gap: 10px;
+  padding: 20px 22px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--pdf-chat-card-background);
+  box-shadow: var(--pdf-chat-shadow-soft);
 }
 
-.pdf-chat-bubble.is-rendered {
+.pdf-chat-message-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  line-height: 1.2;
+}
+
+.pdf-chat-message-author {
+  color: var(--pdf-chat-accent-muted);
+  font-weight: var(--font-semibold);
+}
+
+.pdf-chat-message-context::before {
+  content: "·";
+  margin-inline-end: 8px;
+  color: var(--text-faint);
+}
+
+.pdf-chat-message-content {
+  white-space: pre-wrap;
+  line-height: 1.75;
+}
+
+.pdf-chat-bubble.is-rendered .pdf-chat-message-content {
   white-space: normal;
 }
 
-.pdf-chat-bubble.is-rendered > *:first-child {
+.pdf-chat-bubble.is-rendered .pdf-chat-message-content > *:first-child {
   margin-top: 0;
 }
 
-.pdf-chat-bubble.is-rendered > *:last-child {
+.pdf-chat-bubble.is-rendered .pdf-chat-message-content > *:last-child {
   margin-bottom: 0;
 }
 
+.pdf-chat-message-content p {
+  margin: 0 0 0.75em;
+}
+
+.pdf-chat-message-content ul,
+.pdf-chat-message-content ol {
+  margin-block: 0.4em 0.75em;
+}
+
 .pdf-chat-bubble pre,
-.pdf-chat-bubble table,
-.pdf-chat-bubble mjx-container {
+.pdf-chat-message-content table,
+.pdf-chat-message-content mjx-container {
   max-width: 100%;
   overflow-x: auto;
   cursor: text;
@@ -359,12 +497,12 @@
   user-select: text;
 }
 
-.pdf-chat-bubble table {
+.pdf-chat-message-content table {
   display: block;
   width: max-content;
 }
 
-.pdf-chat-bubble mjx-container[display="true"] {
+.pdf-chat-message-content mjx-container[display="true"] {
   display: block;
   margin: 0.5em 0;
   overflow-y: hidden;
@@ -393,53 +531,119 @@
   font-style: italic;
 }
 
+.pdf-chat-followup-suggestions {
+  width: min(100%, var(--pdf-chat-readable-width));
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--pdf-chat-space-small);
+  margin-top: calc(var(--pdf-chat-space-small) * -1);
+}
+
+.pdf-chat-followup-chip {
+  border: 1px solid var(--pdf-chat-accent-border);
+  border-radius: var(--pdf-chat-radius-sm);
+  background: var(--pdf-chat-accent-soft);
+  color: var(--pdf-chat-accent-muted);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
 .pdf-chat-composer {
   position: sticky;
   z-index: 1;
   bottom: 0;
   flex: 0 0 auto;
-  display: grid;
-  gap: 4px;
   padding-top: var(--pdf-chat-space-small);
-  border-top: var(--pdf-chat-border);
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    color-mix(in srgb, var(--background-primary) 88%, transparent) 24%,
+    var(--background-primary)
+  );
+}
+
+.pdf-chat-composer-card {
+  display: grid;
+  gap: var(--pdf-chat-space-small);
+  padding: 10px;
+  border: var(--pdf-chat-border);
+  border-radius: var(--pdf-chat-radius-lg);
   background: var(--background-primary);
+  box-shadow: 0 -2px 12px color-mix(in srgb, var(--text-normal) 7%, transparent);
 }
 
 .pdf-chat-input-row {
   display: flex;
-  gap: var(--pdf-chat-space-small);
-  align-items: flex-end;
+  align-items: stretch;
 }
 
 .pdf-chat-input {
   flex: 1 1 auto;
   min-width: 0;
-  min-height: 42px;
+  min-height: 54px;
   max-height: 150px;
   overflow-y: auto;
   resize: none;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
   font-size: calc(1em * var(--pdf-chat-font-scale, 1));
-  line-height: 1.4;
+  line-height: 1.55;
   cursor: text;
 }
 
-.pdf-chat-input-row button {
-  flex: 0 0 auto;
-  min-height: 36px;
-  cursor: pointer;
+.pdf-chat-input:focus {
+  box-shadow: none;
+}
+
+.pdf-chat-composer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--pdf-chat-space-small);
+}
+
+.pdf-chat-composer-status {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.pdf-chat-input-row button.is-stop {
-  background-color: var(--background-modifier-error);
-  color: var(--text-on-accent);
+.pdf-chat-composer-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--pdf-chat-space-small);
 }
 
 .pdf-chat-hint {
-  margin: 0;
   color: var(--text-faint);
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   line-height: 1.2;
+  white-space: nowrap;
+}
+
+.pdf-chat-translate-btn {
+  border-radius: var(--pdf-chat-radius-sm);
+  background: var(--pdf-chat-accent-soft);
+  color: var(--pdf-chat-accent-muted);
+}
+
+.pdf-chat-send-btn {
+  min-width: 38px;
+  min-height: 38px;
+  border-radius: var(--pdf-chat-radius-md);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pdf-chat-send-btn.is-stop {
+  background-color: var(--background-modifier-error);
+  color: var(--text-on-accent);
 }
 
 .pdf-chat-modal :is(button, select, textarea, input):focus-visible,
@@ -456,7 +660,7 @@
   margin-block: 16px;
   padding: 12px;
   border: 1px solid var(--background-modifier-border);
-  border-radius: 8px;
+  border-radius: var(--pdf-chat-radius-md);
   background: var(--background-secondary);
 }
 
@@ -472,18 +676,19 @@
 
 @container pdf-chat-workbench (max-width: 620px) {
   .pdf-chat-workbench-header {
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: flex-start;
-    flex-wrap: wrap;
   }
 
-  .pdf-chat-identity {
-    max-width: 11rem;
-  }
-
-  .pdf-chat-header-controls {
-    flex: 1 1 100%;
+  .pdf-chat-header-primary-controls {
+    grid-column: 1 / -1;
     flex-wrap: wrap;
     justify-content: flex-start;
+    order: 3;
+  }
+
+  .pdf-chat-header-secondary-controls {
+    justify-content: flex-end;
   }
 
   .pdf-chat-control-group {
@@ -505,12 +710,12 @@
   }
 
   .pdf-chat-summary-row,
-  .pdf-chat-input-row {
+  .pdf-chat-composer-footer {
     flex-wrap: wrap;
   }
 
-  .pdf-chat-input {
-    flex-basis: 100%;
+  .pdf-chat-hint {
+    display: none;
   }
 }
 
@@ -521,11 +726,11 @@
 
   .pdf-chat-workbench-header,
   .pdf-chat-context-toggle {
-    min-height: 28px;
+    min-height: 34px;
   }
 
   .pdf-chat-input {
-    min-height: 34px;
+    min-height: 38px;
     max-height: 90px;
   }
 }

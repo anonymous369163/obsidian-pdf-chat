@@ -459,6 +459,7 @@ test("quick marker is debounced, clamped, selection-safe, disposable, and opens 
   assert.equal(button.textContent, "译");
   assert.equal(button.type, "button");
   assert.match(button.attributes["aria-label"], /翻译/);
+  assert.equal(button.attributes.title, undefined);
   assert.equal(button.hidden, false);
   assert.ok(parseFloat(button.style.left) <= 160);
   assert.ok(parseFloat(button.style.top) <= 64);
@@ -647,7 +648,7 @@ test("fresh and continue modals select chat models independently and never resto
 test("0.7 documentation describes marker, isolated history/model choice, and private plaintext limits", () => {
   const readme = fs.readFileSync(path.join(projectRoot, "README.md"), "utf8").toLowerCase();
   for (const phrase of [
-    "0.7.0",
+    "0.7.1",
     "quick-translate marker",
     "separate translation history",
     "translation model",

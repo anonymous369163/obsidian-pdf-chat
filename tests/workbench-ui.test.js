@@ -6,13 +6,40 @@ const vm = require("node:vm");
 
 const projectRoot = path.resolve(__dirname, "..");
 
+class MiniDocument {
+  constructor() {
+    this.listeners = new Map();
+  }
+
+  addEventListener(type, handler) {
+    const handlers = this.listeners.get(type) || [];
+    handlers.push(handler);
+    this.listeners.set(type, handlers);
+  }
+
+  removeEventListener(type, handler) {
+    const handlers = this.listeners.get(type) || [];
+    this.listeners.set(
+      type,
+      handlers.filter((candidate) => candidate !== handler)
+    );
+  }
+
+  dispatch(type, extra = {}) {
+    const event = {
+      type,
+      preventDefault() {},
+      stopPropagation() {},
+      ...extra,
+    };
+    for (const handler of this.listeners.get(type) || []) handler(event);
+  }
+}
+
 class MiniElement {
   constructor(tagName = "div", ownerDocument = null) {
     this.tagName = tagName.toUpperCase();
-    this.ownerDocument = ownerDocument || {
-      addEventListener() {},
-      removeEventListener() {},
-    };
+    this.ownerDocument = ownerDocument || new MiniDocument();
     this.parentElement = null;
     this.children = [];
     this.attributes = new Map();
@@ -142,6 +169,15 @@ class MiniElement {
       current = current.parentElement;
     }
     return null;
+  }
+
+  contains(target) {
+    let current = target;
+    while (current) {
+      if (current === this) return true;
+      current = current.parentElement;
+    }
+    return false;
   }
 }
 
@@ -420,13 +456,42 @@ test("modal builds the accessible research-workbench regions and interactions", 
   assert.match(header.textContent + descendants(header).map((el) => el.textContent).join(" "), /PDF Chat/);
   assert.match(descendants(header).map((el) => el.textContent).join(" "), /demo\.pdf/);
   assert.equal(byTag(header, "select").length, 2);
+  assert.equal(byClass(header, "pdf-chat-header-primary-controls").length, 1);
+  assert.equal(byClass(header, "pdf-chat-header-secondary-controls").length, 1);
+  assert.equal(byClass(byClass(header, "pdf-chat-header-primary-controls")[0], "pdf-chat-reset-btn").length, 0);
+  const moreButton = byClass(header, "pdf-chat-more-button")[0];
+  const moreMenu = byClass(header, "pdf-chat-more-menu")[0];
+  const clearButton = byClass(moreMenu, "pdf-chat-reset-btn")[0];
+  assert.ok(moreButton, "missing more menu trigger");
+  assert.ok(moreMenu, "missing more menu");
+  assert.ok(clearButton, "clear action should live inside more menu");
+  assert.equal(moreButton.getAttribute("aria-expanded"), "false");
+  assert.equal(moreMenu.hasClass("is-hidden"), true);
+  moreButton.dispatch("click");
+  assert.equal(moreButton.getAttribute("aria-expanded"), "true");
+  assert.equal(moreMenu.hasClass("is-hidden"), false);
+  header.ownerDocument.dispatch("keydown", { key: "Escape", target: moreButton });
+  assert.equal(moreButton.getAttribute("aria-expanded"), "false");
+  assert.equal(moreMenu.hasClass("is-hidden"), true);
+  moreButton.dispatch("click");
+  header.ownerDocument.dispatch("click", { target: modal.historyEl });
+  assert.equal(moreButton.getAttribute("aria-expanded"), "false");
 
   const contextToggle = byClass(modal.contentEl, "pdf-chat-context-toggle")[0];
   const contextPanel = byClass(modal.contentEl, "pdf-chat-context-panel")[0];
   const contextBody = byClass(modal.contentEl, "pdf-chat-context-body")[0];
+  const selectionChip = byClass(contextToggle, "pdf-chat-selection-count")[0];
+  const summaryChip = byClass(contextToggle, "pdf-chat-summary-status")[0];
+  const ragChip = byClass(contextToggle, "pdf-chat-rag-status")[0];
   assert.equal(contextToggle.tagName, "BUTTON");
   assert.equal(contextToggle.getAttribute("aria-expanded"), "false");
   assert.match(contextToggle.getAttribute("aria-label"), /论文上下文/);
+  assert.ok(selectionChip.hasClass("is-neutral"));
+  assert.ok(summaryChip.hasClass("is-neutral"));
+  assert.ok(ragChip.hasClass("is-neutral"));
+  assert.ok(selectionChip.hasClass("pdf-chat-status-chip-count"));
+  assert.ok(summaryChip.hasClass("pdf-chat-status-chip-summary"));
+  assert.ok(ragChip.hasClass("pdf-chat-status-chip-context"));
   assert.equal(contextPanel.hasClass("is-expanded"), false);
   assert.equal(contextBody.hasClass("is-collapsed"), true);
   contextToggle.dispatch("click");
@@ -451,10 +516,14 @@ test("modal builds the accessible research-workbench regions and interactions", 
   assert.doesNotMatch(descendants(modal.contentEl).map((el) => el.textContent).join(" "), /相关论文|PPT/);
 
   const composer = byClass(modal.contentEl, "pdf-chat-composer")[0];
+  assert.equal(byClass(composer, "pdf-chat-composer-card").length, 1);
+  assert.equal(byClass(composer, "pdf-chat-composer-footer").length, 1);
+  assert.match(byClass(composer, "pdf-chat-composer-status")[0].textContent, /选区上下文|当前选区/);
   assert.equal(byClass(composer, "pdf-chat-hint").length, 1);
   assert.equal(modal.translateBtn.textContent, "翻译选区");
   assert.match(modal.inputEl.getAttribute("aria-label"), /提问/);
   assert.match(modal.sendBtn.getAttribute("aria-label"), /发送/);
+  assert.equal(modal.sendBtn.textContent, "↑");
   assert.deepEqual(
     descendants(modal.contentEl)
       .filter((element) => element.getAttribute("title") !== null)
@@ -472,12 +541,19 @@ test("modal builds the accessible research-workbench regions and interactions", 
   assert.match(modal.sendBtn.getAttribute("aria-label"), /停止/);
   modal.setSendingState(false);
   assert.equal(modal.translateBtn.disabled, false);
-  assert.equal(modal.sendBtn.textContent, "发送");
+  assert.equal(modal.sendBtn.textContent, "↑");
 
   const bubble = modal.addBubble("user", "Question");
   assert.equal(byClass(modal.historyEl, "pdf-chat-empty-state").length, 0);
   assert.equal(bubble.getAttribute("data-speaker"), null);
   assert.match(bubble.getAttribute("aria-label"), /消息/);
+  const translationBubble = modal.addBubble("user", "翻译当前选区（1028 字）");
+  assert.equal(byClass(translationBubble, "pdf-chat-user-message-title")[0].textContent, "翻译当前选区");
+  assert.equal(byClass(translationBubble, "pdf-chat-user-message-meta")[0].textContent, "1028 字");
+  const assistantBubble = modal.addBubble("assistant", "Plain assistant answer.");
+  assert.equal(byClass(assistantBubble, "pdf-chat-message-meta").length, 1);
+  assert.match(descendants(byClass(assistantBubble, "pdf-chat-message-meta")[0]).map((el) => el.textContent).join(" "), /PDF Chat/);
+  assert.equal(byClass(assistantBubble, "pdf-chat-message-content")[0].textContent, "Plain assistant answer.");
   assert.deepEqual(modal.transcript, []);
 });
 
@@ -539,6 +615,64 @@ test("normal submission clears the grown composer and resets its inline height",
     { role: "user", content: "What is the contribution?", status: "complete" },
     { role: "assistant", content: "Answer", status: "complete" },
   ]);
+});
+
+test("assistant completion shows follow-up suggestions without auto-sending", async () => {
+  const requests = [];
+  const { modal } = createModalHarness({
+    llmChat: async (request) => {
+      requests.push(request);
+      request.onChunk?.("Answer", "Answer");
+      return "Answer";
+    },
+  });
+  modal.inputEl.value = "What is the contribution?";
+
+  await modal.handleSubmit();
+
+  const suggestions = byClass(modal.historyEl, "pdf-chat-followup-suggestions");
+  assert.equal(suggestions.length, 1);
+  const buttons = byTag(suggestions[0], "button");
+  assert.deepEqual(
+    buttons.map((button) => button.textContent),
+    ["解释这段内容", "总结核心贡献", "分析实验结果", "与相关工作对比"]
+  );
+  buttons[0].dispatch("click");
+  assert.equal(modal.inputEl.value, "解释这段内容");
+  assert.equal(modal.inputEl.focused, true);
+  assert.equal(requests.length, 1);
+  modal.inputEl.dispatch("input");
+  assert.equal(byClass(modal.historyEl, "pdf-chat-followup-suggestions").length, 0);
+});
+
+test("assistant plain text is lightly split only for display", async () => {
+  const longText =
+    "提示生成方面主要改进了搜索空间和反馈机制。模型改进方面强调策略模型与评估模型之间的配合。实验结果说明该方法在多个任务上更稳定。";
+  const { modal } = createModalHarness({
+    markdownRenderer: {
+      async render(_app, text, element) {
+        element.setText(text);
+      },
+    },
+    llmChat: async (request) => {
+      request.onChunk?.(longText, longText);
+      return longText;
+    },
+  });
+  modal.inputEl.value = "Summarize";
+
+  await modal.handleSubmit();
+
+  assert.deepEqual(JSON.parse(JSON.stringify(modal.transcript)), [
+    { role: "user", content: "Summarize", status: "complete" },
+    { role: "assistant", content: longText, status: "complete" },
+  ]);
+  const assistant = byClass(modal.historyEl, "pdf-chat-bubble").find((element) =>
+    element.hasClass("assistant")
+  );
+  assert.ok(assistant);
+  const content = byClass(assistant, "pdf-chat-message-content")[0];
+  assert.match(content.textContent, /提示生成方面.*\n\n模型改进方面.*\n\n实验结果/s);
 });
 
 test("settings preserve every legacy control in the correct ordered section and callbacks", async () => {
@@ -729,6 +863,9 @@ test("CSS defines the scoped responsive, readable, selectable workbench contract
 
   for (const customProperty of [
     "--pdf-chat-space",
+    "--pdf-chat-radius-sm",
+    "--pdf-chat-radius-md",
+    "--pdf-chat-radius-lg",
     "--pdf-chat-radius",
     "--pdf-chat-border",
     "--pdf-chat-panel-background",
@@ -744,20 +881,27 @@ test("CSS defines the scoped responsive, readable, selectable workbench contract
   const historyRule = css.match(/\.pdf-chat-history\s*\{([^}]*)\}/s)?.[1] || "";
   const headerRule = css.match(/\.pdf-chat-workbench-header\s*\{([^}]*)\}/s)?.[1] || "";
   const composerRule = css.match(/\.pdf-chat-composer\s*\{([^}]*)\}/s)?.[1] || "";
+  const assistantRule = css.match(/\.pdf-chat-bubble\.assistant\s*\{([^}]*)\}/s)?.[1] || "";
+  const userRule = css.match(/\.pdf-chat-bubble\.user\s*\{([^}]*)\}/s)?.[1] || "";
+  const composerCardRule = css.match(/\.pdf-chat-composer-card\s*\{([^}]*)\}/s)?.[1] || "";
   assert.match(contextPanelRule, /display:\s*flex/);
   assert.match(contextPanelRule, /flex-direction:\s*column/);
   assert.match(contextPanelRule, /flex:\s*0\s+0\s+auto/);
-  assert.match(contextPanelRule, /min-height:\s*34px/);
+  assert.match(contextPanelRule, /min-height:\s*42px/);
   assert.match(contextPanelRule, /overflow:\s*hidden/);
   assert.match(expandedContextPanelRule, /flex:\s*0\s+1\s+180px/);
-  assert.match(expandedContextPanelRule, /min-height:\s*34px/);
+  assert.match(expandedContextPanelRule, /min-height:\s*42px/);
   assert.match(expandedContextPanelRule, /max-height:\s*180px/);
   assert.match(contextBodyRule, /min-height:\s*0/);
   assert.match(contextBodyRule, /flex:\s*1\s+1\s+auto/);
   assert.match(contextBodyRule, /overflow-y:\s*auto/);
   assert.match(historyRule, /min-height:\s*0/);
+  assert.match(historyRule, /align-items:\s*center/);
   assert.match(headerRule, /flex:\s*0\s+0\s+auto/);
   assert.match(composerRule, /flex:\s*0\s+0\s+auto/);
+  assert.match(composerCardRule, /box-shadow:/);
+  assert.match(assistantRule, /box-shadow:/);
+  assert.match(userRule, /border-inline-end:\s*0/);
   assert.match(
     css,
     /@container\s+pdf-chat-workbench\s*\(max-width:\s*620px\)[\s\S]*?\.pdf-chat-context-panel\.is-expanded\s*\{[^}]*flex-basis:\s*160px[^}]*max-height:\s*160px/
@@ -767,7 +911,7 @@ test("CSS defines the scoped responsive, readable, selectable workbench contract
   assert.match(css, /\.pdf-chat-bubble[^}]*user-select:\s*text/s);
   assert.doesNotMatch(css, /attr\(data-speaker\)/);
   assert.match(css, /\.pdf-chat-(?:bubble|message-content)[^}]*table[^}]*overflow-x:\s*auto/s);
-  assert.match(css, /\.pdf-chat-bubble\.user[^}]*background:\s*var\(--background-modifier-/s);
+  assert.match(css, /\.pdf-chat-bubble\.user[^}]*background:\s*var\(--pdf-chat-accent-soft\)/s);
   assert.doesNotMatch(css, /\.pdf-chat-bubble\.user[^}]*background:\s*var\(--interactive-accent\)/s);
   assert.doesNotMatch(css, /#[0-9a-f]{3,8}\b|\brgba?\s*\(/i);
 });

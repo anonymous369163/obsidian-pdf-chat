@@ -1,4 +1,4 @@
-// PDF Chat 0.7.0
+// PDF Chat 0.7.1
 var global = globalThis;
 "use strict";
 var __defProp = Object.defineProperty;
@@ -932,7 +932,7 @@ function nextControlId(prefix) {
   controlId += 1;
   return `pdf-chat-${prefix}-${controlId}`;
 }
-function labelControl(element, label) {
+function setElementLabel(element, label) {
   const compatibleElement = element;
   if (typeof compatibleElement.setAttr === "function") {
     compatibleElement.setAttr("aria-label", label);
@@ -940,6 +940,7 @@ function labelControl(element, label) {
     compatibleElement.setAttribute("aria-label", label);
   }
 }
+var labelControl = setElementLabel;
 function buildWorkbenchHeader(parent, options) {
   const root = parent.createEl("header", { cls: "pdf-chat-workbench-header" });
   const identity = root.createDiv({ cls: "pdf-chat-identity" });
@@ -948,8 +949,9 @@ function buildWorkbenchHeader(parent, options) {
     text: options.filename,
     cls: "pdf-chat-document-name"
   });
-  const controls = root.createDiv({ cls: "pdf-chat-header-controls pdf-chat-interactive" });
-  const modelGroup = controls.createDiv({ cls: "pdf-chat-control-group" });
+  const primaryControls = root.createDiv({ cls: "pdf-chat-header-primary-controls pdf-chat-interactive" });
+  const secondaryControls = root.createDiv({ cls: "pdf-chat-header-secondary-controls pdf-chat-interactive" });
+  const modelGroup = primaryControls.createDiv({ cls: "pdf-chat-control-group" });
   const modelId = nextControlId("model");
   modelGroup.createEl("label", { text: "\u6A21\u578B", attr: { for: modelId } });
   const modelSelect = modelGroup.createEl("select", {
@@ -960,7 +962,7 @@ function buildWorkbenchHeader(parent, options) {
     modelSelect.createEl("option", { text: model.name, value: model.id });
   }
   modelSelect.value = options.currentModelId;
-  const modeGroup = controls.createDiv({ cls: "pdf-chat-control-group" });
+  const modeGroup = primaryControls.createDiv({ cls: "pdf-chat-control-group" });
   const modeId = nextControlId("mode");
   modeGroup.createEl("label", { text: "\u9605\u8BFB\u6A21\u5F0F", attr: { for: modeId } });
   const modeSelect = modeGroup.createEl("select", {
@@ -972,7 +974,7 @@ function buildWorkbenchHeader(parent, options) {
     modeSelect.createEl("option", { text: preset.name, value: preset.id });
   }
   modeSelect.value = options.currentPresetId;
-  const zoomGroup = controls.createDiv({
+  const zoomGroup = secondaryControls.createDiv({
     cls: "pdf-chat-zoom-group",
     attr: { role: "group", "aria-label": "\u5B57\u4F53\u5927\u5C0F" }
   });
@@ -991,22 +993,74 @@ function buildWorkbenchHeader(parent, options) {
     cls: "pdf-chat-zoom-btn",
     attr: { type: "button" }
   });
-  labelControl(zoomOutButton, "\u7F29\u5C0F\u5185\u5BB9\u5B57\u4F53");
-  labelControl(zoomResetButton, "\u91CD\u7F6E\u5185\u5BB9\u5B57\u4F53\u4E3A 100%");
-  labelControl(zoomInButton, "\u653E\u5927\u5185\u5BB9\u5B57\u4F53");
-  const clearButton = controls.createEl("button", {
-    text: "\u6E05\u7A7A",
-    cls: "pdf-chat-reset-btn",
+  setElementLabel(zoomOutButton, "\u7F29\u5C0F\u5185\u5BB9\u5B57\u4F53");
+  setElementLabel(zoomResetButton, "\u91CD\u7F6E\u5185\u5BB9\u5B57\u4F53\u4E3A 100%");
+  setElementLabel(zoomInButton, "\u653E\u5927\u5185\u5BB9\u5B57\u4F53");
+  const moreWrapper = secondaryControls.createDiv({ cls: "pdf-chat-more-wrapper" });
+  const moreButton = moreWrapper.createEl("button", {
+    text: "\u22EF",
+    cls: "pdf-chat-more-button",
+    attr: {
+      type: "button",
+      "aria-haspopup": "menu",
+      "aria-expanded": "false"
+    }
+  });
+  setElementLabel(moreButton, "\u66F4\u591A\u64CD\u4F5C");
+  const moreMenu = moreWrapper.createDiv({
+    cls: "pdf-chat-more-menu is-hidden",
+    attr: { role: "menu" }
+  });
+  const clearButton = moreMenu.createEl("button", {
+    text: "\u6E05\u7A7A\u5BF9\u8BDD",
+    cls: "pdf-chat-menu-item pdf-chat-reset-btn",
     attr: { type: "button" }
   });
-  labelControl(clearButton, "\u6E05\u7A7A\u5F53\u524D\u5BF9\u8BDD");
+  clearButton.setAttr("role", "menuitem");
+  setElementLabel(clearButton, "\u6E05\u7A7A\u5F53\u524D\u5BF9\u8BDD");
+  let removeTransientListeners = null;
+  const closeMenu = () => {
+    moreButton.setAttr("aria-expanded", "false");
+    moreMenu.addClass("is-hidden");
+    removeTransientListeners == null ? void 0 : removeTransientListeners();
+    removeTransientListeners = null;
+  };
+  const openMenu = () => {
+    moreButton.setAttr("aria-expanded", "true");
+    moreMenu.removeClass("is-hidden");
+    const ownerDocument = root.ownerDocument;
+    const onDocumentClick = (event) => {
+      const target = event.target;
+      if (target && moreWrapper.contains(target)) return;
+      closeMenu();
+    };
+    const onDocumentKeydown = (event) => {
+      if (event.key === "Escape") closeMenu();
+    };
+    ownerDocument.addEventListener("click", onDocumentClick);
+    ownerDocument.addEventListener("keydown", onDocumentKeydown);
+    removeTransientListeners = () => {
+      ownerDocument.removeEventListener("click", onDocumentClick);
+      ownerDocument.removeEventListener("keydown", onDocumentKeydown);
+    };
+  };
+  moreButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (moreButton.getAttribute("aria-expanded") === "true") closeMenu();
+    else openMenu();
+  });
+  clearButton.addEventListener("click", closeMenu);
   return {
     root,
+    primaryControls,
+    secondaryControls,
     modelSelect,
     modeSelect,
     zoomOutButton,
     zoomResetButton,
     zoomInButton,
+    moreButton,
+    moreMenu,
     clearButton
   };
 }
@@ -1028,15 +1082,15 @@ function buildContextPanel(parent, options) {
   toggle.createEl("span", { text: "\u8BBA\u6587\u4E0A\u4E0B\u6587", cls: "pdf-chat-context-title" });
   toggle.createEl("span", {
     text: `${options.selectionText.length} \u5B57`,
-    cls: "pdf-chat-status-chip pdf-chat-selection-count"
+    cls: "pdf-chat-status-chip pdf-chat-status-chip-count pdf-chat-selection-count is-neutral"
   });
   const summaryStatus = toggle.createEl("span", {
-    text: options.hasPdf ? "\u6458\u8981\uFF1A\u68C0\u67E5\u4E2D" : "\u6458\u8981\uFF1A\u4EC5 PDF",
-    cls: "pdf-chat-status-chip pdf-chat-summary-status"
+    text: options.hasPdf ? "\u6458\u8981\u68C0\u67E5\u4E2D" : "\u4EC5\u9009\u533A",
+    cls: "pdf-chat-status-chip pdf-chat-status-chip-summary pdf-chat-summary-status is-pending"
   });
   const ragStatus = toggle.createEl("span", {
-    text: options.hasPdf ? "\u4E0A\u4E0B\u6587\uFF1A\u68C0\u67E5\u4E2D" : "\u4E0A\u4E0B\u6587\uFF1A\u9009\u533A",
-    cls: "pdf-chat-status-chip pdf-chat-rag-status"
+    text: options.hasPdf ? "\u4E0A\u4E0B\u6587\u68C0\u67E5\u4E2D" : "\u9009\u533A\u4E0A\u4E0B\u6587",
+    cls: "pdf-chat-status-chip pdf-chat-status-chip-context pdf-chat-rag-status is-pending"
   });
   toggle.createEl("span", { text: "\u2304", cls: "pdf-chat-context-chevron", attr: { "aria-hidden": "true" } });
   const body = root.createDiv({
@@ -1091,7 +1145,8 @@ function buildComposer(parent) {
     cls: "pdf-chat-composer",
     attr: { "aria-label": "\u63D0\u95EE\u7F16\u8F91\u5668" }
   });
-  const inputRow = root.createDiv({ cls: "pdf-chat-input-row" });
+  const card = root.createDiv({ cls: "pdf-chat-composer-card" });
+  const inputRow = card.createDiv({ cls: "pdf-chat-input-row" });
   const input = inputRow.createEl("textarea", {
     cls: "pdf-chat-input",
     attr: {
@@ -1100,24 +1155,71 @@ function buildComposer(parent) {
       "aria-label": "\u9488\u5BF9\u5F53\u524D\u9009\u533A\u63D0\u95EE"
     }
   });
-  const translateButton = inputRow.createEl("button", {
+  const footer = card.createDiv({ cls: "pdf-chat-composer-footer" });
+  const status = footer.createDiv({
+    text: "\u5F53\u524D\u9009\u533A\u4E0A\u4E0B\u6587\u5DF2\u542F\u7528",
+    cls: "pdf-chat-composer-status"
+  });
+  const actions = footer.createDiv({ cls: "pdf-chat-composer-actions" });
+  const hint = actions.createDiv({
+    cls: "pdf-chat-hint",
+    text: "Enter \u53D1\u9001 \xB7 Shift+Enter \u6362\u884C"
+  });
+  const translateButton = actions.createEl("button", {
     text: "\u7FFB\u8BD1\u9009\u533A",
     cls: "pdf-chat-translate-btn",
     attr: { type: "button" }
   });
-  labelControl(translateButton, "\u7FFB\u8BD1\u5F53\u524D\u9009\u533A");
-  const sendButton = inputRow.createEl("button", {
-    text: "\u53D1\u9001",
+  setElementLabel(translateButton, "\u7FFB\u8BD1\u5F53\u524D\u9009\u533A");
+  const sendButton = actions.createEl("button", {
+    text: "\u2191",
     cls: "mod-cta pdf-chat-send-btn",
     attr: { type: "button" }
   });
-  labelControl(sendButton, "\u53D1\u9001\u95EE\u9898");
-  root.createEl("p", {
-    cls: "pdf-chat-hint",
-    text: "Enter \u53D1\u9001 \xB7 Shift+Enter \u6362\u884C \xB7 \u751F\u6210\u65F6\u53EF\u505C\u6B62"
-  });
+  setElementLabel(sendButton, "\u53D1\u9001\u95EE\u9898");
   input.addEventListener("input", () => resizeComposerTextarea(input));
-  return { root, input, translateButton, sendButton };
+  return { root, card, status, input, actions, translateButton, sendButton, hint };
+}
+function buildFollowupSuggestions(parent, suggestions) {
+  var _a;
+  const root = parent.createDiv({
+    cls: "pdf-chat-followup-suggestions",
+    attr: { role: "group", "aria-label": "\u5FEB\u6377\u8FFD\u95EE" }
+  });
+  const compatibleRoot = root;
+  for (const suggestion of suggestions) {
+    let button;
+    if (typeof compatibleRoot.createEl === "function") {
+      button = compatibleRoot.createEl("button", {
+        text: suggestion,
+        cls: "pdf-chat-followup-chip",
+        attr: { type: "button" }
+      });
+    } else if (((_a = root.ownerDocument) == null ? void 0 : _a.createElement) && typeof root.appendChild === "function") {
+      button = root.ownerDocument.createElement("button");
+      button.textContent = suggestion;
+      button.className = "pdf-chat-followup-chip";
+      button.setAttribute("type", "button");
+      root.appendChild(button);
+    } else {
+      continue;
+    }
+    setElementLabel(button, suggestion);
+  }
+  return root;
+}
+function formatTranslationUserDisplay(content) {
+  const match = /^翻译当前选区（(.+?)）$/.exec(content.trim());
+  if (!match) return null;
+  return { title: "\u7FFB\u8BD1\u5F53\u524D\u9009\u533A", meta: match[1] };
+}
+function formatAssistantDisplayMarkdown(raw) {
+  if (!raw || raw.includes("\n\n")) return raw;
+  if (/```|`[^`]+`|\|.+\||^\s*[-*+]\s+/m.test(raw)) return raw;
+  if (/\$\$|\\\[|\\\(|<table|<pre|<code/i.test(raw)) return raw;
+  if (raw.length < 40) return raw;
+  const split = raw.replace(/(。)(?=(?:提示生成|模型改进|实验结果|方法|贡献|局限|相关工作|结论|首先|其次|最后|此外|因此))/g, "$1\n\n").replace(/([.!?])\s+(?=(?:Prompt|Model|Experiment|Result|Method|Contribution|Limitation)\b)/g, "$1\n\n");
+  return split === raw ? raw : split;
 }
 
 // src/pdf-chat-modal.ts
@@ -1145,6 +1247,30 @@ async function renderMarkdownInto(app, component, el, text) {
   } catch (e) {
   }
   el.setText(text);
+}
+function getBubbleContentEl(bubble) {
+  return bubble.pdfChatContentEl || bubble;
+}
+function setBubbleText(bubble, text) {
+  getBubbleContentEl(bubble).setText(text);
+}
+function createBubbleDiv(parent, options) {
+  const compatibleParent = parent;
+  if (typeof compatibleParent.createDiv === "function") return compatibleParent.createDiv(options);
+  if (typeof compatibleParent.createEl === "function") return compatibleParent.createEl("div", options);
+  const child = parent.ownerDocument.createElement("div");
+  if (options.cls) child.className = options.cls;
+  if (options.text !== void 0) child.textContent = options.text;
+  parent.appendChild(child);
+  return child;
+}
+function canCreateBubbleChildren(parent) {
+  var _a;
+  const compatibleParent = parent;
+  return typeof compatibleParent.createDiv === "function" || typeof compatibleParent.createEl === "function" || typeof ((_a = parent.ownerDocument) == null ? void 0 : _a.createElement) === "function";
+}
+async function renderMarkdownIntoBubble(app, component, bubble, text) {
+  await renderMarkdownInto(app, component, getBubbleContentEl(bubble), formatAssistantDisplayMarkdown(text));
 }
 var PDFChatModal = class extends import_obsidian2.Modal {
   constructor(app, plugin, contextText, pdfFile, startFresh, services, autoTranslateOnOpen) {
@@ -1188,6 +1314,8 @@ var PDFChatModal = class extends import_obsidian2.Modal {
     __publicField(this, "ragRefreshBtn");
     __publicField(this, "historyEl");
     __publicField(this, "emptyStateEl");
+    __publicField(this, "suggestionsEl");
+    __publicField(this, "composerStatusEl");
     __publicField(this, "inputEl");
     __publicField(this, "translateBtn");
     __publicField(this, "sendBtn");
@@ -1281,9 +1409,11 @@ ${this.contextText}`;
     this.historyEl = buildMessageRegion(contentEl, restoringHistory);
     if (!restoringHistory) this.showEmptyState();
     const composer = buildComposer(contentEl);
+    this.composerStatusEl = composer.status;
     this.inputEl = composer.input;
     this.translateBtn = composer.translateButton;
     this.sendBtn = composer.sendButton;
+    this.updateComposerContextStatus();
     const submit = () => this.handleSubmit();
     this.sendBtn.addEventListener("click", () => {
       if (this.isSending) {
@@ -1301,6 +1431,7 @@ ${this.contextText}`;
         submit();
       }
     });
+    this.inputEl.addEventListener("input", () => this.hideFollowupSuggestions());
     if (restoringHistory) {
       this.restoreConversationHistory().catch((err) => {
         this.setHistoryLiveMode("polite");
@@ -1338,6 +1469,7 @@ ${this.contextText}`;
         this.useDocSummary = false;
       }
       this.messages[0] = this.buildSystemMessage();
+      this.updateComposerContextStatus();
     });
     summaryRefreshBtn.addEventListener("click", async () => {
       await this.ensureDocSummary(true);
@@ -1345,6 +1477,7 @@ ${this.contextText}`;
         this.useDocSummary = !!(this.docSummaryEntry && this.docSummaryEntry.summary);
       }
       this.messages[0] = this.buildSystemMessage();
+      this.updateComposerContextStatus();
     });
     if (this.plugin.settings.autoDocSummary) {
       summaryCheckbox.checked = true;
@@ -1353,6 +1486,7 @@ ${this.contextText}`;
         this.useDocSummary = !!(this.docSummaryEntry && this.docSummaryEntry.summary);
         summaryCheckbox.checked = this.useDocSummary;
         this.messages[0] = this.buildSystemMessage();
+        this.updateComposerContextStatus();
       });
     }
     const ragRow = container.createDiv({ cls: "pdf-chat-summary-row" });
@@ -1375,12 +1509,14 @@ ${this.contextText}`;
       } else {
         this.useRag = false;
       }
+      this.updateComposerContextStatus();
     });
     ragRefreshBtn.addEventListener("click", async () => {
       await this.ensureDocChunks(true);
       if (ragCheckbox.checked) {
         this.useRag = !!(this.docChunksEntry && this.docChunksEntry.chunks.length);
       }
+      this.updateComposerContextStatus();
     });
     if (this.plugin.settings.autoRag) {
       ragCheckbox.checked = true;
@@ -1388,6 +1524,7 @@ ${this.contextText}`;
       void this.ensureDocChunks(false).then(() => {
         this.useRag = !!(this.docChunksEntry && this.docChunksEntry.chunks.length);
         ragCheckbox.checked = this.useRag;
+        this.updateComposerContextStatus();
       });
     }
   }
@@ -1420,6 +1557,56 @@ ${this.contextText}`;
     if (typeof history.setAttr === "function") history.setAttr("aria-live", value);
     else if (typeof history.setAttribute === "function") history.setAttribute("aria-live", value);
   }
+  setChipState(element, state) {
+    if (!element) return;
+    element.removeClass("is-neutral", "is-success", "is-accent", "is-pending");
+    element.addClass(`is-${state}`);
+  }
+  updateComposerContextStatus() {
+    if (!this.composerStatusEl) return;
+    if (!this.pdfFile) {
+      this.composerStatusEl.setText("\u9009\u533A\u4E0A\u4E0B\u6587\u5DF2\u542F\u7528");
+      return;
+    }
+    if (this.useRag && this.useFullTextMode) {
+      this.composerStatusEl.setText("\u5168\u6587\u4E0A\u4E0B\u6587\u5DF2\u542F\u7528");
+    } else if (this.useRag) {
+      this.composerStatusEl.setText("RAG \u68C0\u7D22\u5DF2\u542F\u7528");
+    } else if (this.useDocSummary) {
+      this.composerStatusEl.setText("\u6458\u8981\u80CC\u666F\u5DF2\u542F\u7528");
+    } else {
+      this.composerStatusEl.setText("\u5F53\u524D\u9009\u533A\u4E0A\u4E0B\u6587\u5DF2\u542F\u7528");
+    }
+  }
+  followupSuggestions() {
+    if (!this.pdfFile) return ["\u89E3\u91CA\u8FD9\u6BB5\u5185\u5BB9", "\u603B\u7ED3\u8981\u70B9", "\u5217\u51FA\u5173\u952E\u672F\u8BED", "\u63D0\u51FA\u540E\u7EED\u95EE\u9898"];
+    return ["\u89E3\u91CA\u8FD9\u6BB5\u5185\u5BB9", "\u603B\u7ED3\u6838\u5FC3\u8D21\u732E", "\u5206\u6790\u5B9E\u9A8C\u7ED3\u679C", "\u4E0E\u76F8\u5173\u5DE5\u4F5C\u5BF9\u6BD4"];
+  }
+  showFollowupSuggestions() {
+    this.hideFollowupSuggestions();
+    try {
+      this.suggestionsEl = buildFollowupSuggestions(this.historyEl, this.followupSuggestions());
+      const children = this.suggestionsEl.children;
+      if (!children) return;
+      for (const button of Array.from(children)) {
+        if (button.tagName !== "BUTTON") continue;
+        button.addEventListener("click", () => {
+          this.inputEl.value = button.textContent || "";
+          this.inputEl.focus();
+          this.hideFollowupSuggestions();
+        });
+      }
+      this.historyEl.scrollTo({ top: this.historyEl.scrollHeight, behavior: "smooth" });
+    } catch (error) {
+      void error;
+      this.suggestionsEl = void 0;
+    }
+  }
+  hideFollowupSuggestions() {
+    var _a;
+    (_a = this.suggestionsEl) == null ? void 0 : _a.remove();
+    this.suggestionsEl = void 0;
+  }
   async restoreConversationHistory() {
     const renderJobs = [];
     for (const message of this.transcript) {
@@ -1430,7 +1617,7 @@ ${this.contextText}`;
       const bubble = this.addBubble("assistant", message.content, { skipScroll: true });
       bubble.addClass("is-rendered");
       renderJobs.push(
-        renderMarkdownInto(this.app, this.plugin, bubble, message.content).then(() => {
+        renderMarkdownIntoBubble(this.app, this.plugin, bubble, message.content).then(() => {
           if (message.status === "stopped") {
             bubble.addClass("is-stopped");
             bubble.createEl("p", { cls: "pdf-chat-stopped-label", text: "[\u5DF2\u505C\u6B62\u751F\u6210]" });
@@ -1441,6 +1628,10 @@ ${this.contextText}`;
     await Promise.all(renderJobs);
     this.setHistoryLiveMode("polite");
     this.historyEl.scrollTo({ top: this.historyEl.scrollHeight, behavior: "auto" });
+    const lastMessage = this.transcript[this.transcript.length - 1];
+    if (lastMessage && lastMessage.role === "assistant" && lastMessage.status !== "stopped") {
+      this.showFollowupSuggestions();
+    }
     const scope = this.pdfFile ? "\u672C PDF" : "\u5F53\u524D\u9009\u533A";
     new import_obsidian2.Notice(`\u5DF2\u6062\u590D${scope}\u4E0A\u6B21\u5BF9\u8BDD(${this.transcript.length} \u6761\u6D88\u606F)`);
   }
@@ -1492,6 +1683,7 @@ ${this.contextText}`;
     this.messages = [this.buildSystemMessage()];
     this.fullTextAttached = false;
     this.historyEl.empty();
+    this.hideFollowupSuggestions();
     this.emptyStateEl = void 0;
     this.showEmptyState();
     try {
@@ -1541,13 +1733,16 @@ ${this.contextText}`;
       this.docSummaryEntry = cached;
       const date = new Date(cached.generatedAt);
       const truncatedNote = cached.truncated ? " \xB7 \u539F\u6587\u8FC7\u957F,\u4EC5\u6458\u8981\u4E86\u524D\u9762\u90E8\u5206" : "";
-      this.summaryStatusEl.setText("\u6458\u8981\uFF1A\u5DF2\u7F13\u5B58");
+      this.summaryStatusEl.setText("\u6458\u8981\u5DF2\u7F13\u5B58");
+      this.setChipState(this.summaryStatusEl, "success");
       this.summaryStatusEl.setAttr("aria-label", `\u6458\u8981\u5DF2\u7F13\u5B58 \xB7 ${date.toLocaleString()}${truncatedNote}`);
     } else {
       this.docSummaryEntry = null;
-      this.summaryStatusEl.setText("\u6458\u8981\uFF1A\u672A\u751F\u6210");
+      this.summaryStatusEl.setText("\u6458\u8981\u672A\u751F\u6210");
+      this.setChipState(this.summaryStatusEl, "neutral");
       this.summaryStatusEl.setAttr("aria-label", "\u5C1A\u672A\u751F\u6210\u5168\u6587\u6458\u8981");
     }
+    this.updateComposerContextStatus();
   }
   async ensureDocSummary(forceRefresh) {
     var _a;
@@ -1560,7 +1755,8 @@ ${this.contextText}`;
       return;
     }
     this.isGeneratingSummary = true;
-    (_a = this.summaryStatusEl) == null ? void 0 : _a.setText("\u6458\u8981\uFF1A\u751F\u6210\u4E2D");
+    (_a = this.summaryStatusEl) == null ? void 0 : _a.setText("\u6458\u8981\u751F\u6210\u4E2D");
+    this.setChipState(this.summaryStatusEl, "pending");
     if (this.summaryRefreshBtn) {
       this.summaryRefreshBtn.setText("\u751F\u6210\u4E2D\u2026");
       this.summaryRefreshBtn.disabled = true;
@@ -1584,6 +1780,7 @@ ${this.contextText}`;
         this.summaryRefreshBtn.disabled = false;
       }
       if (this.summaryCheckbox) this.summaryCheckbox.disabled = false;
+      this.updateComposerContextStatus();
     }
   }
   refreshRagStatus() {
@@ -1595,21 +1792,25 @@ ${this.contextText}`;
       this.useFullTextMode = !!(cached.fullTextLength && cached.fullTextLength <= threshold);
       const date = new Date(cached.generatedAt);
       if (this.useFullTextMode) {
-        this.ragStatusEl.setText("\u4E0A\u4E0B\u6587\uFF1A\u5168\u6587\u76F4\u8BFB");
+        this.ragStatusEl.setText("\u5168\u6587\u76F4\u8BFB");
+        this.setChipState(this.ragStatusEl, "accent");
         this.ragStatusEl.setAttr(
           "aria-label",
           `\u5168\u6587\u7EA6 ${cached.fullTextLength} \u5B57\uFF0C\u76F4\u63A5\u8BFB\u5168\u6587 \xB7 ${date.toLocaleString()}`
         );
       } else {
-        this.ragStatusEl.setText("\u4E0A\u4E0B\u6587\uFF1ARAG \u5C31\u7EEA");
+        this.ragStatusEl.setText("RAG \u5C31\u7EEA");
+        this.setChipState(this.ragStatusEl, "success");
         this.ragStatusEl.setAttr("aria-label", `\u5DF2\u5EFA\u7D22\u5F15 \xB7 ${cached.chunks.length} \u5757 \xB7 ${date.toLocaleString()}`);
       }
     } else {
       this.docChunksEntry = null;
       this.useFullTextMode = false;
-      this.ragStatusEl.setText("\u4E0A\u4E0B\u6587\uFF1A\u672A\u7D22\u5F15");
+      this.ragStatusEl.setText("\u9009\u533A\u4E0A\u4E0B\u6587");
+      this.setChipState(this.ragStatusEl, "neutral");
       this.ragStatusEl.setAttr("aria-label", "\u5C1A\u672A\u5EFA\u7ACB\u5168\u6587\u68C0\u7D22\u7D22\u5F15");
     }
+    this.updateComposerContextStatus();
   }
   async ensureDocChunks(forceRefresh) {
     var _a;
@@ -1622,7 +1823,8 @@ ${this.contextText}`;
       return;
     }
     this.isIndexingRag = true;
-    (_a = this.ragStatusEl) == null ? void 0 : _a.setText("\u4E0A\u4E0B\u6587\uFF1A\u5EFA\u7ACB\u4E2D");
+    (_a = this.ragStatusEl) == null ? void 0 : _a.setText("\u7D22\u5F15\u5EFA\u7ACB\u4E2D");
+    this.setChipState(this.ragStatusEl, "pending");
     if (this.ragRefreshBtn) {
       this.ragRefreshBtn.setText("\u5EFA\u7ACB\u4E2D\u2026");
       this.ragRefreshBtn.disabled = true;
@@ -1642,6 +1844,7 @@ ${this.contextText}`;
         this.ragRefreshBtn.disabled = false;
       }
       if (this.ragCheckbox) this.ragCheckbox.disabled = false;
+      this.updateComposerContextStatus();
     }
   }
   setupDragging(handleEl) {
@@ -1681,7 +1884,8 @@ ${this.contextText}`;
   }
   setSendingState(sending) {
     this.isSending = sending;
-    this.sendBtn.setText(sending ? "\u505C\u6B62" : "\u53D1\u9001");
+    if (sending) this.hideFollowupSuggestions();
+    this.sendBtn.setText(sending ? "\u505C\u6B62" : "\u2191");
     this.sendBtn.toggleClass("is-stop", sending);
     labelControl(this.sendBtn, sending ? "\u505C\u6B62\u751F\u6210" : "\u53D1\u9001\u95EE\u9898");
     if (this.translateBtn) {
@@ -1697,6 +1901,7 @@ ${this.contextText}`;
   }
   async runTranslation() {
     if (!this.contextText || this.isSending) return;
+    this.hideFollowupSuggestions();
     const friendlyLabel = `\u7FFB\u8BD1\u5F53\u524D\u9009\u533A\uFF08${this.contextText.length} \u5B57\uFF09`;
     this.addBubble("user", friendlyLabel);
     this.setSendingState(true);
@@ -1715,7 +1920,7 @@ ${this.contextText}`;
           const progressText = progress.chunkCount > 1 ? `${progress.combinedText}
 
 \u6B63\u5728\u7FFB\u8BD1 ${progress.chunkIndex}/${progress.chunkCount}\u2026` : progress.combinedText;
-          loadingBubble.setText(progressText);
+          setBubbleText(loadingBubble, progressText);
           this.historyEl.scrollTo({ top: this.historyEl.scrollHeight, behavior: "auto" });
         }
       });
@@ -1723,7 +1928,7 @@ ${this.contextText}`;
       loadingBubble.removeClass("is-loading");
       if (!fullText.trim()) {
         loadingBubble.addClass("is-error");
-        loadingBubble.setText("\u7FFB\u8BD1\u672A\u8FD4\u56DE\u5185\u5BB9");
+        setBubbleText(loadingBubble, "\u7FFB\u8BD1\u672A\u8FD4\u56DE\u5185\u5BB9");
         return;
       }
       const hasFallbackChunks = result.failedChunkIndexes.length > 0;
@@ -1734,21 +1939,22 @@ ${this.contextText}`;
         if (result.stoppedEarly) notices.push("[\u5DF2\u505C\u6B62\u751F\u6210]");
         if (hasFallbackChunks) notices.push("[\u90E8\u5206\u5206\u5757\u7FFB\u8BD1\u5931\u8D25\uFF0C\u5DF2\u4FDD\u7559\u539F\u6587]");
         loadingBubble.addClass("is-stopped");
-        loadingBubble.setText(fullText + "\n\n" + notices.join("\n"));
+        setBubbleText(loadingBubble, fullText + "\n\n" + notices.join("\n"));
       } else {
         loadingBubble.addClass("is-rendered");
-        await renderMarkdownInto(this.app, this.plugin, loadingBubble, fullText);
+        await renderMarkdownIntoBubble(this.app, this.plugin, loadingBubble, fullText);
       }
       this.messages.push(
         { role: "user", content: friendlyLabel },
         { role: "assistant", content: fullText }
       );
       await this.recordTranslateTurn(friendlyLabel, fullText, status);
+      if (!isPartial) this.showFollowupSuggestions();
     } catch (err) {
       loadingBubble.removeClass("is-loading");
       if (isAbortError(err) && fullText.trim()) {
         loadingBubble.addClass("is-stopped");
-        loadingBubble.setText(fullText + "\n\n[\u5DF2\u505C\u6B62\u751F\u6210]");
+        setBubbleText(loadingBubble, fullText + "\n\n[\u5DF2\u505C\u6B62\u751F\u6210]");
         this.messages.push(
           { role: "user", content: friendlyLabel },
           { role: "assistant", content: fullText }
@@ -1756,7 +1962,7 @@ ${this.contextText}`;
         await this.recordTranslateTurn(friendlyLabel, fullText, "stopped");
       } else {
         loadingBubble.addClass("is-error");
-        loadingBubble.setText("\u7FFB\u8BD1\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u6A21\u578B\u914D\u7F6E\u6216\u7A0D\u540E\u91CD\u8BD5\u3002");
+        setBubbleText(loadingBubble, "\u7FFB\u8BD1\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u6A21\u578B\u914D\u7F6E\u6216\u7A0D\u540E\u91CD\u8BD5\u3002");
       }
     } finally {
       this.setSendingState(false);
@@ -1773,6 +1979,7 @@ ${this.contextText}`;
       new import_obsidian2.Notice("\u4E0A\u4E00\u4E2A\u95EE\u9898\u8FD8\u5728\u751F\u6210\u4E2D,\u8BF7\u7A0D\u5019\u6216\u70B9\u51FB\u505C\u6B62");
       return;
     }
+    this.hideFollowupSuggestions();
     this.addBubble("user", question);
     if (!usingOverride) {
       this.inputEl.value = "";
@@ -1783,7 +1990,7 @@ ${this.contextText}`;
     let outgoingContent = question;
     if (opts.skipContextAugmentation) {
     } else if (this.useRag && this.useFullTextMode && this.pdfFile && !this.fullTextAttached) {
-      loadingBubble.setText("\u6B63\u5728\u8BFB\u53D6\u5168\u6587\u2026");
+      setBubbleText(loadingBubble, "\u6B63\u5728\u8BFB\u53D6\u5168\u6587\u2026");
       try {
         if (!this.fullTextForQA) {
           this.fullTextForQA = await this.services.papers.extractFullText(this.pdfFile);
@@ -1792,11 +1999,11 @@ ${this.contextText}`;
         this.fullTextAttached = true;
       } catch (err) {
       }
-      loadingBubble.setText("\u601D\u8003\u4E2D\u2026");
+      setBubbleText(loadingBubble, "\u601D\u8003\u4E2D\u2026");
     } else if (!this.useFullTextMode && this.useRag && this.docChunksEntry && this.docChunksEntry.chunks && this.docChunksEntry.chunks.length) {
       const retrievalQueries = [question];
       if (this.plugin.settings.ragQueryTranslate) {
-        loadingBubble.setText("\u6B63\u5728\u601D\u8003\u68C0\u7D22\u89D2\u5EA6\u2026");
+        setBubbleText(loadingBubble, "\u6B63\u5728\u601D\u8003\u68C0\u7D22\u89D2\u5EA6\u2026");
         try {
           const variants = await this.services.papers.planRagQueries(question);
           if (variants && variants.length) retrievalQueries.push(...variants);
@@ -1814,7 +2021,7 @@ ${this.contextText}`;
 ${c.text}`).join("\n\n---\n\n");
         outgoingContent = "\u3010\u4ECE\u5168\u6587\u4E2D\u6309\u5173\u952E\u8BCD\u68C0\u7D22\u5230\u7684\u53EF\u80FD\u76F8\u5173\u7247\u6BB5(\u4E0D\u4E00\u5B9A\u5B8C\u5168\u51C6\u786E,\u4EC5\u4F9B\u53C2\u8003)\u3011:\n" + retrievedText + "\n\n\u3010\u6211\u7684\u95EE\u9898\u3011:\n" + question;
       }
-      loadingBubble.setText("\u601D\u8003\u4E2D\u2026");
+      setBubbleText(loadingBubble, "\u601D\u8003\u4E2D\u2026");
     }
     this.messages.push({ role: "user", content: outgoingContent });
     this.abortController = new AbortController();
@@ -1829,7 +2036,7 @@ ${c.text}`).join("\n\n---\n\n");
             firstChunkArrived = true;
             loadingBubble.removeClass("is-loading");
           }
-          loadingBubble.setText(acc);
+          setBubbleText(loadingBubble, acc);
           this.historyEl.scrollTo({ top: this.historyEl.scrollHeight, behavior: "auto" });
         },
         signal: this.abortController.signal,
@@ -1838,13 +2045,14 @@ ${c.text}`).join("\n\n---\n\n");
       loadingBubble.removeClass("is-loading");
       loadingBubble.addClass("is-rendered");
       this.messages.push({ role: "assistant", content: fullText });
-      await renderMarkdownInto(this.app, this.plugin, loadingBubble, fullText);
+      await renderMarkdownIntoBubble(this.app, this.plugin, loadingBubble, fullText);
       await this.recordTranscriptTurn(question, fullText, "complete");
+      this.showFollowupSuggestions();
     } catch (err) {
       loadingBubble.removeClass("is-loading");
       if (isAbortError(err)) {
         loadingBubble.addClass("is-stopped");
-        loadingBubble.setText((fullText || "") + "\n\n[\u5DF2\u505C\u6B62\u751F\u6210]");
+        setBubbleText(loadingBubble, (fullText || "") + "\n\n[\u5DF2\u505C\u6B62\u751F\u6210]");
         if (fullText) {
           this.messages.push({ role: "assistant", content: fullText });
           await this.recordTranscriptTurn(question, fullText, "stopped");
@@ -1853,7 +2061,7 @@ ${c.text}`).join("\n\n---\n\n");
         }
       } else {
         loadingBubble.addClass("is-error");
-        loadingBubble.setText("\u8BF7\u6C42\u5931\u8D25: " + errorMessage(err));
+        setBubbleText(loadingBubble, "\u8BF7\u6C42\u5931\u8D25: " + errorMessage(err));
         this.messages.pop();
       }
     } finally {
@@ -1872,7 +2080,33 @@ ${c.text}`).join("\n\n---\n\n");
       compatibleBubble.setAttribute("aria-label", role === "user" ? "\u4F60\u7684\u6D88\u606F" : "PDF Chat \u7684\u6D88\u606F");
     }
     if (opts && opts.loading) bubble.addClass("is-loading");
-    bubble.setText(text);
+    if (!canCreateBubbleChildren(bubble)) {
+      setBubbleText(bubble, text);
+    } else if (role === "assistant") {
+      const meta = createBubbleDiv(bubble, { cls: "pdf-chat-message-meta" });
+      meta.createEl("span", { text: "PDF Chat", cls: "pdf-chat-message-author" });
+      meta.createEl("span", { text: "\u57FA\u4E8E\u5F53\u524D\u8BBA\u6587\u4E0A\u4E0B\u6587", cls: "pdf-chat-message-context" });
+      bubble.pdfChatContentEl = createBubbleDiv(bubble, { cls: "pdf-chat-message-content" });
+      setBubbleText(bubble, text);
+    } else {
+      const translationDisplay = formatTranslationUserDisplay(text);
+      bubble.pdfChatContentEl = createBubbleDiv(bubble, { cls: "pdf-chat-message-content" });
+      if (translationDisplay) {
+        bubble.addClass("is-translation-request");
+        createBubbleDiv(bubble.pdfChatContentEl, {
+          text: translationDisplay.title,
+          cls: "pdf-chat-user-message-title"
+        });
+        if (translationDisplay.meta) {
+          createBubbleDiv(bubble.pdfChatContentEl, {
+            text: translationDisplay.meta,
+            cls: "pdf-chat-user-message-meta"
+          });
+        }
+      } else {
+        setBubbleText(bubble, text);
+      }
+    }
     if (!(opts && opts.skipScroll)) {
       this.historyEl.scrollTo({ top: this.historyEl.scrollHeight, behavior: "smooth" });
     }
@@ -1992,7 +2226,6 @@ var QuickTranslateMarker = class {
     marker.className = "pdf-chat-quick-translate-marker";
     marker.textContent = "\u8BD1";
     marker.setAttribute("aria-label", "\u7FFB\u8BD1\u5F53\u524D PDF \u9009\u533A");
-    marker.setAttribute("title", "\u7FFB\u8BD1\u5F53\u524D PDF \u9009\u533A");
     marker.addEventListener("mousedown", (event) => {
       event.preventDefault();
       event.stopPropagation();

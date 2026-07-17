@@ -7,7 +7,7 @@ function nextControlId(prefix: string): string {
   return `pdf-chat-${prefix}-${controlId}`;
 }
 
-export function labelControl(element: HTMLElement, label: string): void {
+export function setElementLabel(element: HTMLElement, label: string): void {
   const compatibleElement = element as HTMLElement & {
     setAttr?: (name: string, value: string) => void;
   };
@@ -17,6 +17,8 @@ export function labelControl(element: HTMLElement, label: string): void {
     compatibleElement.setAttribute("aria-label", label);
   }
 }
+
+export const labelControl = setElementLabel;
 
 export interface WorkbenchHeaderOptions {
   filename: string;
@@ -28,11 +30,15 @@ export interface WorkbenchHeaderOptions {
 
 export interface WorkbenchHeaderElements {
   root: HTMLElement;
+  primaryControls: HTMLElement;
+  secondaryControls: HTMLElement;
   modelSelect: HTMLSelectElement;
   modeSelect: HTMLSelectElement;
   zoomOutButton: HTMLButtonElement;
   zoomResetButton: HTMLButtonElement;
   zoomInButton: HTMLButtonElement;
+  moreButton: HTMLButtonElement;
+  moreMenu: HTMLElement;
   clearButton: HTMLButtonElement;
 }
 
@@ -48,8 +54,10 @@ export function buildWorkbenchHeader(
     cls: "pdf-chat-document-name",
   });
 
-  const controls = root.createDiv({ cls: "pdf-chat-header-controls pdf-chat-interactive" });
-  const modelGroup = controls.createDiv({ cls: "pdf-chat-control-group" });
+  const primaryControls = root.createDiv({ cls: "pdf-chat-header-primary-controls pdf-chat-interactive" });
+  const secondaryControls = root.createDiv({ cls: "pdf-chat-header-secondary-controls pdf-chat-interactive" });
+
+  const modelGroup = primaryControls.createDiv({ cls: "pdf-chat-control-group" });
   const modelId = nextControlId("model");
   modelGroup.createEl("label", { text: "模型", attr: { for: modelId } });
   const modelSelect = modelGroup.createEl("select", {
@@ -61,7 +69,7 @@ export function buildWorkbenchHeader(
   }
   modelSelect.value = options.currentModelId;
 
-  const modeGroup = controls.createDiv({ cls: "pdf-chat-control-group" });
+  const modeGroup = primaryControls.createDiv({ cls: "pdf-chat-control-group" });
   const modeId = nextControlId("mode");
   modeGroup.createEl("label", { text: "阅读模式", attr: { for: modeId } });
   const modeSelect = modeGroup.createEl("select", {
@@ -74,7 +82,7 @@ export function buildWorkbenchHeader(
   }
   modeSelect.value = options.currentPresetId;
 
-  const zoomGroup = controls.createDiv({
+  const zoomGroup = secondaryControls.createDiv({
     cls: "pdf-chat-zoom-group",
     attr: { role: "group", "aria-label": "字体大小" },
   });
@@ -93,24 +101,77 @@ export function buildWorkbenchHeader(
     cls: "pdf-chat-zoom-btn",
     attr: { type: "button" },
   });
-  labelControl(zoomOutButton, "缩小内容字体");
-  labelControl(zoomResetButton, "重置内容字体为 100%");
-  labelControl(zoomInButton, "放大内容字体");
+  setElementLabel(zoomOutButton, "缩小内容字体");
+  setElementLabel(zoomResetButton, "重置内容字体为 100%");
+  setElementLabel(zoomInButton, "放大内容字体");
 
-  const clearButton = controls.createEl("button", {
-    text: "清空",
-    cls: "pdf-chat-reset-btn",
+  const moreWrapper = secondaryControls.createDiv({ cls: "pdf-chat-more-wrapper" });
+  const moreButton = moreWrapper.createEl("button", {
+    text: "⋯",
+    cls: "pdf-chat-more-button",
+    attr: {
+      type: "button",
+      "aria-haspopup": "menu",
+      "aria-expanded": "false",
+    },
+  });
+  setElementLabel(moreButton, "更多操作");
+  const moreMenu = moreWrapper.createDiv({
+    cls: "pdf-chat-more-menu is-hidden",
+    attr: { role: "menu" },
+  });
+  const clearButton = moreMenu.createEl("button", {
+    text: "清空对话",
+    cls: "pdf-chat-menu-item pdf-chat-reset-btn",
     attr: { type: "button" },
   });
-  labelControl(clearButton, "清空当前对话");
+  clearButton.setAttr("role", "menuitem");
+  setElementLabel(clearButton, "清空当前对话");
+
+  let removeTransientListeners: (() => void) | null = null;
+  const closeMenu = () => {
+    moreButton.setAttr("aria-expanded", "false");
+    moreMenu.addClass("is-hidden");
+    removeTransientListeners?.();
+    removeTransientListeners = null;
+  };
+  const openMenu = () => {
+    moreButton.setAttr("aria-expanded", "true");
+    moreMenu.removeClass("is-hidden");
+    const ownerDocument = root.ownerDocument;
+    const onDocumentClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (target && moreWrapper.contains(target as Node)) return;
+      closeMenu();
+    };
+    const onDocumentKeydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeMenu();
+    };
+    ownerDocument.addEventListener("click", onDocumentClick);
+    ownerDocument.addEventListener("keydown", onDocumentKeydown);
+    removeTransientListeners = () => {
+      ownerDocument.removeEventListener("click", onDocumentClick);
+      ownerDocument.removeEventListener("keydown", onDocumentKeydown);
+    };
+  };
+  moreButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (moreButton.getAttribute("aria-expanded") === "true") closeMenu();
+    else openMenu();
+  });
+  clearButton.addEventListener("click", closeMenu);
 
   return {
     root,
+    primaryControls,
+    secondaryControls,
     modelSelect,
     modeSelect,
     zoomOutButton,
     zoomResetButton,
     zoomInButton,
+    moreButton,
+    moreMenu,
     clearButton,
   };
 }
@@ -151,15 +212,15 @@ export function buildContextPanel(
   toggle.createEl("span", { text: "论文上下文", cls: "pdf-chat-context-title" });
   toggle.createEl("span", {
     text: `${options.selectionText.length} 字`,
-    cls: "pdf-chat-status-chip pdf-chat-selection-count",
+    cls: "pdf-chat-status-chip pdf-chat-status-chip-count pdf-chat-selection-count is-neutral",
   });
   const summaryStatus = toggle.createEl("span", {
-    text: options.hasPdf ? "摘要：检查中" : "摘要：仅 PDF",
-    cls: "pdf-chat-status-chip pdf-chat-summary-status",
+    text: options.hasPdf ? "摘要检查中" : "仅选区",
+    cls: "pdf-chat-status-chip pdf-chat-status-chip-summary pdf-chat-summary-status is-pending",
   });
   const ragStatus = toggle.createEl("span", {
-    text: options.hasPdf ? "上下文：检查中" : "上下文：选区",
-    cls: "pdf-chat-status-chip pdf-chat-rag-status",
+    text: options.hasPdf ? "上下文检查中" : "选区上下文",
+    cls: "pdf-chat-status-chip pdf-chat-status-chip-context pdf-chat-rag-status is-pending",
   });
   toggle.createEl("span", { text: "⌄", cls: "pdf-chat-context-chevron", attr: { "aria-hidden": "true" } });
 
@@ -213,9 +274,13 @@ export function buildEmptyState(history: HTMLElement): HTMLDivElement {
 
 export interface ComposerElements {
   root: HTMLElement;
+  card: HTMLElement;
+  status: HTMLElement;
   input: HTMLTextAreaElement;
+  actions: HTMLElement;
   translateButton: HTMLButtonElement;
   sendButton: HTMLButtonElement;
+  hint: HTMLElement;
 }
 
 export function resizeComposerTextarea(textarea: HTMLTextAreaElement): void {
@@ -228,7 +293,8 @@ export function buildComposer(parent: HTMLElement): ComposerElements {
     cls: "pdf-chat-composer",
     attr: { "aria-label": "提问编辑器" },
   });
-  const inputRow = root.createDiv({ cls: "pdf-chat-input-row" });
+  const card = root.createDiv({ cls: "pdf-chat-composer-card" });
+  const inputRow = card.createDiv({ cls: "pdf-chat-input-row" });
   const input = inputRow.createEl("textarea", {
     cls: "pdf-chat-input",
     attr: {
@@ -237,22 +303,79 @@ export function buildComposer(parent: HTMLElement): ComposerElements {
       "aria-label": "针对当前选区提问",
     },
   });
-  const translateButton = inputRow.createEl("button", {
+  const footer = card.createDiv({ cls: "pdf-chat-composer-footer" });
+  const status = footer.createDiv({
+    text: "当前选区上下文已启用",
+    cls: "pdf-chat-composer-status",
+  });
+  const actions = footer.createDiv({ cls: "pdf-chat-composer-actions" });
+  const hint = actions.createDiv({
+    cls: "pdf-chat-hint",
+    text: "Enter 发送 · Shift+Enter 换行",
+  });
+  const translateButton = actions.createEl("button", {
     text: "翻译选区",
     cls: "pdf-chat-translate-btn",
     attr: { type: "button" },
   });
-  labelControl(translateButton, "翻译当前选区");
-  const sendButton = inputRow.createEl("button", {
-    text: "发送",
+  setElementLabel(translateButton, "翻译当前选区");
+  const sendButton = actions.createEl("button", {
+    text: "↑",
     cls: "mod-cta pdf-chat-send-btn",
     attr: { type: "button" },
   });
-  labelControl(sendButton, "发送问题");
-  root.createEl("p", {
-    cls: "pdf-chat-hint",
-    text: "Enter 发送 · Shift+Enter 换行 · 生成时可停止",
-  });
+  setElementLabel(sendButton, "发送问题");
   input.addEventListener("input", () => resizeComposerTextarea(input));
-  return { root, input, translateButton, sendButton };
+  return { root, card, status, input, actions, translateButton, sendButton, hint };
+}
+
+export function buildFollowupSuggestions(parent: HTMLElement, suggestions: string[]): HTMLElement {
+  const root = parent.createDiv({
+    cls: "pdf-chat-followup-suggestions",
+    attr: { role: "group", "aria-label": "快捷追问" },
+  });
+  const compatibleRoot = root as HTMLElement & {
+    createEl?: (
+      tagName: string,
+      options?: { text?: string; cls?: string; attr?: Record<string, string> }
+    ) => HTMLElement;
+  };
+  for (const suggestion of suggestions) {
+    let button: HTMLElement;
+    if (typeof compatibleRoot.createEl === "function") {
+      button = compatibleRoot.createEl("button", {
+        text: suggestion,
+        cls: "pdf-chat-followup-chip",
+        attr: { type: "button" },
+      });
+    } else if (root.ownerDocument?.createElement && typeof root.appendChild === "function") {
+      button = root.ownerDocument.createElement("button");
+      button.textContent = suggestion;
+      button.className = "pdf-chat-followup-chip";
+      button.setAttribute("type", "button");
+      root.appendChild(button);
+    } else {
+      continue;
+    }
+    setElementLabel(button, suggestion);
+  }
+  return root;
+}
+
+export function formatTranslationUserDisplay(content: string): { title: string; meta?: string } | null {
+  const match = /^翻译当前选区（(.+?)）$/.exec(content.trim());
+  if (!match) return null;
+  return { title: "翻译当前选区", meta: match[1] };
+}
+
+export function formatAssistantDisplayMarkdown(raw: string): string {
+  if (!raw || raw.includes("\n\n")) return raw;
+  if (/```|`[^`]+`|\|.+\||^\s*[-*+]\s+/m.test(raw)) return raw;
+  if (/\$\$|\\\[|\\\(|<table|<pre|<code/i.test(raw)) return raw;
+  if (raw.length < 40) return raw;
+
+  const split = raw
+    .replace(/(。)(?=(?:提示生成|模型改进|实验结果|方法|贡献|局限|相关工作|结论|首先|其次|最后|此外|因此))/g, "$1\n\n")
+    .replace(/([.!?])\s+(?=(?:Prompt|Model|Experiment|Result|Method|Contribution|Limitation)\b)/g, "$1\n\n");
+  return split === raw ? raw : split;
 }

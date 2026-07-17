@@ -139,7 +139,6 @@ export class QuickTranslateMarker {
     marker.className = "pdf-chat-quick-translate-marker";
     marker.textContent = "译";
     marker.setAttribute("aria-label", "翻译当前 PDF 选区");
-    marker.setAttribute("title", "翻译当前 PDF 选区");
     marker.addEventListener("mousedown", (event) => {
       event.preventDefault();
       event.stopPropagation();

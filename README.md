@@ -1,6 +1,6 @@
 # Obsidian PDF Chat
 
-Version 0.7.0 reconciles the typed research workbench with the quick-translation and model-routing behavior introduced in the live 0.6 release.
+Version 0.7.1 refines the research workbench visual hierarchy, reading width, composer card, and follow-up suggestions while keeping the 0.7 quick-translation and model-routing behavior.
 
 PDF Chat turns an Obsidian PDF view into a compact research workbench. Select paper text, open the workbench, and ask questions without leaving the document. User and assistant messages are selectable and copyable, and the most recent conversation is restored per-PDF.
 

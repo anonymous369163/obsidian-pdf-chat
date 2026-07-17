@@ -12,9 +12,12 @@ import { createPDFChatModalServices } from "./modal-services";
 import {
   buildComposer,
   buildContextPanel,
+  buildFollowupSuggestions,
   buildEmptyState,
   buildMessageRegion,
   buildWorkbenchHeader,
+  formatAssistantDisplayMarkdown,
+  formatTranslationUserDisplay,
   labelControl,
 } from "./modal-ui";
 import type {
@@ -36,6 +39,10 @@ interface BubbleOptions {
   loading?: boolean;
   skipScroll?: boolean;
 }
+
+type BubbleElement = HTMLDivElement & {
+  pdfChatContentEl?: HTMLElement;
+};
 
 function errorMessage(error: unknown): string {
   if (error && typeof error === "object" && "message" in error) {
@@ -70,6 +77,49 @@ async function renderMarkdownInto(
     // fall through to plain text below
   }
   el.setText(text);
+}
+
+function getBubbleContentEl(bubble: HTMLDivElement): HTMLElement {
+  return (bubble as BubbleElement).pdfChatContentEl || bubble;
+}
+
+function setBubbleText(bubble: HTMLDivElement, text: string): void {
+  getBubbleContentEl(bubble).setText(text);
+}
+
+function createBubbleDiv(parent: HTMLElement, options: { cls?: string; text?: string }): HTMLElement {
+  const compatibleParent = parent as HTMLElement & {
+    createDiv?: (options?: { cls?: string; text?: string }) => HTMLElement;
+    createEl?: (tagName: string, options?: { cls?: string; text?: string }) => HTMLElement;
+  };
+  if (typeof compatibleParent.createDiv === "function") return compatibleParent.createDiv(options);
+  if (typeof compatibleParent.createEl === "function") return compatibleParent.createEl("div", options);
+  const child = parent.ownerDocument.createElement("div");
+  if (options.cls) child.className = options.cls;
+  if (options.text !== undefined) child.textContent = options.text;
+  parent.appendChild(child);
+  return child;
+}
+
+function canCreateBubbleChildren(parent: HTMLElement): boolean {
+  const compatibleParent = parent as HTMLElement & {
+    createDiv?: unknown;
+    createEl?: unknown;
+  };
+  return (
+    typeof compatibleParent.createDiv === "function" ||
+    typeof compatibleParent.createEl === "function" ||
+    typeof parent.ownerDocument?.createElement === "function"
+  );
+}
+
+async function renderMarkdownIntoBubble(
+  app: App,
+  component: Component,
+  bubble: HTMLDivElement,
+  text: string
+): Promise<void> {
+  await renderMarkdownInto(app, component, getBubbleContentEl(bubble), formatAssistantDisplayMarkdown(text));
 }
 
 export class PDFChatModal extends Modal {
@@ -113,6 +163,8 @@ export class PDFChatModal extends Modal {
   ragRefreshBtn?: HTMLButtonElement;
   historyEl!: HTMLElement;
   emptyStateEl?: HTMLDivElement;
+  suggestionsEl?: HTMLElement;
+  composerStatusEl?: HTMLElement;
   inputEl!: HTMLTextAreaElement;
   translateBtn!: HTMLButtonElement;
   sendBtn!: HTMLButtonElement;
@@ -242,9 +294,11 @@ export class PDFChatModal extends Modal {
     if (!restoringHistory) this.showEmptyState();
 
     const composer = buildComposer(contentEl);
+    this.composerStatusEl = composer.status;
     this.inputEl = composer.input;
     this.translateBtn = composer.translateButton;
     this.sendBtn = composer.sendButton;
+    this.updateComposerContextStatus();
     const submit = () => this.handleSubmit();
     this.sendBtn.addEventListener("click", () => {
       if (this.isSending) {
@@ -262,6 +316,7 @@ export class PDFChatModal extends Modal {
         submit();
       }
     });
+    this.inputEl.addEventListener("input", () => this.hideFollowupSuggestions());
     if (restoringHistory) {
       this.restoreConversationHistory().catch((err) => {
         this.setHistoryLiveMode("polite");
@@ -302,6 +357,7 @@ export class PDFChatModal extends Modal {
         this.useDocSummary = false;
       }
       this.messages[0] = this.buildSystemMessage();
+      this.updateComposerContextStatus();
     });
     summaryRefreshBtn.addEventListener("click", async () => {
       await this.ensureDocSummary(true);
@@ -309,6 +365,7 @@ export class PDFChatModal extends Modal {
         this.useDocSummary = !!(this.docSummaryEntry && this.docSummaryEntry.summary);
       }
       this.messages[0] = this.buildSystemMessage();
+      this.updateComposerContextStatus();
     });
 
     if (this.plugin.settings.autoDocSummary) {
@@ -318,6 +375,7 @@ export class PDFChatModal extends Modal {
         this.useDocSummary = !!(this.docSummaryEntry && this.docSummaryEntry.summary);
         summaryCheckbox.checked = this.useDocSummary;
         this.messages[0] = this.buildSystemMessage();
+        this.updateComposerContextStatus();
       });
     }
 
@@ -342,12 +400,14 @@ export class PDFChatModal extends Modal {
       } else {
         this.useRag = false;
       }
+      this.updateComposerContextStatus();
     });
     ragRefreshBtn.addEventListener("click", async () => {
       await this.ensureDocChunks(true);
       if (ragCheckbox.checked) {
         this.useRag = !!(this.docChunksEntry && this.docChunksEntry.chunks.length);
       }
+      this.updateComposerContextStatus();
     });
 
     if (this.plugin.settings.autoRag) {
@@ -356,6 +416,7 @@ export class PDFChatModal extends Modal {
       void this.ensureDocChunks(false).then(() => {
         this.useRag = !!(this.docChunksEntry && this.docChunksEntry.chunks.length);
         ragCheckbox.checked = this.useRag;
+        this.updateComposerContextStatus();
       });
     }
   }
@@ -399,6 +460,60 @@ export class PDFChatModal extends Modal {
     else if (typeof history.setAttribute === "function") history.setAttribute("aria-live", value);
   }
 
+  private setChipState(element: HTMLElement | undefined, state: "neutral" | "success" | "accent" | "pending"): void {
+    if (!element) return;
+    element.removeClass("is-neutral", "is-success", "is-accent", "is-pending");
+    element.addClass(`is-${state}`);
+  }
+
+  updateComposerContextStatus(): void {
+    if (!this.composerStatusEl) return;
+    if (!this.pdfFile) {
+      this.composerStatusEl.setText("选区上下文已启用");
+      return;
+    }
+    if (this.useRag && this.useFullTextMode) {
+      this.composerStatusEl.setText("全文上下文已启用");
+    } else if (this.useRag) {
+      this.composerStatusEl.setText("RAG 检索已启用");
+    } else if (this.useDocSummary) {
+      this.composerStatusEl.setText("摘要背景已启用");
+    } else {
+      this.composerStatusEl.setText("当前选区上下文已启用");
+    }
+  }
+
+  private followupSuggestions(): string[] {
+    if (!this.pdfFile) return ["解释这段内容", "总结要点", "列出关键术语", "提出后续问题"];
+    return ["解释这段内容", "总结核心贡献", "分析实验结果", "与相关工作对比"];
+  }
+
+  showFollowupSuggestions(): void {
+    this.hideFollowupSuggestions();
+    try {
+      this.suggestionsEl = buildFollowupSuggestions(this.historyEl, this.followupSuggestions());
+      const children = (this.suggestionsEl as HTMLElement & { children?: HTMLCollection }).children;
+      if (!children) return;
+      for (const button of Array.from(children)) {
+        if (button.tagName !== "BUTTON") continue;
+        button.addEventListener("click", () => {
+          this.inputEl.value = button.textContent || "";
+          this.inputEl.focus();
+          this.hideFollowupSuggestions();
+        });
+      }
+      this.historyEl.scrollTo({ top: this.historyEl.scrollHeight, behavior: "smooth" });
+    } catch (error) {
+      void error;
+      this.suggestionsEl = undefined;
+    }
+  }
+
+  hideFollowupSuggestions(): void {
+    this.suggestionsEl?.remove();
+    this.suggestionsEl = undefined;
+  }
+
   async restoreConversationHistory(): Promise<void> {
     const renderJobs = [];
     for (const message of this.transcript) {
@@ -409,7 +524,7 @@ export class PDFChatModal extends Modal {
       const bubble = this.addBubble("assistant", message.content, { skipScroll: true });
       bubble.addClass("is-rendered");
       renderJobs.push(
-        renderMarkdownInto(this.app, this.plugin, bubble, message.content).then(() => {
+        renderMarkdownIntoBubble(this.app, this.plugin, bubble, message.content).then(() => {
           if (message.status === "stopped") {
             bubble.addClass("is-stopped");
             bubble.createEl("p", { cls: "pdf-chat-stopped-label", text: "[已停止生成]" });
@@ -420,6 +535,10 @@ export class PDFChatModal extends Modal {
     await Promise.all(renderJobs);
     this.setHistoryLiveMode("polite");
     this.historyEl.scrollTo({ top: this.historyEl.scrollHeight, behavior: "auto" });
+    const lastMessage = this.transcript[this.transcript.length - 1];
+    if (lastMessage && lastMessage.role === "assistant" && lastMessage.status !== "stopped") {
+      this.showFollowupSuggestions();
+    }
     const scope = this.pdfFile ? "本 PDF" : "当前选区";
     new Notice(`已恢复${scope}上次对话(${this.transcript.length} 条消息)`);
   }
@@ -484,6 +603,7 @@ export class PDFChatModal extends Modal {
     this.messages = [this.buildSystemMessage()];
     this.fullTextAttached = false;
     this.historyEl.empty();
+    this.hideFollowupSuggestions();
     this.emptyStateEl = undefined;
     this.showEmptyState();
     try {
@@ -537,13 +657,16 @@ export class PDFChatModal extends Modal {
       this.docSummaryEntry = cached;
       const date = new Date(cached.generatedAt);
       const truncatedNote = cached.truncated ? " · 原文过长,仅摘要了前面部分" : "";
-      this.summaryStatusEl.setText("摘要：已缓存");
+      this.summaryStatusEl.setText("摘要已缓存");
+      this.setChipState(this.summaryStatusEl, "success");
       this.summaryStatusEl.setAttr("aria-label", `摘要已缓存 · ${date.toLocaleString()}${truncatedNote}`);
     } else {
       this.docSummaryEntry = null;
-      this.summaryStatusEl.setText("摘要：未生成");
+      this.summaryStatusEl.setText("摘要未生成");
+      this.setChipState(this.summaryStatusEl, "neutral");
       this.summaryStatusEl.setAttr("aria-label", "尚未生成全文摘要");
     }
+    this.updateComposerContextStatus();
   }
 
   async ensureDocSummary(forceRefresh: boolean): Promise<void> {
@@ -558,7 +681,8 @@ export class PDFChatModal extends Modal {
     }
 
     this.isGeneratingSummary = true;
-    this.summaryStatusEl?.setText("摘要：生成中");
+    this.summaryStatusEl?.setText("摘要生成中");
+    this.setChipState(this.summaryStatusEl, "pending");
     if (this.summaryRefreshBtn) {
       this.summaryRefreshBtn.setText("生成中…");
       this.summaryRefreshBtn.disabled = true;
@@ -583,6 +707,7 @@ export class PDFChatModal extends Modal {
         this.summaryRefreshBtn.disabled = false;
       }
       if (this.summaryCheckbox) this.summaryCheckbox.disabled = false;
+      this.updateComposerContextStatus();
     }
   }
 
@@ -595,21 +720,25 @@ export class PDFChatModal extends Modal {
       this.useFullTextMode = !!(cached.fullTextLength && cached.fullTextLength <= threshold);
       const date = new Date(cached.generatedAt);
       if (this.useFullTextMode) {
-        this.ragStatusEl.setText("上下文：全文直读");
+        this.ragStatusEl.setText("全文直读");
+        this.setChipState(this.ragStatusEl, "accent");
         this.ragStatusEl.setAttr(
           "aria-label",
           `全文约 ${cached.fullTextLength} 字，直接读全文 · ${date.toLocaleString()}`
         );
       } else {
-        this.ragStatusEl.setText("上下文：RAG 就绪");
+        this.ragStatusEl.setText("RAG 就绪");
+        this.setChipState(this.ragStatusEl, "success");
         this.ragStatusEl.setAttr("aria-label", `已建索引 · ${cached.chunks.length} 块 · ${date.toLocaleString()}`);
       }
     } else {
       this.docChunksEntry = null;
       this.useFullTextMode = false;
-      this.ragStatusEl.setText("上下文：未索引");
+      this.ragStatusEl.setText("选区上下文");
+      this.setChipState(this.ragStatusEl, "neutral");
       this.ragStatusEl.setAttr("aria-label", "尚未建立全文检索索引");
     }
+    this.updateComposerContextStatus();
   }
 
   async ensureDocChunks(forceRefresh: boolean): Promise<void> {
@@ -624,7 +753,8 @@ export class PDFChatModal extends Modal {
     }
 
     this.isIndexingRag = true;
-    this.ragStatusEl?.setText("上下文：建立中");
+    this.ragStatusEl?.setText("索引建立中");
+    this.setChipState(this.ragStatusEl, "pending");
     if (this.ragRefreshBtn) {
       this.ragRefreshBtn.setText("建立中…");
       this.ragRefreshBtn.disabled = true;
@@ -645,6 +775,7 @@ export class PDFChatModal extends Modal {
         this.ragRefreshBtn.disabled = false;
       }
       if (this.ragCheckbox) this.ragCheckbox.disabled = false;
+      this.updateComposerContextStatus();
     }
   }
 
@@ -693,7 +824,8 @@ export class PDFChatModal extends Modal {
 
   setSendingState(sending: boolean): void {
     this.isSending = sending;
-    this.sendBtn.setText(sending ? "停止" : "发送");
+    if (sending) this.hideFollowupSuggestions();
+    this.sendBtn.setText(sending ? "停止" : "↑");
     this.sendBtn.toggleClass("is-stop", sending);
     labelControl(this.sendBtn, sending ? "停止生成" : "发送问题");
     if (this.translateBtn) {
@@ -712,6 +844,7 @@ export class PDFChatModal extends Modal {
   async runTranslation(): Promise<void> {
     if (!this.contextText || this.isSending) return;
 
+    this.hideFollowupSuggestions();
     const friendlyLabel = `翻译当前选区（${this.contextText.length} 字）`;
     this.addBubble("user", friendlyLabel);
     this.setSendingState(true);
@@ -732,7 +865,7 @@ export class PDFChatModal extends Modal {
             progress.chunkCount > 1
               ? `${progress.combinedText}\n\n正在翻译 ${progress.chunkIndex}/${progress.chunkCount}…`
               : progress.combinedText;
-          loadingBubble.setText(progressText);
+          setBubbleText(loadingBubble, progressText);
           this.historyEl.scrollTo({ top: this.historyEl.scrollHeight, behavior: "auto" });
         },
       });
@@ -740,7 +873,7 @@ export class PDFChatModal extends Modal {
       loadingBubble.removeClass("is-loading");
       if (!fullText.trim()) {
         loadingBubble.addClass("is-error");
-        loadingBubble.setText("翻译未返回内容");
+        setBubbleText(loadingBubble, "翻译未返回内容");
         return;
       }
 
@@ -752,21 +885,22 @@ export class PDFChatModal extends Modal {
         if (result.stoppedEarly) notices.push("[已停止生成]");
         if (hasFallbackChunks) notices.push("[部分分块翻译失败，已保留原文]");
         loadingBubble.addClass("is-stopped");
-        loadingBubble.setText(fullText + "\n\n" + notices.join("\n"));
+        setBubbleText(loadingBubble, fullText + "\n\n" + notices.join("\n"));
       } else {
         loadingBubble.addClass("is-rendered");
-        await renderMarkdownInto(this.app, this.plugin, loadingBubble, fullText);
+        await renderMarkdownIntoBubble(this.app, this.plugin, loadingBubble, fullText);
       }
       this.messages.push(
         { role: "user", content: friendlyLabel },
         { role: "assistant", content: fullText }
       );
       await this.recordTranslateTurn(friendlyLabel, fullText, status);
+      if (!isPartial) this.showFollowupSuggestions();
     } catch (err) {
       loadingBubble.removeClass("is-loading");
       if (isAbortError(err) && fullText.trim()) {
         loadingBubble.addClass("is-stopped");
-        loadingBubble.setText(fullText + "\n\n[已停止生成]");
+        setBubbleText(loadingBubble, fullText + "\n\n[已停止生成]");
         this.messages.push(
           { role: "user", content: friendlyLabel },
           { role: "assistant", content: fullText }
@@ -774,7 +908,7 @@ export class PDFChatModal extends Modal {
         await this.recordTranslateTurn(friendlyLabel, fullText, "stopped");
       } else {
         loadingBubble.addClass("is-error");
-        loadingBubble.setText("翻译失败，请检查模型配置或稍后重试。");
+        setBubbleText(loadingBubble, "翻译失败，请检查模型配置或稍后重试。");
       }
     } finally {
       this.setSendingState(false);
@@ -793,6 +927,7 @@ export class PDFChatModal extends Modal {
       return;
     }
 
+    this.hideFollowupSuggestions();
     this.addBubble("user", question);
     if (!usingOverride) {
       this.inputEl.value = "";
@@ -810,7 +945,7 @@ export class PDFChatModal extends Modal {
       // "列举类"问题(比如"论文对比了哪些基线算法")经常检索不全或检索错块,直接给全文更可靠。
       // 只在对话的第一轮附带一次:之后每轮 this.messages 都会带着这一轮的历史一起重新发送,
       // 不需要也不应该重复拼接,否则输入会随聊天轮数线性膨胀。
-      loadingBubble.setText("正在读取全文…");
+      setBubbleText(loadingBubble, "正在读取全文…");
       try {
         if (!this.fullTextForQA) {
           this.fullTextForQA = await this.services.papers.extractFullText(this.pdfFile);
@@ -820,7 +955,7 @@ export class PDFChatModal extends Modal {
       } catch (err) {
         // 全文提取失败就退回原始问题,不阻塞正常提问
       }
-      loadingBubble.setText("思考中…");
+      setBubbleText(loadingBubble, "思考中…");
     } else if (
       !this.useFullTextMode &&
       this.useRag &&
@@ -830,7 +965,7 @@ export class PDFChatModal extends Modal {
     ) {
       const retrievalQueries = [question];
       if (this.plugin.settings.ragQueryTranslate) {
-        loadingBubble.setText("正在思考检索角度…");
+        setBubbleText(loadingBubble, "正在思考检索角度…");
         try {
           const variants = await this.services.papers.planRagQueries(question);
           if (variants && variants.length) retrievalQueries.push(...variants);
@@ -853,7 +988,7 @@ export class PDFChatModal extends Modal {
           "\n\n【我的问题】:\n" +
           question;
       }
-      loadingBubble.setText("思考中…");
+      setBubbleText(loadingBubble, "思考中…");
     }
 
     this.messages.push({ role: "user", content: outgoingContent });
@@ -870,7 +1005,7 @@ export class PDFChatModal extends Modal {
             firstChunkArrived = true;
             loadingBubble.removeClass("is-loading");
           }
-          loadingBubble.setText(acc);
+          setBubbleText(loadingBubble, acc);
           this.historyEl.scrollTo({ top: this.historyEl.scrollHeight, behavior: "auto" });
         },
         signal: this.abortController.signal,
@@ -882,13 +1017,14 @@ export class PDFChatModal extends Modal {
       // 空白文本节点叠加,出现多余换行或挤成一团的问题。
       loadingBubble.addClass("is-rendered");
       this.messages.push({ role: "assistant", content: fullText });
-      await renderMarkdownInto(this.app, this.plugin, loadingBubble, fullText);
+      await renderMarkdownIntoBubble(this.app, this.plugin, loadingBubble, fullText);
       await this.recordTranscriptTurn(question, fullText, "complete");
+      this.showFollowupSuggestions();
     } catch (err) {
       loadingBubble.removeClass("is-loading");
       if (isAbortError(err)) {
         loadingBubble.addClass("is-stopped");
-        loadingBubble.setText((fullText || "") + "\n\n[已停止生成]");
+        setBubbleText(loadingBubble, (fullText || "") + "\n\n[已停止生成]");
         if (fullText) {
           this.messages.push({ role: "assistant", content: fullText });
           await this.recordTranscriptTurn(question, fullText, "stopped");
@@ -897,7 +1033,7 @@ export class PDFChatModal extends Modal {
         }
       } else {
         loadingBubble.addClass("is-error");
-        loadingBubble.setText("请求失败: " + errorMessage(err));
+        setBubbleText(loadingBubble, "请求失败: " + errorMessage(err));
         this.messages.pop();
       }
     } finally {
@@ -909,7 +1045,7 @@ export class PDFChatModal extends Modal {
 
   addBubble(role: "user" | "assistant", text: string, opts: BubbleOptions = {}): HTMLDivElement {
     this.removeEmptyState();
-    const bubble = this.historyEl.createDiv({ cls: `pdf-chat-bubble ${role}` });
+    const bubble = this.historyEl.createDiv({ cls: `pdf-chat-bubble ${role}` }) as BubbleElement;
     const compatibleBubble = bubble as HTMLDivElement & {
       setAttr?: (name: string, value: string) => void;
     };
@@ -919,7 +1055,33 @@ export class PDFChatModal extends Modal {
       compatibleBubble.setAttribute("aria-label", role === "user" ? "你的消息" : "PDF Chat 的消息");
     }
     if (opts && opts.loading) bubble.addClass("is-loading");
-    bubble.setText(text);
+    if (!canCreateBubbleChildren(bubble)) {
+      setBubbleText(bubble, text);
+    } else if (role === "assistant") {
+      const meta = createBubbleDiv(bubble, { cls: "pdf-chat-message-meta" });
+      meta.createEl("span", { text: "PDF Chat", cls: "pdf-chat-message-author" });
+      meta.createEl("span", { text: "基于当前论文上下文", cls: "pdf-chat-message-context" });
+      bubble.pdfChatContentEl = createBubbleDiv(bubble, { cls: "pdf-chat-message-content" });
+      setBubbleText(bubble, text);
+    } else {
+      const translationDisplay = formatTranslationUserDisplay(text);
+      bubble.pdfChatContentEl = createBubbleDiv(bubble, { cls: "pdf-chat-message-content" });
+      if (translationDisplay) {
+        bubble.addClass("is-translation-request");
+        createBubbleDiv(bubble.pdfChatContentEl, {
+          text: translationDisplay.title,
+          cls: "pdf-chat-user-message-title",
+        });
+        if (translationDisplay.meta) {
+          createBubbleDiv(bubble.pdfChatContentEl, {
+            text: translationDisplay.meta,
+            cls: "pdf-chat-user-message-meta",
+          });
+        }
+      } else {
+        setBubbleText(bubble, text);
+      }
+    }
     if (!(opts && opts.skipScroll)) {
       this.historyEl.scrollTo({ top: this.historyEl.scrollHeight, behavior: "smooth" });
     }
