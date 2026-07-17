@@ -55,6 +55,12 @@ interface BubbleOptions {
 
 type ModalConversationKind = "chat" | "translate";
 
+interface ComposerMentionRange {
+  start: number;
+  end: number;
+  query: string;
+}
+
 type BubbleElement = HTMLDivElement & {
   pdfChatContentEl?: HTMLElement;
 };
@@ -193,6 +199,9 @@ export class PDFChatModal extends Modal {
   emptyStateEl?: HTMLDivElement;
   suggestionsEl?: HTMLElement;
   composerStatusEl?: HTMLElement;
+  composerCardEl?: HTMLElement;
+  composerMentionSuggestionsEl?: HTMLElement;
+  composerMentionRange?: ComposerMentionRange;
   inputEl!: HTMLTextAreaElement;
   translateBtn!: HTMLButtonElement;
   sendBtn!: HTMLButtonElement;
@@ -322,6 +331,7 @@ export class PDFChatModal extends Modal {
     if (!restoringHistory) this.showEmptyState();
 
     const composer = buildComposer(contentEl);
+    this.composerCardEl = composer.card;
     this.composerStatusEl = composer.status;
     this.inputEl = composer.input;
     this.translateBtn = composer.translateButton;
@@ -344,7 +354,13 @@ export class PDFChatModal extends Modal {
         submit();
       }
     });
-    this.inputEl.addEventListener("input", () => this.hideFollowupSuggestions());
+    this.inputEl.addEventListener("input", () => {
+      this.hideFollowupSuggestions();
+      this.updateComposerMentionSuggestions();
+    });
+    this.inputEl.addEventListener("keydown", (evt) => {
+      if (evt.key === "Escape") this.hideComposerMentionSuggestions();
+    });
     if (restoringHistory) {
       this.restoreConversationHistory().catch((err) => {
         this.setHistoryLiveMode("polite");
@@ -602,6 +618,98 @@ export class PDFChatModal extends Modal {
         if (file) this.addReferencedPdf(file);
       });
     }
+  }
+
+  private getComposerMentionRange(): ComposerMentionRange | null {
+    if (!this.inputEl) return null;
+    const value = this.inputEl.value || "";
+    const cursor =
+      typeof this.inputEl.selectionStart === "number" ? this.inputEl.selectionStart : value.length;
+    const beforeCursor = value.slice(0, cursor);
+    const match = /(?:^|\s)@([^\n@]*)$/.exec(beforeCursor);
+    if (!match) return null;
+    const atOffset = match[0].indexOf("@");
+    return {
+      start: match.index + atOffset,
+      end: cursor,
+      query: match[1].trim(),
+    };
+  }
+
+  private updateComposerMentionSuggestions(): void {
+    const range = this.getComposerMentionRange();
+    this.composerMentionRange = range || undefined;
+    if (!range) {
+      this.hideComposerMentionSuggestions();
+      return;
+    }
+    const excludePaths = new Set(this.referencedPdfFiles.map((file) => file.path));
+    if (this.pdfFile) excludePaths.add(this.pdfFile.path);
+    const cachedPaths = new Set([
+      ...Object.keys(this.plugin.settings.docSummaries || {}),
+      ...Object.keys(this.plugin.settings.docChunks || {}),
+    ]);
+    const results = searchPdfFiles(this.app, range.query, { limit: 6, excludePaths, cachedPaths });
+    if (!results.length) {
+      this.hideComposerMentionSuggestions();
+      return;
+    }
+    const parent = this.composerCardEl || this.contentEl;
+    if (!this.composerMentionSuggestionsEl) {
+      this.composerMentionSuggestionsEl = parent.createDiv({
+        cls: "pdf-chat-composer-mention-suggestions",
+        attr: { role: "listbox", "aria-label": "PDF mention suggestions" },
+      });
+    }
+    this.composerMentionSuggestionsEl.empty();
+    for (const candidate of results) {
+      const button = this.composerMentionSuggestionsEl.createEl("button", {
+        cls: "pdf-chat-composer-mention-option",
+        attr: { type: "button", role: "option" },
+      });
+      button.createEl("span", { text: candidate.name, cls: "pdf-chat-pdf-search-name" });
+      button.createEl("span", {
+        text: `${candidate.path}${candidate.cached ? " · 已有缓存" : ""}`,
+        cls: "pdf-chat-pdf-search-path",
+      });
+      labelControl(button, `引用 ${candidate.name}`);
+      button.addEventListener("click", () => this.chooseComposerMention(candidate.path));
+    }
+  }
+
+  private hideComposerMentionSuggestions(): void {
+    const removable = this.composerMentionSuggestionsEl as (HTMLElement & { remove?: () => void }) | undefined;
+    if (typeof removable?.remove === "function") {
+      removable.remove();
+    } else if (this.composerMentionSuggestionsEl?.parentElement) {
+      this.composerMentionSuggestionsEl.parentElement.removeChild(this.composerMentionSuggestionsEl);
+    }
+    this.composerMentionSuggestionsEl = undefined;
+    this.composerMentionRange = undefined;
+  }
+
+  private chooseComposerMention(path: string): void {
+    const file = this.findPdfFileByPath(path);
+    if (!file) {
+      this.hideComposerMentionSuggestions();
+      return;
+    }
+    const range = this.composerMentionRange || this.getComposerMentionRange();
+    this.addReferencedPdf(file);
+    if (range && this.inputEl) {
+      const label = `@${file.name || file.path} `;
+      const value = this.inputEl.value || "";
+      this.inputEl.value = value.slice(0, range.start) + label + value.slice(range.end);
+      const cursor = range.start + label.length;
+      if (typeof this.inputEl.setSelectionRange === "function") {
+        this.inputEl.setSelectionRange(cursor, cursor);
+      } else {
+        this.inputEl.selectionStart = cursor;
+        this.inputEl.selectionEnd = cursor;
+      }
+    }
+    this.hideComposerMentionSuggestions();
+    this.inputEl.focus();
   }
 
   private renderResearchActions(container: HTMLElement): void {
@@ -1445,6 +1553,18 @@ export class PDFChatModal extends Modal {
       // 外部任务已经构造好了发送给模型的上下文；界面仍只显示用户可见问题。
     } else if (opts.skipContextAugmentation) {
       // 跳过下面的 RAG/全文拼接逻辑,原样发送。
+    } else if (this.referencedPdfFiles.length) {
+      setBubbleText(loadingBubble, "正在准备多论文上下文…");
+      try {
+        outgoingContent = await this.buildApiMultiPaperContext(question, (message) => {
+          this.multiPaperStatusEl?.setText(message);
+          setBubbleText(loadingBubble, message);
+        });
+      } catch (err) {
+        new Notice("多论文上下文准备失败，已退回当前问题: " + errorMessage(err));
+        outgoingContent = question;
+      }
+      setBubbleText(loadingBubble, "思考中…");
     } else if (this.useRag && this.useFullTextMode && this.pdfFile && !this.fullTextAttached) {
       // 全文足够短,直接把全文交给模型,不做"猜哪一块相关"的检索——实测发现关键词检索对
       // "列举类"问题(比如"论文对比了哪些基线算法")经常检索不全或检索错块,直接给全文更可靠。

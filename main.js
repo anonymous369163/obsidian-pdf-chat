@@ -1679,6 +1679,9 @@ var PDFChatModal = class extends import_obsidian3.Modal {
     __publicField(this, "emptyStateEl");
     __publicField(this, "suggestionsEl");
     __publicField(this, "composerStatusEl");
+    __publicField(this, "composerCardEl");
+    __publicField(this, "composerMentionSuggestionsEl");
+    __publicField(this, "composerMentionRange");
     __publicField(this, "inputEl");
     __publicField(this, "translateBtn");
     __publicField(this, "sendBtn");
@@ -1772,6 +1775,7 @@ ${this.contextText}`;
     this.historyEl = buildMessageRegion(contentEl, restoringHistory);
     if (!restoringHistory) this.showEmptyState();
     const composer = buildComposer(contentEl);
+    this.composerCardEl = composer.card;
     this.composerStatusEl = composer.status;
     this.inputEl = composer.input;
     this.translateBtn = composer.translateButton;
@@ -1794,7 +1798,13 @@ ${this.contextText}`;
         submit();
       }
     });
-    this.inputEl.addEventListener("input", () => this.hideFollowupSuggestions());
+    this.inputEl.addEventListener("input", () => {
+      this.hideFollowupSuggestions();
+      this.updateComposerMentionSuggestions();
+    });
+    this.inputEl.addEventListener("keydown", (evt) => {
+      if (evt.key === "Escape") this.hideComposerMentionSuggestions();
+    });
     if (restoringHistory) {
       this.restoreConversationHistory().catch((err) => {
         this.setHistoryLiveMode("polite");
@@ -2036,6 +2046,94 @@ ${this.contextText}`;
         if (file) this.addReferencedPdf(file);
       });
     }
+  }
+  getComposerMentionRange() {
+    if (!this.inputEl) return null;
+    const value = this.inputEl.value || "";
+    const cursor = typeof this.inputEl.selectionStart === "number" ? this.inputEl.selectionStart : value.length;
+    const beforeCursor = value.slice(0, cursor);
+    const match = /(?:^|\s)@([^\n@]*)$/.exec(beforeCursor);
+    if (!match) return null;
+    const atOffset = match[0].indexOf("@");
+    return {
+      start: match.index + atOffset,
+      end: cursor,
+      query: match[1].trim()
+    };
+  }
+  updateComposerMentionSuggestions() {
+    const range = this.getComposerMentionRange();
+    this.composerMentionRange = range || void 0;
+    if (!range) {
+      this.hideComposerMentionSuggestions();
+      return;
+    }
+    const excludePaths = new Set(this.referencedPdfFiles.map((file) => file.path));
+    if (this.pdfFile) excludePaths.add(this.pdfFile.path);
+    const cachedPaths = /* @__PURE__ */ new Set([
+      ...Object.keys(this.plugin.settings.docSummaries || {}),
+      ...Object.keys(this.plugin.settings.docChunks || {})
+    ]);
+    const results = searchPdfFiles(this.app, range.query, { limit: 6, excludePaths, cachedPaths });
+    if (!results.length) {
+      this.hideComposerMentionSuggestions();
+      return;
+    }
+    const parent = this.composerCardEl || this.contentEl;
+    if (!this.composerMentionSuggestionsEl) {
+      this.composerMentionSuggestionsEl = parent.createDiv({
+        cls: "pdf-chat-composer-mention-suggestions",
+        attr: { role: "listbox", "aria-label": "PDF mention suggestions" }
+      });
+    }
+    this.composerMentionSuggestionsEl.empty();
+    for (const candidate of results) {
+      const button = this.composerMentionSuggestionsEl.createEl("button", {
+        cls: "pdf-chat-composer-mention-option",
+        attr: { type: "button", role: "option" }
+      });
+      button.createEl("span", { text: candidate.name, cls: "pdf-chat-pdf-search-name" });
+      button.createEl("span", {
+        text: `${candidate.path}${candidate.cached ? " \xB7 \u5DF2\u6709\u7F13\u5B58" : ""}`,
+        cls: "pdf-chat-pdf-search-path"
+      });
+      labelControl(button, `\u5F15\u7528 ${candidate.name}`);
+      button.addEventListener("click", () => this.chooseComposerMention(candidate.path));
+    }
+  }
+  hideComposerMentionSuggestions() {
+    var _a;
+    const removable = this.composerMentionSuggestionsEl;
+    if (typeof (removable == null ? void 0 : removable.remove) === "function") {
+      removable.remove();
+    } else if ((_a = this.composerMentionSuggestionsEl) == null ? void 0 : _a.parentElement) {
+      this.composerMentionSuggestionsEl.parentElement.removeChild(this.composerMentionSuggestionsEl);
+    }
+    this.composerMentionSuggestionsEl = void 0;
+    this.composerMentionRange = void 0;
+  }
+  chooseComposerMention(path) {
+    const file = this.findPdfFileByPath(path);
+    if (!file) {
+      this.hideComposerMentionSuggestions();
+      return;
+    }
+    const range = this.composerMentionRange || this.getComposerMentionRange();
+    this.addReferencedPdf(file);
+    if (range && this.inputEl) {
+      const label = `@${file.name || file.path} `;
+      const value = this.inputEl.value || "";
+      this.inputEl.value = value.slice(0, range.start) + label + value.slice(range.end);
+      const cursor = range.start + label.length;
+      if (typeof this.inputEl.setSelectionRange === "function") {
+        this.inputEl.setSelectionRange(cursor, cursor);
+      } else {
+        this.inputEl.selectionStart = cursor;
+        this.inputEl.selectionEnd = cursor;
+      }
+    }
+    this.hideComposerMentionSuggestions();
+    this.inputEl.focus();
   }
   renderResearchActions(container) {
     for (const action of listResearchActionsForSlot(this.services.actions, "context")) {
@@ -2811,6 +2909,19 @@ ${chunk.text}`;
     let outgoingContent = opts.outgoingContentOverride || question;
     if (opts.outgoingContentOverride) {
     } else if (opts.skipContextAugmentation) {
+    } else if (this.referencedPdfFiles.length) {
+      setBubbleText(loadingBubble, "\u6B63\u5728\u51C6\u5907\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u2026");
+      try {
+        outgoingContent = await this.buildApiMultiPaperContext(question, (message) => {
+          var _a;
+          (_a = this.multiPaperStatusEl) == null ? void 0 : _a.setText(message);
+          setBubbleText(loadingBubble, message);
+        });
+      } catch (err) {
+        new import_obsidian3.Notice("\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u51C6\u5907\u5931\u8D25\uFF0C\u5DF2\u9000\u56DE\u5F53\u524D\u95EE\u9898: " + errorMessage(err));
+        outgoingContent = question;
+      }
+      setBubbleText(loadingBubble, "\u601D\u8003\u4E2D\u2026");
     } else if (this.useRag && this.useFullTextMode && this.pdfFile && !this.fullTextAttached) {
       setBubbleText(loadingBubble, "\u6B63\u5728\u8BFB\u53D6\u5168\u6587\u2026");
       try {

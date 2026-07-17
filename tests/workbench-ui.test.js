@@ -355,6 +355,7 @@ function createModalHarness({
   markdownRenderer,
   llmChat,
   translation,
+  papers = {},
   autoTranslateOnOpen = false,
   startFresh = false,
   app = {},
@@ -385,6 +386,7 @@ function createModalHarness({
       extractFullText: async () => "",
       planRagQueries: async () => [],
       retrieveContext: () => [],
+      ...papers,
     },
     llm: { chat: llmChat || (async () => "Answer") },
     models: {
@@ -601,6 +603,78 @@ test("multi-paper panel searches PDFs, renders reference chips, and caps externa
   assert.equal(byClass(modal.contentEl, "pdf-chat-reference-chip").length, 3);
   byClass(modal.contentEl, "pdf-chat-reference-remove")[0].dispatch("click");
   assert.equal(modal.referencedPdfFiles.length, 2);
+});
+
+test("typing @ in the composer opens PDF mention suggestions and selecting one references it", () => {
+  const files = [
+    { name: "demo.pdf", path: "papers/demo.pdf", extension: "pdf", stat: { mtime: 1 } },
+    { name: "Alpha Paper.pdf", path: "papers/Alpha Paper.pdf", extension: "pdf", stat: { mtime: 2 } },
+    { name: "Beta Note.md", path: "notes/Beta Note.md", extension: "md", stat: { mtime: 3 } },
+  ];
+  const app = {
+    vault: {
+      getFiles: () => files,
+      getAbstractFileByPath: (target) => files.find((file) => file.path === target) || null,
+    },
+  };
+  const { modal } = createModalHarness({ app });
+
+  modal.inputEl.value = "请对比 @Alpha";
+  modal.inputEl.selectionStart = modal.inputEl.value.length;
+  modal.inputEl.dispatch("input");
+
+  const suggestions = byClass(modal.contentEl, "pdf-chat-composer-mention-suggestions");
+  assert.equal(suggestions.length, 1);
+  const buttons = byClass(suggestions[0], "pdf-chat-composer-mention-option");
+  assert.equal(buttons.length, 1);
+  assert.match(descendants(buttons[0]).map((element) => element.textContent).join(" "), /Alpha Paper\.pdf/);
+
+  buttons[0].dispatch("click");
+  assert.equal(modal.referencedPdfFiles.length, 1);
+  assert.match(modal.inputEl.value, /@Alpha Paper\.pdf\s/);
+  assert.equal(byClass(modal.contentEl, "pdf-chat-composer-mention-suggestions").length, 0);
+});
+
+test("sending with referenced PDFs augments the request with multi-paper context", async () => {
+  const referenced = { name: "Alpha Paper.pdf", path: "papers/Alpha Paper.pdf", extension: "pdf", stat: { mtime: 2 } };
+  const requests = [];
+  const { modal } = createModalHarness({
+    llmChat: async (request) => {
+      requests.push(JSON.parse(JSON.stringify(request)));
+      request.onChunk?.("Answer", "Answer");
+      return "Answer";
+    },
+    papers: {
+      getOrCreateDocSummary: async (file) => ({
+        mtime: file.stat?.mtime,
+        summary: `Summary for ${file.name}`,
+        generatedAt: 1,
+        fullLength: 100,
+        truncated: false,
+      }),
+      getOrCreateDocChunks: async (file) => ({
+        mtime: file.stat?.mtime,
+        fullTextLength: 100,
+        generatedAt: 1,
+        chunks: [{ page: 1, text: `Evidence from ${file.name}`, idx: 0 }],
+      }),
+      retrieveContext: (chunks) => chunks,
+    },
+  });
+  modal.referencedPdfFiles = [referenced];
+  modal.inputEl.value = "这两篇论文有什么不同？";
+
+  await modal.handleSubmit();
+
+  assert.equal(requests.length, 1);
+  const outgoing = requests[0].messages.at(-1).content;
+  assert.match(outgoing, /Summary for demo\.pdf/);
+  assert.match(outgoing, /Summary for Alpha Paper\.pdf/);
+  assert.match(outgoing, /Evidence from Alpha Paper\.pdf/);
+  assert.deepEqual(JSON.parse(JSON.stringify(modal.transcript)), [
+    { role: "user", content: "这两篇论文有什么不同？", status: "complete" },
+    { role: "assistant", content: "Answer", status: "complete" },
+  ]);
 });
 
 test("restored history keeps the live region off until every Markdown render settles", async () => {
