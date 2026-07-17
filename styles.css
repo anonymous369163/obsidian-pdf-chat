@@ -116,14 +116,19 @@
 
 .pdf-chat-context-panel {
   flex: 0 0 auto;
-  min-height: 0;
-  max-height: min(30vh, 180px);
+  min-height: 34px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   border: var(--pdf-chat-border);
   border-radius: var(--pdf-chat-radius);
   background: var(--pdf-chat-panel-background);
+}
+
+.pdf-chat-context-panel.is-expanded {
+  flex: 0 1 180px;
+  min-height: 34px;
+  max-height: 180px;
 }
 
 .pdf-chat-context-toggle {
@@ -471,8 +476,9 @@
     flex-wrap: wrap;
   }
 
-  .pdf-chat-context-panel {
-    max-height: min(28vh, 160px);
+  .pdf-chat-context-panel.is-expanded {
+    flex-basis: 160px;
+    max-height: 160px;
   }
 
   .pdf-chat-summary-row,
@@ -493,10 +499,6 @@
   .pdf-chat-workbench-header,
   .pdf-chat-context-toggle {
     min-height: 28px;
-  }
-
-  .pdf-chat-context-panel {
-    max-height: min(26vh, 140px);
   }
 
   .pdf-chat-input {

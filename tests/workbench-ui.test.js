@@ -220,10 +220,12 @@ function loadBundle(options = {}) {
           return this;
         },
         onChange(handler) {
+          inputEl.registeredOnChange = handler;
           inputEl.addEventListener("change", () => handler(inputEl.value));
           return this;
         },
         onClick(handler) {
+          inputEl.registeredOnClick = handler;
           inputEl.addEventListener("click", handler);
           return this;
         },
@@ -366,14 +368,21 @@ test("modal builds the accessible research-workbench regions and interactions", 
   assert.equal(byTag(header, "select").length, 2);
 
   const contextToggle = byClass(modal.contentEl, "pdf-chat-context-toggle")[0];
+  const contextPanel = byClass(modal.contentEl, "pdf-chat-context-panel")[0];
   const contextBody = byClass(modal.contentEl, "pdf-chat-context-body")[0];
   assert.equal(contextToggle.tagName, "BUTTON");
   assert.equal(contextToggle.getAttribute("aria-expanded"), "false");
   assert.match(contextToggle.getAttribute("aria-label"), /论文上下文/);
+  assert.equal(contextPanel.hasClass("is-expanded"), false);
   assert.equal(contextBody.hasClass("is-collapsed"), true);
   contextToggle.dispatch("click");
   assert.equal(contextToggle.getAttribute("aria-expanded"), "true");
+  assert.equal(contextPanel.hasClass("is-expanded"), true);
   assert.equal(contextBody.hasClass("is-collapsed"), false);
+  contextToggle.dispatch("click");
+  assert.equal(contextToggle.getAttribute("aria-expanded"), "false");
+  assert.equal(contextPanel.hasClass("is-expanded"), false);
+  assert.equal(contextBody.hasClass("is-collapsed"), true);
 
   assert.equal(modal.historyEl.getAttribute("role"), "log");
   assert.equal(modal.historyEl.getAttribute("aria-live"), "polite");
@@ -476,6 +485,13 @@ test("settings preserve every legacy control in the correct ordered section and 
   const PluginClass = bundle.default || bundle;
   const plugin = new PluginClass();
   await plugin.onload();
+  plugin.settings.models.push({
+    id: "second-model",
+    name: "Second model",
+    endpoint: "",
+    apiKey: "",
+    model: "",
+  });
   const settingTab = settingTabs[0];
   settingTab.display();
 
@@ -491,7 +507,16 @@ test("settings preserve every legacy control in the correct ordered section and 
       .map((setting) => setting.getAttribute("data-name"))
       .filter(Boolean);
   const expectedNames = [
-    ["模型 1 · 默认", "Endpoint", "API Key", "模型名(model 字段)"],
+    [
+      "模型 1 · 默认",
+      "Endpoint",
+      "API Key",
+      "模型名(model 字段)",
+      "模型 2",
+      "Endpoint",
+      "API Key",
+      "模型名(model 字段)",
+    ],
     ["流式输出", "Temperature", "Max Tokens", "系统提示词"],
     ["翻译目标语言", "翻译附加要求"],
     [
@@ -525,6 +550,30 @@ test("settings preserve every legacy control in the correct ordered section and 
         byTag(setting, tagName)
       );
       assert.ok(controls.length > 0, `missing legacy control for ${name}`);
+    }
+  }
+  for (const [sectionIndex, section] of sections.entries()) {
+    for (const control of ["input", "select", "textarea"].flatMap((tagName) =>
+      byTag(section, tagName)
+    )) {
+      const setting = control.parentElement;
+      assert.equal(
+        typeof control.registeredOnChange,
+        "function",
+        `missing onChange callback in ${expectedNames[sectionIndex][0]} section for ${
+          setting?.getAttribute("data-name") || control.tagName
+        }`
+      );
+    }
+    for (const button of byTag(section, "button")) {
+      const setting = button.parentElement;
+      assert.equal(
+        typeof button.registeredOnClick,
+        "function",
+        `missing onClick callback in ${expectedNames[sectionIndex][0]} section for ${
+          setting?.getAttribute("data-name") || button.textContent
+        }`
+      );
     }
   }
 
@@ -584,23 +633,29 @@ test("CSS defines the scoped responsive, readable, selectable workbench contract
   }
   assert.match(css, /\.pdf-chat-composer[^}]*position:\s*sticky/s);
   const contextPanelRule = css.match(/\.pdf-chat-context-panel\s*\{([^}]*)\}/s)?.[1] || "";
+  const expandedContextPanelRule =
+    css.match(/\.pdf-chat-context-panel\.is-expanded\s*\{([^}]*)\}/s)?.[1] || "";
   const contextBodyRule = css.match(/\.pdf-chat-context-body\s*\{([^}]*)\}/s)?.[1] || "";
   const historyRule = css.match(/\.pdf-chat-history\s*\{([^}]*)\}/s)?.[1] || "";
+  const headerRule = css.match(/\.pdf-chat-workbench-header\s*\{([^}]*)\}/s)?.[1] || "";
+  const composerRule = css.match(/\.pdf-chat-composer\s*\{([^}]*)\}/s)?.[1] || "";
   assert.match(contextPanelRule, /display:\s*flex/);
   assert.match(contextPanelRule, /flex-direction:\s*column/);
-  assert.match(contextPanelRule, /min-height:\s*0/);
-  assert.match(contextPanelRule, /max-height:/);
+  assert.match(contextPanelRule, /flex:\s*0\s+0\s+auto/);
+  assert.match(contextPanelRule, /min-height:\s*34px/);
+  assert.match(contextPanelRule, /overflow:\s*hidden/);
+  assert.match(expandedContextPanelRule, /flex:\s*0\s+1\s+180px/);
+  assert.match(expandedContextPanelRule, /min-height:\s*34px/);
+  assert.match(expandedContextPanelRule, /max-height:\s*180px/);
   assert.match(contextBodyRule, /min-height:\s*0/);
-  assert.match(contextBodyRule, /max-height:/);
+  assert.match(contextBodyRule, /flex:\s*1\s+1\s+auto/);
   assert.match(contextBodyRule, /overflow-y:\s*auto/);
   assert.match(historyRule, /min-height:\s*0/);
+  assert.match(headerRule, /flex:\s*0\s+0\s+auto/);
+  assert.match(composerRule, /flex:\s*0\s+0\s+auto/);
   assert.match(
     css,
-    /@container\s+pdf-chat-workbench\s*\(max-width:\s*620px\)[\s\S]*?\.pdf-chat-context-panel\s*\{[^}]*max-height:/
-  );
-  assert.match(
-    css,
-    /@media\s*\(max-height:\s*620px\)[\s\S]*?\.pdf-chat-context-panel\s*\{[^}]*max-height:/
+    /@container\s+pdf-chat-workbench\s*\(max-width:\s*620px\)[\s\S]*?\.pdf-chat-context-panel\.is-expanded\s*\{[^}]*flex-basis:\s*160px[^}]*max-height:\s*160px/
   );
   assert.match(css, /:focus-visible/);
   assert.match(css, /@container|@media\s*\([^)]*max-width/);
