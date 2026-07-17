@@ -966,6 +966,16 @@ export class PDFChatModal extends Modal {
     return refs ? `多论文问题：${question}\n\n引用论文：${refs}` : `多论文问题：${question}`;
   }
 
+  private codexSlashQuestion(question: string): string | null {
+    const trimmed = question.trim();
+    if (!/^\/codex\b/i.test(trimmed)) return null;
+    const stripped = trimmed.replace(/^\/codex\b[:：]?\s*/i, "").trim();
+    return (
+      stripped ||
+      "请基于当前论文和已引用论文进行深度阅读，提炼关键问题、核心方法、证据、局限和后续值得追问的方向。"
+    );
+  }
+
   private shouldOfferCodexDeepAnalysis(question: string): boolean {
     if (!this.pdfFile || !this.referencedPdfFiles.length) return false;
     return /(深度分析|深度阅读|深入分析|深入阅读|Codex|codex|CLI|cli)/.test(question);
@@ -1118,7 +1128,7 @@ export class PDFChatModal extends Modal {
     }
   }
 
-  async runCodexDeepAnalysis(): Promise<void> {
+  async runCodexDeepAnalysis(questionOverride?: string): Promise<void> {
     if (!this.pdfFile) {
       new Notice("Codex 深度分析需要从 PDF 视图打开。");
       return;
@@ -1134,7 +1144,7 @@ export class PDFChatModal extends Modal {
     }
     if (this.isSending) return;
 
-    const question = this.getMultiPaperQuestion();
+    const question = (questionOverride && questionOverride.trim()) || this.getMultiPaperQuestion();
     const userLabel = this.multiPaperUserLabel(question);
     this.activeComposerKind = "chat";
     this.hideFollowupSuggestions();
@@ -1419,6 +1429,12 @@ export class PDFChatModal extends Modal {
       return;
     }
 
+    const codexSlashQuestion = this.codexSlashQuestion(question);
+    if (codexSlashQuestion !== null) {
+      await this.runCodexDeepAnalysis(codexSlashQuestion);
+      return;
+    }
+
     if (this.activeComposerKind === "translate" && this.translateTranscript.length) {
       await this.handleTranslateFollowup(question, usingOverride);
       return;
@@ -1431,7 +1447,7 @@ export class PDFChatModal extends Modal {
       this.shouldOfferCodexDeepAnalysis(question) &&
       this.confirmCodexDeepAnalysis()
     ) {
-      await this.runCodexDeepAnalysis();
+      await this.runCodexDeepAnalysis(question);
       return;
     }
 

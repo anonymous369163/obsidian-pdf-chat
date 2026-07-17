@@ -712,6 +712,28 @@ test("deep-analysis wording asks for Codex CLI instead of using a persistent but
   assert.match(confirmMessage, /Codex CLI|深度分析/);
 });
 
+test("/codex command invokes Codex CLI directly with a stripped question", async () => {
+  const referenced = { name: "Alpha Paper.pdf", path: "papers/Alpha Paper.pdf", extension: "pdf", stat: { mtime: 2 } };
+  let confirmCalls = 0;
+  let codexQuestion = "";
+  const { modal } = createModalHarness({
+    confirm: () => {
+      confirmCalls += 1;
+      return false;
+    },
+  });
+  modal.referencedPdfFiles = [referenced];
+  modal.runCodexDeepAnalysis = async (question) => {
+    codexQuestion = question;
+  };
+  modal.inputEl.value = "/codex 请详细阅读这两篇论文，并解释第二篇如何帮助理解第一篇";
+
+  await modal.handleSubmit();
+
+  assert.equal(confirmCalls, 0);
+  assert.equal(codexQuestion, "请详细阅读这两篇论文，并解释第二篇如何帮助理解第一篇");
+});
+
 test("restored history keeps the live region off until every Markdown render settles", async () => {
   const pendingRenders = [];
   const markdownRenderer = {

@@ -1482,7 +1482,7 @@ function buildMessageRegion(parent, restoringHistory) {
 function buildEmptyState(history) {
   return history.createDiv({
     cls: "pdf-chat-empty-state",
-    text: "\u9009\u533A\u5DF2\u5C31\u7EEA\u3002\u4F60\u53EF\u4EE5\u76F4\u63A5\u63D0\u95EE\uFF0C\u4E5F\u53EF\u4EE5\u8F93\u5165 @ \u5F15\u7528\u5176\u4ED6 PDF \u4E00\u8D77\u6BD4\u8F83\u3002",
+    text: "\u9009\u533A\u5DF2\u5C31\u7EEA\u3002\u53EF\u76F4\u63A5\u63D0\u95EE\uFF0C\u8F93\u5165 @ \u5F15\u7528\u5176\u4ED6 PDF\uFF1B\u9700\u8981 Codex \u6DF1\u5EA6\u9605\u8BFB\u65F6\u8F93\u5165 /codex \u52A0\u95EE\u9898\u3002",
     attr: { role: "status" }
   });
 }
@@ -2348,6 +2348,12 @@ ${this.contextText}`;
 
 \u5F15\u7528\u8BBA\u6587\uFF1A${refs}` : `\u591A\u8BBA\u6587\u95EE\u9898\uFF1A${question}`;
   }
+  codexSlashQuestion(question) {
+    const trimmed = question.trim();
+    if (!/^\/codex\b/i.test(trimmed)) return null;
+    const stripped = trimmed.replace(/^\/codex\b[:：]?\s*/i, "").trim();
+    return stripped || "\u8BF7\u57FA\u4E8E\u5F53\u524D\u8BBA\u6587\u548C\u5DF2\u5F15\u7528\u8BBA\u6587\u8FDB\u884C\u6DF1\u5EA6\u9605\u8BFB\uFF0C\u63D0\u70BC\u5173\u952E\u95EE\u9898\u3001\u6838\u5FC3\u65B9\u6CD5\u3001\u8BC1\u636E\u3001\u5C40\u9650\u548C\u540E\u7EED\u503C\u5F97\u8FFD\u95EE\u7684\u65B9\u5411\u3002";
+  }
   shouldOfferCodexDeepAnalysis(question) {
     if (!this.pdfFile || !this.referencedPdfFiles.length) return false;
     return /(深度分析|深度阅读|深入分析|深入阅读|Codex|codex|CLI|cli)/.test(question);
@@ -2491,7 +2497,7 @@ ${chunk.text}`;
       (_b = this.multiPaperStatusEl) == null ? void 0 : _b.setText("\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u51C6\u5907\u5931\u8D25\u3002");
     }
   }
-  async runCodexDeepAnalysis() {
+  async runCodexDeepAnalysis(questionOverride) {
     var _a, _b, _c, _d, _e, _f, _g;
     if (!this.pdfFile) {
       new import_obsidian3.Notice("Codex \u6DF1\u5EA6\u5206\u6790\u9700\u8981\u4ECE PDF \u89C6\u56FE\u6253\u5F00\u3002");
@@ -2507,7 +2513,7 @@ ${chunk.text}`;
       return;
     }
     if (this.isSending) return;
-    const question = this.getMultiPaperQuestion();
+    const question = questionOverride && questionOverride.trim() || this.getMultiPaperQuestion();
     const userLabel = this.multiPaperUserLabel(question);
     this.activeComposerKind = "chat";
     this.hideFollowupSuggestions();
@@ -2771,12 +2777,17 @@ ${chunk.text}`;
       new import_obsidian3.Notice("\u4E0A\u4E00\u4E2A\u95EE\u9898\u8FD8\u5728\u751F\u6210\u4E2D,\u8BF7\u7A0D\u5019\u6216\u70B9\u51FB\u505C\u6B62");
       return;
     }
+    const codexSlashQuestion = this.codexSlashQuestion(question);
+    if (codexSlashQuestion !== null) {
+      await this.runCodexDeepAnalysis(codexSlashQuestion);
+      return;
+    }
     if (this.activeComposerKind === "translate" && this.translateTranscript.length) {
       await this.handleTranslateFollowup(question, usingOverride);
       return;
     }
     if (!usingOverride && !opts.outgoingContentOverride && !opts.skipContextAugmentation && this.shouldOfferCodexDeepAnalysis(question) && this.confirmCodexDeepAnalysis()) {
-      await this.runCodexDeepAnalysis();
+      await this.runCodexDeepAnalysis(question);
       return;
     }
     this.activeComposerKind = "chat";

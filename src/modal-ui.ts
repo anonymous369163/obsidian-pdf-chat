@@ -266,7 +266,7 @@ export function buildMessageRegion(parent: HTMLElement, restoringHistory: boolea
 export function buildEmptyState(history: HTMLElement): HTMLDivElement {
   return history.createDiv({
     cls: "pdf-chat-empty-state",
-    text: "选区已就绪。你可以直接提问，也可以输入 @ 引用其他 PDF 一起比较。",
+    text: "选区已就绪。可直接提问，输入 @ 引用其他 PDF；需要 Codex 深度阅读时输入 /codex 加问题。",
     attr: { role: "status" },
   });
 }
