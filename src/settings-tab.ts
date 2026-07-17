@@ -4,6 +4,11 @@ import { normalizeRagChunkSettings } from "./settings";
 import { createSettingsSection } from "./settings-ui";
 import type { PDFChatPluginApi } from "./types";
 
+function labelExtraButton(button: { extraSettingsEl?: HTMLElement }, label: string): void {
+  if (!button.extraSettingsEl) return;
+  button.extraSettingsEl.setAttr("aria-label", label);
+}
+
 export class PDFChatSettingTab extends PluginSettingTab {
   private readonly plugin: PDFChatPluginApi;
 
@@ -43,21 +48,21 @@ export class PDFChatSettingTab extends PluginSettingTab {
           })
       );
       if (!isActive) {
-        header.addExtraButton((button) =>
+        header.addExtraButton((button) => {
+          labelExtraButton(button, "设为默认");
           button
             .setIcon("star")
-            .setTooltip("设为默认")
             .onClick(async () => {
               this.plugin.settings.activeModelId = model.id;
               await this.plugin.saveSettings();
               this.display();
-            })
-        );
+            });
+        });
       }
-      header.addExtraButton((button) =>
+      header.addExtraButton((button) => {
+        labelExtraButton(button, "删除这个模型");
         button
           .setIcon("trash")
-          .setTooltip("删除这个模型")
           .onClick(async () => {
             if (this.plugin.settings.models.length <= 1) {
               new Notice("至少要保留一个模型配置");
@@ -69,8 +74,8 @@ export class PDFChatSettingTab extends PluginSettingTab {
             }
             await this.plugin.saveSettings();
             this.display();
-          })
-      );
+          });
+      });
 
       new Setting(containerEl).setName("Endpoint").addText((text) =>
         text
@@ -390,16 +395,16 @@ export class PDFChatSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
-      nameSetting.addExtraButton((button) =>
+      nameSetting.addExtraButton((button) => {
+        labelExtraButton(button, "删除这个预设");
         button
           .setIcon("trash")
-          .setTooltip("删除这个预设")
           .onClick(async () => {
             this.plugin.settings.promptPresets.splice(index, 1);
             await this.plugin.saveSettings();
             this.display();
-          })
-      );
+          });
+      });
       new Setting(containerEl).addTextArea((text) => {
         text.inputEl.rows = 4;
         text.inputEl.style.width = "100%";

@@ -455,6 +455,12 @@ test("modal builds the accessible research-workbench regions and interactions", 
   assert.equal(modal.translateBtn.textContent, "翻译选区");
   assert.match(modal.inputEl.getAttribute("aria-label"), /提问/);
   assert.match(modal.sendBtn.getAttribute("aria-label"), /发送/);
+  assert.deepEqual(
+    descendants(modal.contentEl)
+      .filter((element) => element.getAttribute("title") !== null)
+      .map((element) => `${element.tagName}.${element.className}`),
+    []
+  );
 
   modal.inputEl.scrollHeight = 120;
   modal.inputEl.dispatch("input");

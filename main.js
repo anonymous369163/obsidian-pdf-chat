@@ -936,10 +936,8 @@ function labelControl(element, label) {
   const compatibleElement = element;
   if (typeof compatibleElement.setAttr === "function") {
     compatibleElement.setAttr("aria-label", label);
-    compatibleElement.setAttr("title", label);
   } else if (typeof compatibleElement.setAttribute === "function") {
     compatibleElement.setAttribute("aria-label", label);
-    compatibleElement.setAttribute("title", label);
   }
 }
 function buildWorkbenchHeader(parent, options) {
@@ -948,8 +946,7 @@ function buildWorkbenchHeader(parent, options) {
   identity.createEl("h2", { text: "PDF Chat" });
   identity.createEl("span", {
     text: options.filename,
-    cls: "pdf-chat-document-name",
-    attr: { title: options.filename }
+    cls: "pdf-chat-document-name"
   });
   const controls = root.createDiv({ cls: "pdf-chat-header-controls pdf-chat-interactive" });
   const modelGroup = controls.createDiv({ cls: "pdf-chat-control-group" });
@@ -957,7 +954,7 @@ function buildWorkbenchHeader(parent, options) {
   modelGroup.createEl("label", { text: "\u6A21\u578B", attr: { for: modelId } });
   const modelSelect = modelGroup.createEl("select", {
     cls: "dropdown pdf-chat-select",
-    attr: { id: modelId, "aria-label": "\u9009\u62E9\u804A\u5929\u6A21\u578B", title: "\u9009\u62E9\u804A\u5929\u6A21\u578B" }
+    attr: { id: modelId, "aria-label": "\u9009\u62E9\u804A\u5929\u6A21\u578B" }
   });
   for (const model of options.models) {
     modelSelect.createEl("option", { text: model.name, value: model.id });
@@ -968,7 +965,7 @@ function buildWorkbenchHeader(parent, options) {
   modeGroup.createEl("label", { text: "\u9605\u8BFB\u6A21\u5F0F", attr: { for: modeId } });
   const modeSelect = modeGroup.createEl("select", {
     cls: "dropdown pdf-chat-select",
-    attr: { id: modeId, "aria-label": "\u9009\u62E9\u9605\u8BFB\u6A21\u5F0F", title: "\u9009\u62E9\u9605\u8BFB\u6A21\u5F0F" }
+    attr: { id: modeId, "aria-label": "\u9009\u62E9\u9605\u8BFB\u6A21\u5F0F" }
   });
   modeSelect.createEl("option", { text: "\u9ED8\u8BA4", value: "__default__" });
   for (const preset of options.presets) {
@@ -1025,8 +1022,7 @@ function buildContextPanel(parent, options) {
       type: "button",
       "aria-expanded": "false",
       "aria-controls": bodyId,
-      "aria-label": "\u5C55\u5F00\u8BBA\u6587\u4E0A\u4E0B\u6587\u5DE5\u5177",
-      title: "\u5C55\u5F00\u6216\u6536\u8D77\u8BBA\u6587\u4E0A\u4E0B\u6587\u5DE5\u5177"
+      "aria-label": "\u5C55\u5F00\u8BBA\u6587\u4E0A\u4E0B\u6587\u5DE5\u5177"
     }
   });
   toggle.createEl("span", { text: "\u8BBA\u6587\u4E0A\u4E0B\u6587", cls: "pdf-chat-context-title" });
@@ -1101,8 +1097,7 @@ function buildComposer(parent) {
     attr: {
       rows: "1",
       placeholder: "\u9488\u5BF9\u5F53\u524D\u9009\u533A\u63D0\u95EE\u2026",
-      "aria-label": "\u9488\u5BF9\u5F53\u524D\u9009\u533A\u63D0\u95EE",
-      title: "Enter \u53D1\u9001\uFF0CShift+Enter \u6362\u884C"
+      "aria-label": "\u9488\u5BF9\u5F53\u524D\u9009\u533A\u63D0\u95EE"
     }
   });
   const translateButton = inputRow.createEl("button", {
@@ -1547,11 +1542,11 @@ ${this.contextText}`;
       const date = new Date(cached.generatedAt);
       const truncatedNote = cached.truncated ? " \xB7 \u539F\u6587\u8FC7\u957F,\u4EC5\u6458\u8981\u4E86\u524D\u9762\u90E8\u5206" : "";
       this.summaryStatusEl.setText("\u6458\u8981\uFF1A\u5DF2\u7F13\u5B58");
-      this.summaryStatusEl.setAttr("title", `\u5DF2\u7F13\u5B58 \xB7 ${date.toLocaleString()}${truncatedNote}`);
+      this.summaryStatusEl.setAttr("aria-label", `\u6458\u8981\u5DF2\u7F13\u5B58 \xB7 ${date.toLocaleString()}${truncatedNote}`);
     } else {
       this.docSummaryEntry = null;
       this.summaryStatusEl.setText("\u6458\u8981\uFF1A\u672A\u751F\u6210");
-      this.summaryStatusEl.setAttr("title", "\u5C1A\u672A\u751F\u6210\u5168\u6587\u6458\u8981");
+      this.summaryStatusEl.setAttr("aria-label", "\u5C1A\u672A\u751F\u6210\u5168\u6587\u6458\u8981");
     }
   }
   async ensureDocSummary(forceRefresh) {
@@ -1602,18 +1597,18 @@ ${this.contextText}`;
       if (this.useFullTextMode) {
         this.ragStatusEl.setText("\u4E0A\u4E0B\u6587\uFF1A\u5168\u6587\u76F4\u8BFB");
         this.ragStatusEl.setAttr(
-          "title",
+          "aria-label",
           `\u5168\u6587\u7EA6 ${cached.fullTextLength} \u5B57\uFF0C\u76F4\u63A5\u8BFB\u5168\u6587 \xB7 ${date.toLocaleString()}`
         );
       } else {
         this.ragStatusEl.setText("\u4E0A\u4E0B\u6587\uFF1ARAG \u5C31\u7EEA");
-        this.ragStatusEl.setAttr("title", `\u5DF2\u5EFA\u7D22\u5F15 \xB7 ${cached.chunks.length} \u5757 \xB7 ${date.toLocaleString()}`);
+        this.ragStatusEl.setAttr("aria-label", `\u5DF2\u5EFA\u7D22\u5F15 \xB7 ${cached.chunks.length} \u5757 \xB7 ${date.toLocaleString()}`);
       }
     } else {
       this.docChunksEntry = null;
       this.useFullTextMode = false;
       this.ragStatusEl.setText("\u4E0A\u4E0B\u6587\uFF1A\u672A\u7D22\u5F15");
-      this.ragStatusEl.setAttr("title", "\u5C1A\u672A\u5EFA\u7ACB\u5168\u6587\u68C0\u7D22\u7D22\u5F15");
+      this.ragStatusEl.setAttr("aria-label", "\u5C1A\u672A\u5EFA\u7ACB\u5168\u6587\u68C0\u7D22\u7D22\u5F15");
     }
   }
   async ensureDocChunks(forceRefresh) {
@@ -2155,6 +2150,10 @@ function createSettingsSection(parent, title) {
 }
 
 // src/settings-tab.ts
+function labelExtraButton(button, label) {
+  if (!button.extraSettingsEl) return;
+  button.extraSettingsEl.setAttr("aria-label", label);
+}
 var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
@@ -2186,16 +2185,18 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
         })
       );
       if (!isActive) {
-        header.addExtraButton(
-          (button) => button.setIcon("star").setTooltip("\u8BBE\u4E3A\u9ED8\u8BA4").onClick(async () => {
+        header.addExtraButton((button) => {
+          labelExtraButton(button, "\u8BBE\u4E3A\u9ED8\u8BA4");
+          button.setIcon("star").onClick(async () => {
             this.plugin.settings.activeModelId = model.id;
             await this.plugin.saveSettings();
             this.display();
-          })
-        );
+          });
+        });
       }
-      header.addExtraButton(
-        (button) => button.setIcon("trash").setTooltip("\u5220\u9664\u8FD9\u4E2A\u6A21\u578B").onClick(async () => {
+      header.addExtraButton((button) => {
+        labelExtraButton(button, "\u5220\u9664\u8FD9\u4E2A\u6A21\u578B");
+        button.setIcon("trash").onClick(async () => {
           if (this.plugin.settings.models.length <= 1) {
             new import_obsidian3.Notice("\u81F3\u5C11\u8981\u4FDD\u7559\u4E00\u4E2A\u6A21\u578B\u914D\u7F6E");
             return;
@@ -2206,8 +2207,8 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
           }
           await this.plugin.saveSettings();
           this.display();
-        })
-      );
+        });
+      });
       new import_obsidian3.Setting(containerEl).setName("Endpoint").addText(
         (text) => text.setPlaceholder("OpenAI \u517C\u5BB9\u7684 chat/completions \u63A5\u53E3\u5730\u5740").setValue(model.endpoint).onChange(async (value) => {
           model.endpoint = value.trim();
@@ -2454,13 +2455,14 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
           await this.plugin.saveSettings();
         })
       );
-      nameSetting.addExtraButton(
-        (button) => button.setIcon("trash").setTooltip("\u5220\u9664\u8FD9\u4E2A\u9884\u8BBE").onClick(async () => {
+      nameSetting.addExtraButton((button) => {
+        labelExtraButton(button, "\u5220\u9664\u8FD9\u4E2A\u9884\u8BBE");
+        button.setIcon("trash").onClick(async () => {
           this.plugin.settings.promptPresets.splice(index, 1);
           await this.plugin.saveSettings();
           this.display();
-        })
-      );
+        });
+      });
       new import_obsidian3.Setting(containerEl).addTextArea((text) => {
         text.inputEl.rows = 4;
         text.inputEl.style.width = "100%";

@@ -39,6 +39,12 @@ function loadPluginModule(options = {}) {
 
     addControl(callback) {
       const control = {
+        attributes: {},
+        extraSettingsEl: {
+          setAttr: (name, value) => {
+            control.attributes[name] = String(value);
+          },
+        },
         inputEl: { style: {} },
         tooltip: "",
         addOption() {
@@ -48,7 +54,7 @@ function loadPluginModule(options = {}) {
           return this;
         },
         onClick(handler) {
-          if (this.tooltip === "删除这个模型" && options.deleteModelHandlers) {
+          if (this.attributes["aria-label"] === "删除这个模型" && options.deleteModelHandlers) {
             options.deleteModelHandlers.push(handler);
           }
           return this;

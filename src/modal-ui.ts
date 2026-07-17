@@ -13,10 +13,8 @@ export function labelControl(element: HTMLElement, label: string): void {
   };
   if (typeof compatibleElement.setAttr === "function") {
     compatibleElement.setAttr("aria-label", label);
-    compatibleElement.setAttr("title", label);
   } else if (typeof compatibleElement.setAttribute === "function") {
     compatibleElement.setAttribute("aria-label", label);
-    compatibleElement.setAttribute("title", label);
   }
 }
 
@@ -48,7 +46,6 @@ export function buildWorkbenchHeader(
   identity.createEl("span", {
     text: options.filename,
     cls: "pdf-chat-document-name",
-    attr: { title: options.filename },
   });
 
   const controls = root.createDiv({ cls: "pdf-chat-header-controls pdf-chat-interactive" });
@@ -57,7 +54,7 @@ export function buildWorkbenchHeader(
   modelGroup.createEl("label", { text: "模型", attr: { for: modelId } });
   const modelSelect = modelGroup.createEl("select", {
     cls: "dropdown pdf-chat-select",
-    attr: { id: modelId, "aria-label": "选择聊天模型", title: "选择聊天模型" },
+    attr: { id: modelId, "aria-label": "选择聊天模型" },
   });
   for (const model of options.models) {
     modelSelect.createEl("option", { text: model.name, value: model.id });
@@ -69,7 +66,7 @@ export function buildWorkbenchHeader(
   modeGroup.createEl("label", { text: "阅读模式", attr: { for: modeId } });
   const modeSelect = modeGroup.createEl("select", {
     cls: "dropdown pdf-chat-select",
-    attr: { id: modeId, "aria-label": "选择阅读模式", title: "选择阅读模式" },
+    attr: { id: modeId, "aria-label": "选择阅读模式" },
   });
   modeSelect.createEl("option", { text: "默认", value: "__default__" });
   for (const preset of options.presets) {
@@ -149,7 +146,6 @@ export function buildContextPanel(
       "aria-expanded": "false",
       "aria-controls": bodyId,
       "aria-label": "展开论文上下文工具",
-      title: "展开或收起论文上下文工具",
     },
   });
   toggle.createEl("span", { text: "论文上下文", cls: "pdf-chat-context-title" });
@@ -239,7 +235,6 @@ export function buildComposer(parent: HTMLElement): ComposerElements {
       rows: "1",
       placeholder: "针对当前选区提问…",
       "aria-label": "针对当前选区提问",
-      title: "Enter 发送，Shift+Enter 换行",
     },
   });
   const translateButton = inputRow.createEl("button", {

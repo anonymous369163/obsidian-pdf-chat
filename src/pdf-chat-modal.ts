@@ -538,11 +538,11 @@ export class PDFChatModal extends Modal {
       const date = new Date(cached.generatedAt);
       const truncatedNote = cached.truncated ? " · 原文过长,仅摘要了前面部分" : "";
       this.summaryStatusEl.setText("摘要：已缓存");
-      this.summaryStatusEl.setAttr("title", `已缓存 · ${date.toLocaleString()}${truncatedNote}`);
+      this.summaryStatusEl.setAttr("aria-label", `摘要已缓存 · ${date.toLocaleString()}${truncatedNote}`);
     } else {
       this.docSummaryEntry = null;
       this.summaryStatusEl.setText("摘要：未生成");
-      this.summaryStatusEl.setAttr("title", "尚未生成全文摘要");
+      this.summaryStatusEl.setAttr("aria-label", "尚未生成全文摘要");
     }
   }
 
@@ -597,18 +597,18 @@ export class PDFChatModal extends Modal {
       if (this.useFullTextMode) {
         this.ragStatusEl.setText("上下文：全文直读");
         this.ragStatusEl.setAttr(
-          "title",
+          "aria-label",
           `全文约 ${cached.fullTextLength} 字，直接读全文 · ${date.toLocaleString()}`
         );
       } else {
         this.ragStatusEl.setText("上下文：RAG 就绪");
-        this.ragStatusEl.setAttr("title", `已建索引 · ${cached.chunks.length} 块 · ${date.toLocaleString()}`);
+        this.ragStatusEl.setAttr("aria-label", `已建索引 · ${cached.chunks.length} 块 · ${date.toLocaleString()}`);
       }
     } else {
       this.docChunksEntry = null;
       this.useFullTextMode = false;
       this.ragStatusEl.setText("上下文：未索引");
-      this.ragStatusEl.setAttr("title", "尚未建立全文检索索引");
+      this.ragStatusEl.setAttr("aria-label", "尚未建立全文检索索引");
     }
   }
 
