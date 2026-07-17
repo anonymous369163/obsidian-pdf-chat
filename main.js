@@ -1299,6 +1299,7 @@ var PDFChatModal = class extends import_obsidian2.Modal {
     __publicField(this, "transcript");
     __publicField(this, "translateTranscript", []);
     __publicField(this, "messages");
+    __publicField(this, "activeComposerKind", "chat");
     __publicField(this, "isSending", false);
     __publicField(this, "abortController", null);
     __publicField(this, "zoomOutBtn");
@@ -1586,7 +1587,7 @@ ${this.contextText}`;
       "\u8FDB\u4E00\u6B65\u5206\u6790\u4E3A\u4EC0\u4E48\u662F\u8FD9\u6837\u7684"
     ];
   }
-  showFollowupSuggestions() {
+  showFollowupSuggestions(kind = "chat") {
     this.hideFollowupSuggestions();
     try {
       this.suggestionsEl = buildFollowupSuggestions(this.historyEl, this.followupSuggestions());
@@ -1596,6 +1597,7 @@ ${this.contextText}`;
         if (button.tagName !== "BUTTON") continue;
         button.addEventListener("click", () => {
           this.inputEl.value = button.textContent || "";
+          this.activeComposerKind = kind;
           this.inputEl.focus();
           this.hideFollowupSuggestions();
         });
@@ -1608,7 +1610,12 @@ ${this.contextText}`;
   }
   hideFollowupSuggestions() {
     var _a;
-    (_a = this.suggestionsEl) == null ? void 0 : _a.remove();
+    const removable = this.suggestionsEl;
+    if (typeof (removable == null ? void 0 : removable.remove) === "function") {
+      removable.remove();
+    } else if ((_a = this.suggestionsEl) == null ? void 0 : _a.parentElement) {
+      this.suggestionsEl.parentElement.removeChild(this.suggestionsEl);
+    }
     this.suggestionsEl = void 0;
   }
   async restoreConversationHistory() {
@@ -1685,6 +1692,7 @@ ${this.contextText}`;
     }
     this.transcript = [];
     this.messages = [this.buildSystemMessage()];
+    this.activeComposerKind = "chat";
     this.fullTextAttached = false;
     this.historyEl.empty();
     this.hideFollowupSuggestions();
@@ -1948,25 +1956,76 @@ ${this.contextText}`;
         loadingBubble.addClass("is-rendered");
         await renderMarkdownIntoBubble(this.app, this.plugin, loadingBubble, fullText);
       }
-      this.messages.push(
-        { role: "user", content: friendlyLabel },
-        { role: "assistant", content: fullText }
-      );
       await this.recordTranslateTurn(friendlyLabel, fullText, status);
-      if (!isPartial) this.showFollowupSuggestions();
+      this.activeComposerKind = "translate";
+      if (!isPartial) this.showFollowupSuggestions("translate");
     } catch (err) {
       loadingBubble.removeClass("is-loading");
       if (isAbortError(err) && fullText.trim()) {
         loadingBubble.addClass("is-stopped");
         setBubbleText(loadingBubble, fullText + "\n\n[\u5DF2\u505C\u6B62\u751F\u6210]");
-        this.messages.push(
-          { role: "user", content: friendlyLabel },
-          { role: "assistant", content: fullText }
-        );
         await this.recordTranslateTurn(friendlyLabel, fullText, "stopped");
+        this.activeComposerKind = "translate";
       } else {
         loadingBubble.addClass("is-error");
         setBubbleText(loadingBubble, "\u7FFB\u8BD1\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u6A21\u578B\u914D\u7F6E\u6216\u7A0D\u540E\u91CD\u8BD5\u3002");
+      }
+    } finally {
+      this.setSendingState(false);
+      this.abortController = null;
+      this.inputEl.focus();
+    }
+  }
+  async handleTranslateFollowup(question, usingOverride) {
+    this.hideFollowupSuggestions();
+    this.addBubble("user", question);
+    if (!usingOverride) {
+      this.inputEl.value = "";
+      if (this.inputEl.style) this.inputEl.style.height = "";
+    }
+    this.setSendingState(true);
+    const loadingBubble = this.addBubble("assistant", "\u601D\u8003\u4E2D\u2026", { loading: true });
+    this.abortController = new AbortController();
+    let fullText = "";
+    let firstChunkArrived = false;
+    const requestMessages = [
+      this.buildSystemMessage(),
+      ...this.translateTranscript.map((message) => ({
+        role: message.role,
+        content: message.content
+      })),
+      { role: "user", content: question }
+    ];
+    try {
+      fullText = await this.services.llm.chat({
+        messages: requestMessages,
+        onChunk: (_piece, acc) => {
+          fullText = acc;
+          if (!firstChunkArrived) {
+            firstChunkArrived = true;
+            loadingBubble.removeClass("is-loading");
+          }
+          setBubbleText(loadingBubble, acc);
+          this.historyEl.scrollTo({ top: this.historyEl.scrollHeight, behavior: "auto" });
+        },
+        signal: this.abortController.signal,
+        modelProfile: this.services.models.get(this.currentModelId)
+      });
+      loadingBubble.removeClass("is-loading");
+      loadingBubble.addClass("is-rendered");
+      await renderMarkdownIntoBubble(this.app, this.plugin, loadingBubble, fullText);
+      await this.recordTranslateTurn(question, fullText, "complete");
+      this.activeComposerKind = "translate";
+      this.showFollowupSuggestions("translate");
+    } catch (err) {
+      loadingBubble.removeClass("is-loading");
+      if (isAbortError(err)) {
+        loadingBubble.addClass("is-stopped");
+        setBubbleText(loadingBubble, (fullText || "") + "\n\n[\u5DF2\u505C\u6B62\u751F\u6210]");
+        if (fullText) await this.recordTranslateTurn(question, fullText, "stopped");
+      } else {
+        loadingBubble.addClass("is-error");
+        setBubbleText(loadingBubble, "\u8BF7\u6C42\u5931\u8D25: " + errorMessage(err));
       }
     } finally {
       this.setSendingState(false);
@@ -1983,6 +2042,11 @@ ${this.contextText}`;
       new import_obsidian2.Notice("\u4E0A\u4E00\u4E2A\u95EE\u9898\u8FD8\u5728\u751F\u6210\u4E2D,\u8BF7\u7A0D\u5019\u6216\u70B9\u51FB\u505C\u6B62");
       return;
     }
+    if (this.activeComposerKind === "translate" && this.translateTranscript.length) {
+      await this.handleTranslateFollowup(question, usingOverride);
+      return;
+    }
+    this.activeComposerKind = "chat";
     this.hideFollowupSuggestions();
     this.addBubble("user", question);
     if (!usingOverride) {
@@ -2051,7 +2115,7 @@ ${c.text}`).join("\n\n---\n\n");
       this.messages.push({ role: "assistant", content: fullText });
       await renderMarkdownIntoBubble(this.app, this.plugin, loadingBubble, fullText);
       await this.recordTranscriptTurn(question, fullText, "complete");
-      this.showFollowupSuggestions();
+      this.showFollowupSuggestions("chat");
     } catch (err) {
       loadingBubble.removeClass("is-loading");
       if (isAbortError(err)) {

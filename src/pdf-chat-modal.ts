@@ -40,6 +40,8 @@ interface BubbleOptions {
   skipScroll?: boolean;
 }
 
+type ModalConversationKind = "chat" | "translate";
+
 type BubbleElement = HTMLDivElement & {
   pdfChatContentEl?: HTMLElement;
 };
@@ -147,6 +149,7 @@ export class PDFChatModal extends Modal {
   transcript: ConversationMessage[];
   translateTranscript: ConversationMessage[] = [];
   messages: LlmMessage[];
+  activeComposerKind: ModalConversationKind = "chat";
   isSending = false;
   abortController: AbortController | null = null;
 
@@ -492,7 +495,7 @@ export class PDFChatModal extends Modal {
     ];
   }
 
-  showFollowupSuggestions(): void {
+  showFollowupSuggestions(kind: ModalConversationKind = "chat"): void {
     this.hideFollowupSuggestions();
     try {
       this.suggestionsEl = buildFollowupSuggestions(this.historyEl, this.followupSuggestions());
@@ -502,6 +505,7 @@ export class PDFChatModal extends Modal {
         if (button.tagName !== "BUTTON") continue;
         button.addEventListener("click", () => {
           this.inputEl.value = button.textContent || "";
+          this.activeComposerKind = kind;
           this.inputEl.focus();
           this.hideFollowupSuggestions();
         });
@@ -514,7 +518,12 @@ export class PDFChatModal extends Modal {
   }
 
   hideFollowupSuggestions(): void {
-    this.suggestionsEl?.remove();
+    const removable = this.suggestionsEl as (HTMLElement & { remove?: () => void }) | undefined;
+    if (typeof removable?.remove === "function") {
+      removable.remove();
+    } else if (this.suggestionsEl?.parentElement) {
+      this.suggestionsEl.parentElement.removeChild(this.suggestionsEl);
+    }
     this.suggestionsEl = undefined;
   }
 
@@ -605,6 +614,7 @@ export class PDFChatModal extends Modal {
     }
     this.transcript = [];
     this.messages = [this.buildSystemMessage()];
+    this.activeComposerKind = "chat";
     this.fullTextAttached = false;
     this.historyEl.empty();
     this.hideFollowupSuggestions();
@@ -894,25 +904,80 @@ export class PDFChatModal extends Modal {
         loadingBubble.addClass("is-rendered");
         await renderMarkdownIntoBubble(this.app, this.plugin, loadingBubble, fullText);
       }
-      this.messages.push(
-        { role: "user", content: friendlyLabel },
-        { role: "assistant", content: fullText }
-      );
       await this.recordTranslateTurn(friendlyLabel, fullText, status);
-      if (!isPartial) this.showFollowupSuggestions();
+      this.activeComposerKind = "translate";
+      if (!isPartial) this.showFollowupSuggestions("translate");
     } catch (err) {
       loadingBubble.removeClass("is-loading");
       if (isAbortError(err) && fullText.trim()) {
         loadingBubble.addClass("is-stopped");
         setBubbleText(loadingBubble, fullText + "\n\n[已停止生成]");
-        this.messages.push(
-          { role: "user", content: friendlyLabel },
-          { role: "assistant", content: fullText }
-        );
         await this.recordTranslateTurn(friendlyLabel, fullText, "stopped");
+        this.activeComposerKind = "translate";
       } else {
         loadingBubble.addClass("is-error");
         setBubbleText(loadingBubble, "翻译失败，请检查模型配置或稍后重试。");
+      }
+    } finally {
+      this.setSendingState(false);
+      this.abortController = null;
+      this.inputEl.focus();
+    }
+  }
+
+  async handleTranslateFollowup(question: string, usingOverride: boolean): Promise<void> {
+    this.hideFollowupSuggestions();
+    this.addBubble("user", question);
+    if (!usingOverride) {
+      this.inputEl.value = "";
+      if (this.inputEl.style) this.inputEl.style.height = "";
+    }
+    this.setSendingState(true);
+
+    const loadingBubble = this.addBubble("assistant", "思考中…", { loading: true });
+    this.abortController = new AbortController();
+    let fullText = "";
+    let firstChunkArrived = false;
+    const requestMessages: LlmMessage[] = [
+      this.buildSystemMessage(),
+      ...this.translateTranscript.map((message) => ({
+        role: message.role,
+        content: message.content,
+      })),
+      { role: "user", content: question },
+    ];
+
+    try {
+      fullText = await this.services.llm.chat({
+        messages: requestMessages,
+        onChunk: (_piece, acc) => {
+          fullText = acc;
+          if (!firstChunkArrived) {
+            firstChunkArrived = true;
+            loadingBubble.removeClass("is-loading");
+          }
+          setBubbleText(loadingBubble, acc);
+          this.historyEl.scrollTo({ top: this.historyEl.scrollHeight, behavior: "auto" });
+        },
+        signal: this.abortController.signal,
+        modelProfile: this.services.models.get(this.currentModelId),
+      });
+
+      loadingBubble.removeClass("is-loading");
+      loadingBubble.addClass("is-rendered");
+      await renderMarkdownIntoBubble(this.app, this.plugin, loadingBubble, fullText);
+      await this.recordTranslateTurn(question, fullText, "complete");
+      this.activeComposerKind = "translate";
+      this.showFollowupSuggestions("translate");
+    } catch (err) {
+      loadingBubble.removeClass("is-loading");
+      if (isAbortError(err)) {
+        loadingBubble.addClass("is-stopped");
+        setBubbleText(loadingBubble, (fullText || "") + "\n\n[已停止生成]");
+        if (fullText) await this.recordTranslateTurn(question, fullText, "stopped");
+      } else {
+        loadingBubble.addClass("is-error");
+        setBubbleText(loadingBubble, "请求失败: " + errorMessage(err));
       }
     } finally {
       this.setSendingState(false);
@@ -931,6 +996,12 @@ export class PDFChatModal extends Modal {
       return;
     }
 
+    if (this.activeComposerKind === "translate" && this.translateTranscript.length) {
+      await this.handleTranslateFollowup(question, usingOverride);
+      return;
+    }
+
+    this.activeComposerKind = "chat";
     this.hideFollowupSuggestions();
     this.addBubble("user", question);
     if (!usingOverride) {
@@ -1023,7 +1094,7 @@ export class PDFChatModal extends Modal {
       this.messages.push({ role: "assistant", content: fullText });
       await renderMarkdownIntoBubble(this.app, this.plugin, loadingBubble, fullText);
       await this.recordTranscriptTurn(question, fullText, "complete");
-      this.showFollowupSuggestions();
+      this.showFollowupSuggestions("chat");
     } catch (err) {
       loadingBubble.removeClass("is-loading");
       if (isAbortError(err)) {

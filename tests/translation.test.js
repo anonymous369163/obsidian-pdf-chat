@@ -401,6 +401,7 @@ function createModalHarness(bundle, translate, options = {}) {
   const PDFChatModal = bundle.PDFChatModal;
   const source = options.source || "Selected source";
   const persisted = [];
+  const chatRequests = [];
   const resolvedModelIds = [];
   const plugin = {
     settings: {
@@ -436,7 +437,13 @@ function createModalHarness(bundle, translate, options = {}) {
       },
       async clear() {},
     },
-    llm: { async chat() { throw new Error("Generic chat must not run"); } },
+    llm: {
+      async chat(request) {
+        chatRequests.push(request);
+        if (options.llmChat) return options.llmChat(request);
+        throw new Error("Generic chat must not run");
+      },
+    },
     models: {
       get: (id) => {
         resolvedModelIds.push(id);
@@ -475,7 +482,7 @@ function createModalHarness(bundle, translate, options = {}) {
   };
   modal.inputEl = { value: "unrelated draft", focus() {} };
   modal.sendBtn = { setText() {}, toggleClass() {} };
-  return { bubbles, modal, persisted, resolvedModelIds, source };
+  return { bubbles, chatRequests, modal, persisted, resolvedModelIds, source };
 }
 
 test("registered translation action invokes the dedicated translation task", async () => {
@@ -523,7 +530,7 @@ test("persists stopped translation separately but drops empty failed translation
   assert.equal(stopped.bubbles[0].text, friendlyLabel);
   assert.match(stopped.bubbles[1].text, /部分译文/);
   assert.match(stopped.bubbles[1].text, /已停止生成/);
-  assert.match(JSON.stringify(stopped.modal.messages), /部分译文/);
+  assert.deepEqual(plain(stopped.modal.messages.slice(1)), []);
   assert.doesNotMatch(JSON.stringify(stopped.modal.transcript), /部分译文|Selected source/);
 
   const failed = createModalHarness(bundle, async () => {
@@ -575,10 +582,7 @@ test("modal marks fallback-containing translation stopped while keeping raw foll
   ]);
   assert.ok(harness.bubbles[1].classes.includes("is-stopped"));
   assert.equal(harness.bubbles[1].text, expected + "\n\n[部分分块翻译失败，已保留原文]");
-  assert.deepEqual(plain(harness.modal.messages.slice(-2)), [
-    { role: "user", content: friendlyLabel },
-    { role: "assistant", content: expected },
-  ]);
+  assert.deepEqual(plain(harness.modal.messages.slice(1)), []);
   assert.deepEqual(harness.persisted, [
     { key: "translate:selection:key", messages: plain(harness.modal.translateTranscript) },
   ]);
@@ -602,7 +606,7 @@ test("modal sanitizes translation endpoint errors that contain internal prompts"
   assert.deepEqual(failed.persisted, []);
 });
 
-test("completed translation uses one bubble, runtime follow-up messages, and separate persistence", async () => {
+test("completed translation uses one bubble and stays out of regular chat persistence", async () => {
   const bundle = loadBundle();
   let taskRequest = null;
   const completed = createModalHarness(bundle, async (request) => {
@@ -641,10 +645,7 @@ test("completed translation uses one bubble, runtime follow-up messages, and sep
   assert.equal(messageBubbles[0].text, friendlyLabel);
   assert.equal(messageBubbles[1].text, "第一段\n\n第二段");
   assert.doesNotMatch(messageBubbles[1].text, /正在翻译/);
-  assert.deepEqual(plain(completed.modal.messages.slice(-2)), [
-    { role: "user", content: friendlyLabel },
-    { role: "assistant", content: "第一段\n\n第二段" },
-  ]);
+  assert.deepEqual(plain(completed.modal.messages.slice(1)), []);
   assert.deepEqual(plain(completed.modal.transcript), []);
   assert.deepEqual(plain(completed.modal.translateTranscript), [
     { role: "user", content: friendlyLabel, status: "complete" },
@@ -654,6 +655,45 @@ test("completed translation uses one bubble, runtime follow-up messages, and sep
     { key: "translate:selection:key", messages: plain(completed.modal.translateTranscript) },
   ]);
   assert.doesNotMatch(JSON.stringify(completed.persisted), /正在翻译|<source_text>/);
+});
+
+test("follow-up after translation stays separate from Ctrl+Q chat history", async () => {
+  const bundle = loadBundle();
+  const harness = createModalHarness(
+    bundle,
+    async () => ({
+      text: "译文内容",
+      chunkCount: 1,
+      stoppedEarly: false,
+      failedChunkIndexes: [],
+    }),
+    {
+      async llmChat(request) {
+        request.onChunk?.("例子回答", "例子回答");
+        return "例子回答";
+      },
+    }
+  );
+
+  await harness.modal.runTranslation();
+  harness.modal.inputEl.value = "举一个例子";
+  await harness.modal.handleSubmit();
+
+  assert.deepEqual(harness.persisted.map((entry) => entry.key), [
+    "translate:selection:key",
+    "translate:selection:key",
+  ]);
+  assert.deepEqual(plain(harness.modal.transcript), []);
+  assert.deepEqual(plain(harness.modal.messages.slice(1)), []);
+  assert.deepEqual(plain(harness.modal.translateTranscript).slice(-2), [
+    { role: "user", content: "举一个例子", status: "complete" },
+    { role: "assistant", content: "例子回答", status: "complete" },
+  ]);
+  assert.deepEqual(plain(harness.chatRequests[0].messages.slice(-2)), [
+    { role: "assistant", content: "译文内容" },
+    { role: "user", content: "举一个例子" },
+  ]);
+  assert.doesNotMatch(JSON.stringify(harness.persisted), /"selection:key"/);
 });
 
 test("settings UI binds translation model, marker, target, and additional instruction", () => {
