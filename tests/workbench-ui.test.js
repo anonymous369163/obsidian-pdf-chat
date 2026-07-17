@@ -639,7 +639,7 @@ test("typing @ in the composer opens PDF mention suggestions and selecting one r
   assert.equal(byClass(modal.contentEl, "pdf-chat-composer-mention-suggestions").length, 0);
 });
 
-test("sending with referenced PDFs augments the request with multi-paper context", async () => {
+test("sending with referenced PDFs augments the request as shared reading context, not forced comparison", async () => {
   const referenced = { name: "Alpha Paper.pdf", path: "papers/Alpha Paper.pdf", extension: "pdf", stat: { mtime: 2 } };
   const requests = [];
   const { modal } = createModalHarness({
@@ -666,7 +666,7 @@ test("sending with referenced PDFs augments the request with multi-paper context
     },
   });
   modal.referencedPdfFiles = [referenced];
-  modal.inputEl.value = "这两篇论文有什么不同？";
+  modal.inputEl.value = "请解释第二篇论文里的核心假设如何帮助理解当前论文";
 
   await modal.handleSubmit();
 
@@ -675,8 +675,10 @@ test("sending with referenced PDFs augments the request with multi-paper context
   assert.match(outgoing, /Summary for demo\.pdf/);
   assert.match(outgoing, /Summary for Alpha Paper\.pdf/);
   assert.match(outgoing, /Evidence from Alpha Paper\.pdf/);
+  assert.match(outgoing, /同时阅读多篇论文|多篇论文阅读上下文/);
+  assert.doesNotMatch(outgoing, /你正在做多论文对比|请对比当前论文|相似点、不同点|结合的可能性/);
   assert.deepEqual(JSON.parse(JSON.stringify(modal.transcript)), [
-    { role: "user", content: "这两篇论文有什么不同？", status: "complete" },
+    { role: "user", content: "请解释第二篇论文里的核心假设如何帮助理解当前论文", status: "complete" },
     { role: "assistant", content: "Answer", status: "complete" },
   ]);
 });

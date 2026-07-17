@@ -958,12 +958,12 @@ export class PDFChatModal extends Modal {
 
   private getMultiPaperQuestion(): string {
     const typed = this.inputEl?.value?.trim();
-    return typed || "请对比当前论文和已引用论文的相似点、不同点，以及它们是否有结合的可能性。";
+    return typed || "请基于当前论文和已引用论文回答我的问题。";
   }
 
   private multiPaperUserLabel(question: string): string {
     const refs = this.referencedPdfFiles.map((file) => file.name || file.path).join("、");
-    return refs ? `多论文分析：${question}\n\n引用论文：${refs}` : `多论文分析：${question}`;
+    return refs ? `多论文问题：${question}\n\n引用论文：${refs}` : `多论文问题：${question}`;
   }
 
   private shouldOfferCodexDeepAnalysis(question: string): boolean {
@@ -973,7 +973,7 @@ export class PDFChatModal extends Modal {
 
   private confirmCodexDeepAnalysis(): boolean {
     const message =
-      "检测到你想做多论文深度分析。是否使用 Codex CLI 读取当前论文和 @ 引用论文？\n\n选择“取消”会继续使用当前模型做普通多论文回答。";
+      "检测到你想做多论文深度分析。是否使用 Codex CLI 读取当前论文和 @ 引用论文？\n\n选择“取消”会继续使用当前模型基于多论文上下文回答。";
     const candidateWindow = this.contentEl?.ownerDocument
       ? (this.contentEl.ownerDocument as Document & { defaultView?: Window | null }).defaultView
       : null;
@@ -982,7 +982,7 @@ export class PDFChatModal extends Modal {
       (typeof window !== "undefined" && typeof window.confirm === "function" && window.confirm.bind(window)) ||
       (typeof confirm === "function" && confirm);
     if (!confirmFn) {
-      new Notice("检测到深度分析意图，但当前环境无法弹出确认框，已改用普通多论文回答。");
+      new Notice("检测到深度分析意图，但当前环境无法弹出确认框，已改用当前模型基于多论文上下文回答。");
       return false;
     }
     return confirmFn(message);
@@ -1015,7 +1015,9 @@ export class PDFChatModal extends Modal {
       );
     }
     return [
-      "你正在做多论文对比。请只基于下面提供的论文摘要和检索片段回答，并标明依据来自哪篇论文。",
+      "你正在同时阅读多篇论文。下面是多篇论文阅读上下文，请只基于提供的论文摘要和检索片段回答用户问题。",
+      "不要默认改写用户问题；只有当用户明确要求跨论文关系分析时，才组织成关系分析式回答。",
+      "需要区分依据时，请标明来自哪篇论文。",
       "如果证据不足，请明确说明不足，不要编造。",
       "",
       parts.join("\n\n---\n\n"),
@@ -1056,7 +1058,7 @@ export class PDFChatModal extends Modal {
     this.messages.push({ role: "user", content: userLabel }, { role: "assistant", content: fullText });
     await this.recordTranscriptTurn(userLabel, fullText, "complete");
     this.showFollowupSuggestions("chat");
-    this.multiPaperStatusEl?.setText("已降级为普通多论文对比并完成。");
+    this.multiPaperStatusEl?.setText("已改用当前模型基于多论文上下文回答。");
   }
 
   private async prepareCodexPapers(progress?: (message: string) => void): Promise<PreparedCodexPaper[]> {
@@ -1088,7 +1090,7 @@ export class PDFChatModal extends Modal {
 
   async runOrdinaryMultiPaperCompare(): Promise<void> {
     if (!this.pdfFile) {
-      new Notice("多论文对比需要从 PDF 视图打开。");
+      new Notice("多论文阅读需要从 PDF 视图打开。");
       return;
     }
     if (!this.referencedPdfFiles.length) {
@@ -1097,7 +1099,7 @@ export class PDFChatModal extends Modal {
     }
     if (this.isSending) return;
     const question = this.getMultiPaperQuestion();
-    const loadingNotice = new Notice("正在准备多论文对比上下文…", 0);
+    const loadingNotice = new Notice("正在准备多论文上下文…", 0);
     try {
       const outgoing = await this.buildApiMultiPaperContext(question, (message) => {
         this.multiPaperStatusEl?.setText(message);
@@ -1108,11 +1110,11 @@ export class PDFChatModal extends Modal {
         outgoingContentOverride: outgoing,
         skipContextAugmentation: true,
       });
-      this.multiPaperStatusEl?.setText("普通对比已完成，可继续追问。");
+      this.multiPaperStatusEl?.setText("多论文上下文回答已完成，可继续追问。");
     } catch (error) {
       loadingNotice.hide();
-      new Notice("普通多论文对比准备失败: " + errorMessage(error));
-      this.multiPaperStatusEl?.setText("普通对比准备失败。");
+      new Notice("多论文上下文准备失败: " + errorMessage(error));
+      this.multiPaperStatusEl?.setText("多论文上下文准备失败。");
     }
   }
 
@@ -1189,20 +1191,20 @@ export class PDFChatModal extends Modal {
         setBubbleText(loadingBubble, "Codex 深度分析已停止。");
         this.multiPaperStatusEl?.setText("Codex 深度分析已停止。");
       } else if (isCodexUnavailableError(error)) {
-        setBubbleText(loadingBubble, "Codex CLI 不可用，正在改用普通 API 多论文对比…");
-        this.multiPaperStatusEl?.setText("Codex 不可用，降级为普通对比。");
+        setBubbleText(loadingBubble, "Codex CLI 不可用，正在改用当前模型基于多论文上下文回答…");
+        this.multiPaperStatusEl?.setText("Codex 不可用，改用当前模型回答。");
         try {
           await this.completeApiMultiPaperAnswer(question, userLabel, loadingBubble);
         } catch (fallbackError) {
           loadingBubble.removeClass("is-loading");
           loadingBubble.addClass("is-error");
-          setBubbleText(loadingBubble, "普通对比也失败: " + errorMessage(fallbackError));
-          this.multiPaperStatusEl?.setText("普通对比降级失败。");
+          setBubbleText(loadingBubble, "多论文上下文回答也失败: " + errorMessage(fallbackError));
+          this.multiPaperStatusEl?.setText("多论文上下文回答失败。");
         }
       } else {
         loadingBubble.addClass("is-error");
         setBubbleText(loadingBubble, "Codex 深度分析失败: " + errorMessage(error));
-        this.multiPaperStatusEl?.setText("Codex 深度分析失败，可改用普通对比。");
+        this.multiPaperStatusEl?.setText("Codex 深度分析失败，可改用当前模型回答。");
       }
     } finally {
       const keep = this.plugin.settings.codexDeepAnalysis.keepTempFiles;

@@ -2340,13 +2340,13 @@ ${this.contextText}`;
   getMultiPaperQuestion() {
     var _a, _b;
     const typed = (_b = (_a = this.inputEl) == null ? void 0 : _a.value) == null ? void 0 : _b.trim();
-    return typed || "\u8BF7\u5BF9\u6BD4\u5F53\u524D\u8BBA\u6587\u548C\u5DF2\u5F15\u7528\u8BBA\u6587\u7684\u76F8\u4F3C\u70B9\u3001\u4E0D\u540C\u70B9\uFF0C\u4EE5\u53CA\u5B83\u4EEC\u662F\u5426\u6709\u7ED3\u5408\u7684\u53EF\u80FD\u6027\u3002";
+    return typed || "\u8BF7\u57FA\u4E8E\u5F53\u524D\u8BBA\u6587\u548C\u5DF2\u5F15\u7528\u8BBA\u6587\u56DE\u7B54\u6211\u7684\u95EE\u9898\u3002";
   }
   multiPaperUserLabel(question) {
     const refs = this.referencedPdfFiles.map((file) => file.name || file.path).join("\u3001");
-    return refs ? `\u591A\u8BBA\u6587\u5206\u6790\uFF1A${question}
+    return refs ? `\u591A\u8BBA\u6587\u95EE\u9898\uFF1A${question}
 
-\u5F15\u7528\u8BBA\u6587\uFF1A${refs}` : `\u591A\u8BBA\u6587\u5206\u6790\uFF1A${question}`;
+\u5F15\u7528\u8BBA\u6587\uFF1A${refs}` : `\u591A\u8BBA\u6587\u95EE\u9898\uFF1A${question}`;
   }
   shouldOfferCodexDeepAnalysis(question) {
     if (!this.pdfFile || !this.referencedPdfFiles.length) return false;
@@ -2354,11 +2354,11 @@ ${this.contextText}`;
   }
   confirmCodexDeepAnalysis() {
     var _a;
-    const message = "\u68C0\u6D4B\u5230\u4F60\u60F3\u505A\u591A\u8BBA\u6587\u6DF1\u5EA6\u5206\u6790\u3002\u662F\u5426\u4F7F\u7528 Codex CLI \u8BFB\u53D6\u5F53\u524D\u8BBA\u6587\u548C @ \u5F15\u7528\u8BBA\u6587\uFF1F\n\n\u9009\u62E9\u201C\u53D6\u6D88\u201D\u4F1A\u7EE7\u7EED\u4F7F\u7528\u5F53\u524D\u6A21\u578B\u505A\u666E\u901A\u591A\u8BBA\u6587\u56DE\u7B54\u3002";
+    const message = "\u68C0\u6D4B\u5230\u4F60\u60F3\u505A\u591A\u8BBA\u6587\u6DF1\u5EA6\u5206\u6790\u3002\u662F\u5426\u4F7F\u7528 Codex CLI \u8BFB\u53D6\u5F53\u524D\u8BBA\u6587\u548C @ \u5F15\u7528\u8BBA\u6587\uFF1F\n\n\u9009\u62E9\u201C\u53D6\u6D88\u201D\u4F1A\u7EE7\u7EED\u4F7F\u7528\u5F53\u524D\u6A21\u578B\u57FA\u4E8E\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u56DE\u7B54\u3002";
     const candidateWindow = ((_a = this.contentEl) == null ? void 0 : _a.ownerDocument) ? this.contentEl.ownerDocument.defaultView : null;
     const confirmFn = candidateWindow && typeof candidateWindow.confirm === "function" && candidateWindow.confirm.bind(candidateWindow) || typeof window !== "undefined" && typeof window.confirm === "function" && window.confirm.bind(window) || typeof confirm === "function" && confirm;
     if (!confirmFn) {
-      new import_obsidian3.Notice("\u68C0\u6D4B\u5230\u6DF1\u5EA6\u5206\u6790\u610F\u56FE\uFF0C\u4F46\u5F53\u524D\u73AF\u5883\u65E0\u6CD5\u5F39\u51FA\u786E\u8BA4\u6846\uFF0C\u5DF2\u6539\u7528\u666E\u901A\u591A\u8BBA\u6587\u56DE\u7B54\u3002");
+      new import_obsidian3.Notice("\u68C0\u6D4B\u5230\u6DF1\u5EA6\u5206\u6790\u610F\u56FE\uFF0C\u4F46\u5F53\u524D\u73AF\u5883\u65E0\u6CD5\u5F39\u51FA\u786E\u8BA4\u6846\uFF0C\u5DF2\u6539\u7528\u5F53\u524D\u6A21\u578B\u57FA\u4E8E\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u56DE\u7B54\u3002");
       return false;
     }
     return confirmFn(message);
@@ -2392,7 +2392,9 @@ ${chunk.text}`;
       );
     }
     return [
-      "\u4F60\u6B63\u5728\u505A\u591A\u8BBA\u6587\u5BF9\u6BD4\u3002\u8BF7\u53EA\u57FA\u4E8E\u4E0B\u9762\u63D0\u4F9B\u7684\u8BBA\u6587\u6458\u8981\u548C\u68C0\u7D22\u7247\u6BB5\u56DE\u7B54\uFF0C\u5E76\u6807\u660E\u4F9D\u636E\u6765\u81EA\u54EA\u7BC7\u8BBA\u6587\u3002",
+      "\u4F60\u6B63\u5728\u540C\u65F6\u9605\u8BFB\u591A\u7BC7\u8BBA\u6587\u3002\u4E0B\u9762\u662F\u591A\u7BC7\u8BBA\u6587\u9605\u8BFB\u4E0A\u4E0B\u6587\uFF0C\u8BF7\u53EA\u57FA\u4E8E\u63D0\u4F9B\u7684\u8BBA\u6587\u6458\u8981\u548C\u68C0\u7D22\u7247\u6BB5\u56DE\u7B54\u7528\u6237\u95EE\u9898\u3002",
+      "\u4E0D\u8981\u9ED8\u8BA4\u6539\u5199\u7528\u6237\u95EE\u9898\uFF1B\u53EA\u6709\u5F53\u7528\u6237\u660E\u786E\u8981\u6C42\u8DE8\u8BBA\u6587\u5173\u7CFB\u5206\u6790\u65F6\uFF0C\u624D\u7EC4\u7EC7\u6210\u5173\u7CFB\u5206\u6790\u5F0F\u56DE\u7B54\u3002",
+      "\u9700\u8981\u533A\u5206\u4F9D\u636E\u65F6\uFF0C\u8BF7\u6807\u660E\u6765\u81EA\u54EA\u7BC7\u8BBA\u6587\u3002",
       "\u5982\u679C\u8BC1\u636E\u4E0D\u8DB3\uFF0C\u8BF7\u660E\u786E\u8BF4\u660E\u4E0D\u8DB3\uFF0C\u4E0D\u8981\u7F16\u9020\u3002",
       "",
       parts.join("\n\n---\n\n"),
@@ -2430,7 +2432,7 @@ ${chunk.text}`;
     this.messages.push({ role: "user", content: userLabel }, { role: "assistant", content: fullText });
     await this.recordTranscriptTurn(userLabel, fullText, "complete");
     this.showFollowupSuggestions("chat");
-    (_b = this.multiPaperStatusEl) == null ? void 0 : _b.setText("\u5DF2\u964D\u7EA7\u4E3A\u666E\u901A\u591A\u8BBA\u6587\u5BF9\u6BD4\u5E76\u5B8C\u6210\u3002");
+    (_b = this.multiPaperStatusEl) == null ? void 0 : _b.setText("\u5DF2\u6539\u7528\u5F53\u524D\u6A21\u578B\u57FA\u4E8E\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u56DE\u7B54\u3002");
   }
   async prepareCodexPapers(progress) {
     const prepared = [];
@@ -2461,7 +2463,7 @@ ${chunk.text}`;
   async runOrdinaryMultiPaperCompare() {
     var _a, _b;
     if (!this.pdfFile) {
-      new import_obsidian3.Notice("\u591A\u8BBA\u6587\u5BF9\u6BD4\u9700\u8981\u4ECE PDF \u89C6\u56FE\u6253\u5F00\u3002");
+      new import_obsidian3.Notice("\u591A\u8BBA\u6587\u9605\u8BFB\u9700\u8981\u4ECE PDF \u89C6\u56FE\u6253\u5F00\u3002");
       return;
     }
     if (!this.referencedPdfFiles.length) {
@@ -2470,7 +2472,7 @@ ${chunk.text}`;
     }
     if (this.isSending) return;
     const question = this.getMultiPaperQuestion();
-    const loadingNotice = new import_obsidian3.Notice("\u6B63\u5728\u51C6\u5907\u591A\u8BBA\u6587\u5BF9\u6BD4\u4E0A\u4E0B\u6587\u2026", 0);
+    const loadingNotice = new import_obsidian3.Notice("\u6B63\u5728\u51C6\u5907\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u2026", 0);
     try {
       const outgoing = await this.buildApiMultiPaperContext(question, (message) => {
         var _a2;
@@ -2482,11 +2484,11 @@ ${chunk.text}`;
         outgoingContentOverride: outgoing,
         skipContextAugmentation: true
       });
-      (_a = this.multiPaperStatusEl) == null ? void 0 : _a.setText("\u666E\u901A\u5BF9\u6BD4\u5DF2\u5B8C\u6210\uFF0C\u53EF\u7EE7\u7EED\u8FFD\u95EE\u3002");
+      (_a = this.multiPaperStatusEl) == null ? void 0 : _a.setText("\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u56DE\u7B54\u5DF2\u5B8C\u6210\uFF0C\u53EF\u7EE7\u7EED\u8FFD\u95EE\u3002");
     } catch (error) {
       loadingNotice.hide();
-      new import_obsidian3.Notice("\u666E\u901A\u591A\u8BBA\u6587\u5BF9\u6BD4\u51C6\u5907\u5931\u8D25: " + errorMessage(error));
-      (_b = this.multiPaperStatusEl) == null ? void 0 : _b.setText("\u666E\u901A\u5BF9\u6BD4\u51C6\u5907\u5931\u8D25\u3002");
+      new import_obsidian3.Notice("\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u51C6\u5907\u5931\u8D25: " + errorMessage(error));
+      (_b = this.multiPaperStatusEl) == null ? void 0 : _b.setText("\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u51C6\u5907\u5931\u8D25\u3002");
     }
   }
   async runCodexDeepAnalysis() {
@@ -2562,20 +2564,20 @@ ${chunk.text}`;
         setBubbleText(loadingBubble, "Codex \u6DF1\u5EA6\u5206\u6790\u5DF2\u505C\u6B62\u3002");
         (_d = this.multiPaperStatusEl) == null ? void 0 : _d.setText("Codex \u6DF1\u5EA6\u5206\u6790\u5DF2\u505C\u6B62\u3002");
       } else if (isCodexUnavailableError(error)) {
-        setBubbleText(loadingBubble, "Codex CLI \u4E0D\u53EF\u7528\uFF0C\u6B63\u5728\u6539\u7528\u666E\u901A API \u591A\u8BBA\u6587\u5BF9\u6BD4\u2026");
-        (_e = this.multiPaperStatusEl) == null ? void 0 : _e.setText("Codex \u4E0D\u53EF\u7528\uFF0C\u964D\u7EA7\u4E3A\u666E\u901A\u5BF9\u6BD4\u3002");
+        setBubbleText(loadingBubble, "Codex CLI \u4E0D\u53EF\u7528\uFF0C\u6B63\u5728\u6539\u7528\u5F53\u524D\u6A21\u578B\u57FA\u4E8E\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u56DE\u7B54\u2026");
+        (_e = this.multiPaperStatusEl) == null ? void 0 : _e.setText("Codex \u4E0D\u53EF\u7528\uFF0C\u6539\u7528\u5F53\u524D\u6A21\u578B\u56DE\u7B54\u3002");
         try {
           await this.completeApiMultiPaperAnswer(question, userLabel, loadingBubble);
         } catch (fallbackError) {
           loadingBubble.removeClass("is-loading");
           loadingBubble.addClass("is-error");
-          setBubbleText(loadingBubble, "\u666E\u901A\u5BF9\u6BD4\u4E5F\u5931\u8D25: " + errorMessage(fallbackError));
-          (_f = this.multiPaperStatusEl) == null ? void 0 : _f.setText("\u666E\u901A\u5BF9\u6BD4\u964D\u7EA7\u5931\u8D25\u3002");
+          setBubbleText(loadingBubble, "\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u56DE\u7B54\u4E5F\u5931\u8D25: " + errorMessage(fallbackError));
+          (_f = this.multiPaperStatusEl) == null ? void 0 : _f.setText("\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u56DE\u7B54\u5931\u8D25\u3002");
         }
       } else {
         loadingBubble.addClass("is-error");
         setBubbleText(loadingBubble, "Codex \u6DF1\u5EA6\u5206\u6790\u5931\u8D25: " + errorMessage(error));
-        (_g = this.multiPaperStatusEl) == null ? void 0 : _g.setText("Codex \u6DF1\u5EA6\u5206\u6790\u5931\u8D25\uFF0C\u53EF\u6539\u7528\u666E\u901A\u5BF9\u6BD4\u3002");
+        (_g = this.multiPaperStatusEl) == null ? void 0 : _g.setText("Codex \u6DF1\u5EA6\u5206\u6790\u5931\u8D25\uFF0C\u53EF\u6539\u7528\u5F53\u524D\u6A21\u578B\u56DE\u7B54\u3002");
       }
     } finally {
       const keep = this.plugin.settings.codexDeepAnalysis.keepTempFiles;
