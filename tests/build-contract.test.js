@@ -39,3 +39,13 @@ test("TypeScript sources build the Obsidian-compatible root bundle through expli
   assert.match(bundle, /require\(["']obsidian["']\)/);
   assert.doesNotMatch(bundle, /require\(["']typescript["']\)/);
 });
+
+test("every TypeScript source participates in typechecking without file-wide suppression", () => {
+  const srcDir = path.join(projectRoot, "src");
+  const suppressed = fs
+    .readdirSync(srcDir)
+    .filter((name) => name.endsWith(".ts"))
+    .filter((name) => fs.readFileSync(path.join(srcDir, name), "utf8").includes("@ts-nocheck"));
+
+  assert.deepEqual(suppressed, []);
+});

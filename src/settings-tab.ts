@@ -1,8 +1,11 @@
-// @ts-nocheck
-import { PluginSettingTab, Setting } from "obsidian";
+import { Notice, PluginSettingTab, Setting, type App } from "obsidian";
 import { DEFAULT_SETTINGS } from "./default-settings";
+import type { PDFChatPluginApi } from "./types";
+
 export class PDFChatSettingTab extends PluginSettingTab {
-  constructor(app, plugin) {
+  private readonly plugin: PDFChatPluginApi;
+
+  constructor(app: App, plugin: PDFChatPluginApi) {
     super(app, plugin);
     this.plugin = plugin;
   }

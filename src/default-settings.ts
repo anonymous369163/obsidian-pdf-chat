@@ -1,4 +1,5 @@
-// @ts-nocheck
+import type { PDFChatSettings } from "./types";
+
 export const DEFAULT_SETTINGS = {
   models: [
     {
@@ -140,4 +141,4 @@ export const DEFAULT_SETTINGS = {
         "被要求出题时,提炼恰好5个高层次问题(避免是非题,优先用如何/为什么/如果...会怎样),最后加一个必须串联所有主题才能回答的综合问题。其余时候正常回答我的问题。用中文。",
     },
   ],
-};
+} satisfies PDFChatSettings;

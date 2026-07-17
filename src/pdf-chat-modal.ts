@@ -1,8 +1,50 @@
-// @ts-nocheck
-import { MarkdownRenderer, Modal, Notice } from "obsidian";
+import {
+  MarkdownRenderer,
+  Modal,
+  Notice,
+  type App,
+  type Component,
+  type TFile,
+} from "obsidian";
 import { DEFAULT_SETTINGS } from "./default-settings";
 import { createPDFChatModalServices } from "./modal-services";
-async function renderMarkdownInto(app, component, el, text) {
+import type {
+  ConversationMessage,
+  DocChunksEntry,
+  DocSummaryEntry,
+  LlmMessage,
+  PaperContext,
+  PDFChatModalServices,
+  PDFChatPluginApi,
+} from "./types";
+
+interface SubmitOptions {
+  question?: string;
+  skipContextAugmentation?: boolean;
+}
+
+interface BubbleOptions {
+  loading?: boolean;
+  skipScroll?: boolean;
+}
+
+function errorMessage(error: unknown): string {
+  if (error && typeof error === "object" && "message" in error) {
+    return String(error.message);
+  }
+  return String(error);
+}
+
+function isAbortError(error: unknown): boolean {
+  return !!error && typeof error === "object" && "name" in error && error.name === "AbortError";
+}
+
+async function renderMarkdownInto(
+  app: App,
+  component: Component,
+  el: HTMLElement,
+  text: string
+): Promise<void> {
   el.empty();
   // 加上 Obsidian 阅读视图用的样式类,公式(MathJax)、代码块、列表等才会套用主题自带的排版样式。
   el.addClass("markdown-rendered");
@@ -22,19 +64,66 @@ async function renderMarkdownInto(app, component, el, text) {
 }
 
 export class PDFChatModal extends Modal {
-  constructor(app, plugin, contextText, pdfFile, startFresh, services) {
+  private readonly plugin: PDFChatPluginApi;
+  private readonly services: PDFChatModalServices;
+  private readonly paperContext: PaperContext;
+  private readonly contextText: string;
+  private readonly pdfFile: TFile | null;
+  readonly startFresh: boolean;
+  readonly conversationKey: string;
+  readonly hadExistingHistory: boolean;
+  currentPresetId: string;
+  currentModelId: string;
+  useDocSummary = false;
+  docSummaryEntry: DocSummaryEntry | null = null;
+  isGeneratingSummary = false;
+  useRag = false;
+  docChunksEntry: DocChunksEntry | null = null;
+  isIndexingRag = false;
+  useFullTextMode = false;
+  fullTextForQA: string | null = null;
+  fullTextAttached = false;
+  transcript: ConversationMessage[];
+  messages: LlmMessage[];
+  isSending = false;
+  abortController: AbortController | null = null;
+
+  zoomOutBtn!: HTMLButtonElement;
+  zoomLabel!: HTMLSpanElement;
+  zoomInBtn!: HTMLButtonElement;
+  modelSelect!: HTMLSelectElement;
+  modeSelect!: HTMLSelectElement;
+  summaryCheckbox?: HTMLInputElement;
+  summaryStatusEl?: HTMLSpanElement;
+  summaryRefreshBtn?: HTMLButtonElement;
+  ragCheckbox?: HTMLInputElement;
+  ragStatusEl?: HTMLSpanElement;
+  ragRefreshBtn?: HTMLButtonElement;
+  historyEl!: HTMLDivElement;
+  inputEl!: HTMLTextAreaElement;
+  translateBtn!: HTMLButtonElement;
+  sendBtn!: HTMLButtonElement;
+
+  constructor(
+    app: App,
+    plugin: PDFChatPluginApi,
+    contextText: string | PaperContext,
+    pdfFile: TFile | null,
+    startFresh?: boolean,
+    services?: PDFChatModalServices
+  ) {
     super(app);
     this.plugin = plugin;
     this.services = services || createPDFChatModalServices(plugin);
-    const paperContext =
-      contextText && typeof contextText === "object" && typeof contextText.selectedText === "string"
-        ? contextText
-        : {
+    const paperContext: PaperContext =
+      typeof contextText === "string"
+        ? {
             app,
             file: pdfFile || null,
             selectedText: contextText,
             conversationKey: this.services.conversations.getKey(pdfFile || null, contextText),
-          };
+          }
+        : contextText;
     this.paperContext = paperContext;
     this.contextText = paperContext.selectedText;
     this.pdfFile = paperContext.file || null;
@@ -53,18 +142,9 @@ export class PDFChatModal extends Modal {
         ? lastModelId
         : this.plugin.settings.activeModelId;
 
-    this.useDocSummary = false;
-    this.docSummaryEntry = null;
-    this.isGeneratingSummary = false;
-    this.useRag = false;
-    this.docChunksEntry = null;
-    this.isIndexingRag = false;
-    this.useFullTextMode = false;
-    this.fullTextForQA = null;
     // 全文只需要在对话历史里出现一次:聊天接口是无状态的,每轮都会把 this.messages 整个重新发送,
     // 已经进过历史的第一轮全文会随着后续每轮继续被带上,不需要再重复拼接一份,否则每多聊一轮,
     // 实际发给模型的内容就多一份完整全文,输入越滚越大、越聊越慢、越聊越贵。
-    this.fullTextAttached = false;
     this.conversationKey = paperContext.conversationKey;
     // “新开对话”按快捷键触发时不加载旧记录:这次会话从空白开始,只要发出第一条消息,
     // 旧的这份记录就会被 recordTranscriptTurn 整份替换掉(每个 key 只保留一份最近对话)。
@@ -79,7 +159,7 @@ export class PDFChatModal extends Modal {
     ];
   }
 
-  buildSystemMessage() {
+  buildSystemMessage(): LlmMessage {
     const preset =
       this.currentPresetId === "__default__"
         ? null
@@ -96,7 +176,7 @@ export class PDFChatModal extends Modal {
     return { role: "system", content };
   }
 
-  onOpen() {
+  onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
     this.modalEl.addClass("pdf-chat-modal");
@@ -164,35 +244,35 @@ export class PDFChatModal extends Modal {
 
     if (this.pdfFile) {
       const summaryRow = contentEl.createDiv({ cls: "pdf-chat-summary-row" });
-      this.summaryCheckbox = summaryRow.createEl("input", {
+      const summaryCheckbox = (this.summaryCheckbox = summaryRow.createEl("input", {
         type: "checkbox",
         attr: { id: "pdf-chat-summary-toggle" },
-      });
+      }));
       summaryRow.createEl("label", {
         text: "附带全文摘要作为背景",
         attr: { for: "pdf-chat-summary-toggle" },
       });
       this.summaryStatusEl = summaryRow.createEl("span", { cls: "pdf-chat-summary-status" });
-      this.summaryRefreshBtn = summaryRow.createEl("button", {
+      const summaryRefreshBtn = (this.summaryRefreshBtn = summaryRow.createEl("button", {
         text: "生成/刷新摘要",
         cls: "pdf-chat-summary-btn",
-      });
+      }));
 
       this.refreshSummaryStatus();
 
-      this.summaryCheckbox.addEventListener("change", async () => {
-        if (this.summaryCheckbox.checked) {
+      summaryCheckbox.addEventListener("change", async () => {
+        if (summaryCheckbox.checked) {
           await this.ensureDocSummary(false);
           this.useDocSummary = !!(this.docSummaryEntry && this.docSummaryEntry.summary);
-          this.summaryCheckbox.checked = this.useDocSummary;
+          summaryCheckbox.checked = this.useDocSummary;
         } else {
           this.useDocSummary = false;
         }
         this.messages[0] = this.buildSystemMessage();
       });
-      this.summaryRefreshBtn.addEventListener("click", async () => {
+      summaryRefreshBtn.addEventListener("click", async () => {
         await this.ensureDocSummary(true);
-        if (this.summaryCheckbox.checked) {
+        if (summaryCheckbox.checked) {
           this.useDocSummary = !!(this.docSummaryEntry && this.docSummaryEntry.summary);
         }
         this.messages[0] = this.buildSystemMessage();
@@ -201,55 +281,55 @@ export class PDFChatModal extends Modal {
       // 自动模式:已缓存过的直接秒用,没缓存过的自动生成一次,不需要每次手动勾选/点击。
       // 缓存以文件路径+修改时间为 key,同一篇论文之后打开弹窗基本是瞬间命中缓存。
       if (this.plugin.settings.autoDocSummary) {
-        this.summaryCheckbox.checked = true;
+        summaryCheckbox.checked = true;
         this.useDocSummary = true;
         this.ensureDocSummary(false).then(() => {
           this.useDocSummary = !!(this.docSummaryEntry && this.docSummaryEntry.summary);
-          if (this.summaryCheckbox) this.summaryCheckbox.checked = this.useDocSummary;
+          summaryCheckbox.checked = this.useDocSummary;
           this.messages[0] = this.buildSystemMessage();
         });
       }
 
       const ragRow = contentEl.createDiv({ cls: "pdf-chat-summary-row" });
-      this.ragCheckbox = ragRow.createEl("input", {
+      const ragCheckbox = (this.ragCheckbox = ragRow.createEl("input", {
         type: "checkbox",
         attr: { id: "pdf-chat-rag-toggle" },
-      });
+      }));
       ragRow.createEl("label", {
         text: "全文/检索相关片段",
         attr: { for: "pdf-chat-rag-toggle" },
       });
       this.ragStatusEl = ragRow.createEl("span", { cls: "pdf-chat-summary-status" });
-      this.ragRefreshBtn = ragRow.createEl("button", {
+      const ragRefreshBtn = (this.ragRefreshBtn = ragRow.createEl("button", {
         text: "建立/刷新索引",
         cls: "pdf-chat-summary-btn",
-      });
+      }));
 
       this.refreshRagStatus();
 
-      this.ragCheckbox.addEventListener("change", async () => {
-        if (this.ragCheckbox.checked) {
+      ragCheckbox.addEventListener("change", async () => {
+        if (ragCheckbox.checked) {
           await this.ensureDocChunks(false);
           this.useRag = !!(this.docChunksEntry && this.docChunksEntry.chunks && this.docChunksEntry.chunks.length);
-          this.ragCheckbox.checked = this.useRag;
+          ragCheckbox.checked = this.useRag;
         } else {
           this.useRag = false;
         }
       });
-      this.ragRefreshBtn.addEventListener("click", async () => {
+      ragRefreshBtn.addEventListener("click", async () => {
         await this.ensureDocChunks(true);
-        if (this.ragCheckbox.checked) {
+        if (ragCheckbox.checked) {
           this.useRag = !!(this.docChunksEntry && this.docChunksEntry.chunks && this.docChunksEntry.chunks.length);
         }
       });
 
       // 建索引是纯本地文本切块,不调用模型,很快,可以放心自动做。
       if (this.plugin.settings.autoRag) {
-        this.ragCheckbox.checked = true;
+        ragCheckbox.checked = true;
         this.useRag = true;
         this.ensureDocChunks(false).then(() => {
           this.useRag = !!(this.docChunksEntry && this.docChunksEntry.chunks && this.docChunksEntry.chunks.length);
-          if (this.ragCheckbox) this.ragCheckbox.checked = this.useRag;
+          ragCheckbox.checked = this.useRag;
         });
       }
     }
@@ -296,7 +376,7 @@ export class PDFChatModal extends Modal {
 
     if (this.transcript.length) {
       this.restoreConversationHistory().catch((err) => {
-        new Notice("恢复上次对话显示失败: " + (err && err.message ? err.message : String(err)));
+        new Notice("恢复上次对话显示失败: " + errorMessage(err));
       });
     } else if (this.startFresh && this.hadExistingHistory) {
       new Notice("已开始新对话(发出第一条消息后会替换掉上次保存的记录)");
@@ -304,7 +384,7 @@ export class PDFChatModal extends Modal {
     this.inputEl.focus();
   }
 
-  async restoreConversationHistory() {
+  async restoreConversationHistory(): Promise<void> {
     const renderJobs = [];
     for (const message of this.transcript) {
       if (message.role === "user") {
@@ -328,17 +408,21 @@ export class PDFChatModal extends Modal {
     new Notice(`已恢复${scope}上次对话(${this.transcript.length} 条消息)`);
   }
 
-  async persistConversation() {
+  async persistConversation(): Promise<boolean> {
     try {
       await this.services.conversations.save(this.conversationKey, this.transcript);
       return true;
     } catch (err) {
-      new Notice("保存对话失败: " + (err && err.message ? err.message : String(err)));
+      new Notice("保存对话失败: " + errorMessage(err));
       return false;
     }
   }
 
-  async recordTranscriptTurn(question, answer, status) {
+  async recordTranscriptTurn(
+    question: string,
+    answer: string,
+    status: ConversationMessage["status"]
+  ): Promise<boolean> {
     if (typeof answer !== "string" || !answer.trim()) return false;
     this.transcript.push(
       { role: "user", content: question, status: "complete" },
@@ -348,7 +432,7 @@ export class PDFChatModal extends Modal {
     return true;
   }
 
-  async resetConversation() {
+  async resetConversation(): Promise<void> {
     if (this.isSending) {
       new Notice("正在生成中,请先停止或等待完成后再清空");
       return;
@@ -361,11 +445,11 @@ export class PDFChatModal extends Modal {
       await this.services.conversations.clear(this.conversationKey);
       new Notice("对话已清空,原文上下文保留");
     } catch (err) {
-      new Notice("界面已清空,但删除已保存对话失败: " + (err && err.message ? err.message : String(err)));
+      new Notice("界面已清空,但删除已保存对话失败: " + errorMessage(err));
     }
   }
 
-  applyPreset(id) {
+  applyPreset(id: string): void {
     if (this.isSending) {
       new Notice("正在生成中,请先停止或等待完成后再切换阅读模式");
       this.modeSelect.value = this.currentPresetId;
@@ -380,7 +464,7 @@ export class PDFChatModal extends Modal {
     new Notice(`已切换到「${name}」模式,后续回答会按新设定进行`);
   }
 
-  applyModel(id) {
+  applyModel(id: string): void {
     if (this.isSending) {
       new Notice("正在生成中,请先停止或等待完成后再切换模型");
       this.modelSelect.value = this.currentModelId;
@@ -393,15 +477,15 @@ export class PDFChatModal extends Modal {
     new Notice(`已切换到模型「${(m && m.name) || id}」`);
   }
 
-  applyFontScale(scale) {
+  applyFontScale(scale: number): void {
     const clamped = Math.round(Math.min(1.6, Math.max(0.7, scale)) * 100) / 100;
     this.plugin.settings.fontScale = clamped;
-    this.contentEl.style.setProperty("--pdf-chat-font-scale", clamped);
+    this.contentEl.style.setProperty("--pdf-chat-font-scale", String(clamped));
     if (this.zoomLabel) this.zoomLabel.setText(Math.round(clamped * 100) + "%");
     this.plugin.saveSettings();
   }
 
-  refreshSummaryStatus() {
+  refreshSummaryStatus(): void {
     if (!this.summaryStatusEl || !this.pdfFile) return;
     const cached = this.plugin.settings.docSummaries[this.pdfFile.path];
     if (cached && cached.summary) {
@@ -415,7 +499,7 @@ export class PDFChatModal extends Modal {
     }
   }
 
-  async ensureDocSummary(forceRefresh) {
+  async ensureDocSummary(forceRefresh: boolean): Promise<void> {
     if (this.isGeneratingSummary || !this.pdfFile) return;
 
     const cached = this.plugin.settings.docSummaries[this.pdfFile.path];
@@ -441,7 +525,7 @@ export class PDFChatModal extends Modal {
       new Notice("全文摘要已生成/更新");
     } catch (err) {
       notice.hide();
-      new Notice("生成摘要失败: " + (err && err.message ? err.message : String(err)));
+      new Notice("生成摘要失败: " + errorMessage(err));
       if (this.summaryCheckbox) this.summaryCheckbox.checked = false;
       this.useDocSummary = false;
     } finally {
@@ -454,7 +538,7 @@ export class PDFChatModal extends Modal {
     }
   }
 
-  refreshRagStatus() {
+  refreshRagStatus(): void {
     if (!this.ragStatusEl || !this.pdfFile) return;
     const cached = this.plugin.settings.docChunks[this.pdfFile.path];
     if (cached && cached.chunks && cached.chunks.length) {
@@ -474,7 +558,7 @@ export class PDFChatModal extends Modal {
     }
   }
 
-  async ensureDocChunks(forceRefresh) {
+  async ensureDocChunks(forceRefresh: boolean): Promise<void> {
     if (this.isIndexingRag || !this.pdfFile) return;
 
     const cached = this.plugin.settings.docChunks[this.pdfFile.path];
@@ -496,7 +580,7 @@ export class PDFChatModal extends Modal {
       this.docChunksEntry = await this.services.papers.getOrCreateDocChunks(this.pdfFile, forceRefresh);
       this.refreshRagStatus();
     } catch (err) {
-      new Notice("建立检索索引失败: " + (err && err.message ? err.message : String(err)));
+      new Notice("建立检索索引失败: " + errorMessage(err));
       if (this.ragCheckbox) this.ragCheckbox.checked = false;
       this.useRag = false;
     } finally {
@@ -509,10 +593,10 @@ export class PDFChatModal extends Modal {
     }
   }
 
-  setupDragging(handleEl) {
+  setupDragging(handleEl: HTMLElement): void {
     handleEl.addClass("pdf-chat-drag-handle");
-    handleEl.addEventListener("mousedown", (evt) => {
-      if (evt.target.closest && evt.target.closest("button, select, .pdf-chat-title-actions")) return;
+    handleEl.addEventListener("mousedown", (evt: MouseEvent) => {
+      if (evt.target instanceof Element && evt.target.closest("button, select, .pdf-chat-title-actions")) return;
       evt.preventDefault();
 
       const modalEl = this.modalEl;
@@ -528,7 +612,7 @@ export class PDFChatModal extends Modal {
       const startLeft = rect.left;
       const startTop = rect.top;
 
-      const onMouseMove = (moveEvt) => {
+      const onMouseMove = (moveEvt: MouseEvent) => {
         modalEl.style.left = startLeft + (moveEvt.clientX - startX) + "px";
         modalEl.style.top = startTop + (moveEvt.clientY - startY) + "px";
       };
@@ -541,13 +625,13 @@ export class PDFChatModal extends Modal {
     });
   }
 
-  stopGenerating() {
+  stopGenerating(): void {
     if (this.abortController) {
       this.abortController.abort();
     }
   }
 
-  setSendingState(sending) {
+  setSendingState(sending: boolean): void {
     this.isSending = sending;
     this.sendBtn.setText(sending ? "停止" : "发送");
     this.sendBtn.toggleClass("is-stop", sending);
@@ -556,17 +640,17 @@ export class PDFChatModal extends Modal {
   // 点「翻译」按钮触发:不读输入框,直接用固定的翻译指令当作这一轮的问题发出去。
   // 选中的原文片段已经在系统提示词里(见 buildSystemMessage),跳过 RAG/全文检索拼接——
   // 那是给"回答具体问题"用的,翻译只需要针对已经在上下文里的选中片段,不需要额外找相关内容。
-  handleTranslate() {
+  handleTranslate(): void {
     void this.services.actions.execute("translate", {
       settings: this.plugin.settings,
       submit: (options) => this.handleSubmit(options),
     });
   }
 
-  async handleSubmit(options) {
+  async handleSubmit(options: SubmitOptions = {}): Promise<void> {
     const opts = options || {};
     const usingOverride = typeof opts.question === "string";
-    const question = usingOverride ? opts.question.trim() : this.inputEl.value.trim();
+    const question = typeof opts.question === "string" ? opts.question.trim() : this.inputEl.value.trim();
     if (!question) return;
     if (this.isSending) {
       new Notice("上一个问题还在生成中,请稍候或点击停止");
@@ -641,7 +725,7 @@ export class PDFChatModal extends Modal {
     try {
       fullText = await this.services.llm.chat({
         messages: this.messages,
-        onChunk: (piece, acc) => {
+        onChunk: (_piece, acc) => {
           fullText = acc;
           if (!firstChunkArrived) {
             firstChunkArrived = true;
@@ -663,7 +747,7 @@ export class PDFChatModal extends Modal {
       await this.recordTranscriptTurn(question, fullText, "complete");
     } catch (err) {
       loadingBubble.removeClass("is-loading");
-      if (err && err.name === "AbortError") {
+      if (isAbortError(err)) {
         loadingBubble.addClass("is-stopped");
         loadingBubble.setText((fullText || "") + "\n\n[已停止生成]");
         if (fullText) {
@@ -674,7 +758,7 @@ export class PDFChatModal extends Modal {
         }
       } else {
         loadingBubble.addClass("is-error");
-        loadingBubble.setText("请求失败: " + (err && err.message ? err.message : String(err)));
+        loadingBubble.setText("请求失败: " + errorMessage(err));
         this.messages.pop();
       }
     } finally {
@@ -684,7 +768,7 @@ export class PDFChatModal extends Modal {
     }
   }
 
-  addBubble(role, text, opts) {
+  addBubble(role: "user" | "assistant", text: string, opts: BubbleOptions = {}): HTMLDivElement {
     const bubble = this.historyEl.createDiv({ cls: `pdf-chat-bubble ${role}` });
     if (opts && opts.loading) bubble.addClass("is-loading");
     bubble.setText(text);
@@ -694,7 +778,7 @@ export class PDFChatModal extends Modal {
     return bubble;
   }
 
-  onClose() {
+  onClose(): void {
     this.stopGenerating();
     // 只在这次会话确实产生过消息时才回写存储:避免“新开对话”模式下,用户什么都没问就
     // 直接关闭弹窗,却因为 this.transcript 一开始就是空数组而把上次保存的记录误清空。

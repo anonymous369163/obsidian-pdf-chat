@@ -268,6 +268,9 @@ var ConversationStore = class {
 
 // src/llm-transport.ts
 var import_obsidian = require("obsidian");
+function asCompletionPayload(value) {
+  return value && typeof value === "object" ? value : null;
+}
 var OpenAICompatibleTransport = class {
   constructor(getSettings, getModelProfile, request = import_obsidian.requestUrl, fetchRequest = fetch) {
     this.getSettings = getSettings;
@@ -311,7 +314,7 @@ var OpenAICompatibleTransport = class {
     }
     let data = null;
     try {
-      data = response.json;
+      data = asCompletionPayload(response.json);
     } catch (e) {
       data = null;
     }
@@ -357,7 +360,7 @@ var OpenAICompatibleTransport = class {
       throw new Error(message);
     }
     if (!((_a = response.body) == null ? void 0 : _a.getReader)) {
-      const data = await response.json();
+      const data = asCompletionPayload(await response.json());
       const content = ((_d = (_c = (_b = data == null ? void 0 : data.choices) == null ? void 0 : _b[0]) == null ? void 0 : _c.message) == null ? void 0 : _d.content) || "";
       onChunk == null ? void 0 : onChunk(content, content);
       return content;
@@ -379,7 +382,7 @@ var OpenAICompatibleTransport = class {
         if (!payload || payload === "[DONE]") continue;
         let parsed;
         try {
-          parsed = JSON.parse(payload);
+          parsed = asCompletionPayload(JSON.parse(payload));
         } catch (e) {
           continue;
         }
@@ -634,7 +637,16 @@ function createPDFChatModalServices(plugin, overrides = {}) {
       retrieveContext: (chunks, queries, topK) => expandWithNeighbors(chunks, bm25RetrieveMulti(chunks, queries, topK))
     },
     llm: {
-      chat: (request) => plugin.chat(request.messages, request.onChunk, request.signal, request.modelProfile)
+      chat: (request) => {
+        if (plugin.llmTransport) return plugin.llmTransport.chat(request);
+        return plugin.chat(
+          request.messages,
+          request.onChunk,
+          request.signal,
+          request.modelProfile,
+          { stream: request.stream, maxTokensOverride: request.maxTokensOverride }
+        );
+      }
     },
     models: {
       get: (id) => plugin.getModelProfile(id)
@@ -647,12 +659,22 @@ function createPDFChatModalServices(plugin, overrides = {}) {
     conversations: { ...compatibility.conversations, ...overrides.conversations || {} },
     papers: { ...compatibility.papers, ...overrides.papers || {} },
     llm: { ...compatibility.llm, ...overrides.llm || {} },
-    models: { ...compatibility.models, ...overrides.models || {} }
+    models: { ...compatibility.models, ...overrides.models || {} },
+    actions: overrides.actions || compatibility.actions
   };
 }
 
 // src/pdf-chat-modal.ts
 var import_obsidian2 = require("obsidian");
+function errorMessage(error) {
+  if (error && typeof error === "object" && "message" in error) {
+    return String(error.message);
+  }
+  return String(error);
+}
+function isAbortError(error) {
+  return !!error && typeof error === "object" && "name" in error && error.name === "AbortError";
+}
 async function renderMarkdownInto(app, component, el, text) {
   el.empty();
   el.addClass("markdown-rendered");
@@ -672,14 +694,52 @@ async function renderMarkdownInto(app, component, el, text) {
 var PDFChatModal = class extends import_obsidian2.Modal {
   constructor(app, plugin, contextText, pdfFile, startFresh, services) {
     super(app);
+    __publicField(this, "plugin");
+    __publicField(this, "services");
+    __publicField(this, "paperContext");
+    __publicField(this, "contextText");
+    __publicField(this, "pdfFile");
+    __publicField(this, "startFresh");
+    __publicField(this, "conversationKey");
+    __publicField(this, "hadExistingHistory");
+    __publicField(this, "currentPresetId");
+    __publicField(this, "currentModelId");
+    __publicField(this, "useDocSummary", false);
+    __publicField(this, "docSummaryEntry", null);
+    __publicField(this, "isGeneratingSummary", false);
+    __publicField(this, "useRag", false);
+    __publicField(this, "docChunksEntry", null);
+    __publicField(this, "isIndexingRag", false);
+    __publicField(this, "useFullTextMode", false);
+    __publicField(this, "fullTextForQA", null);
+    __publicField(this, "fullTextAttached", false);
+    __publicField(this, "transcript");
+    __publicField(this, "messages");
+    __publicField(this, "isSending", false);
+    __publicField(this, "abortController", null);
+    __publicField(this, "zoomOutBtn");
+    __publicField(this, "zoomLabel");
+    __publicField(this, "zoomInBtn");
+    __publicField(this, "modelSelect");
+    __publicField(this, "modeSelect");
+    __publicField(this, "summaryCheckbox");
+    __publicField(this, "summaryStatusEl");
+    __publicField(this, "summaryRefreshBtn");
+    __publicField(this, "ragCheckbox");
+    __publicField(this, "ragStatusEl");
+    __publicField(this, "ragRefreshBtn");
+    __publicField(this, "historyEl");
+    __publicField(this, "inputEl");
+    __publicField(this, "translateBtn");
+    __publicField(this, "sendBtn");
     this.plugin = plugin;
     this.services = services || createPDFChatModalServices(plugin);
-    const paperContext = contextText && typeof contextText === "object" && typeof contextText.selectedText === "string" ? contextText : {
+    const paperContext = typeof contextText === "string" ? {
       app,
       file: pdfFile || null,
       selectedText: contextText,
       conversationKey: this.services.conversations.getKey(pdfFile || null, contextText)
-    };
+    } : contextText;
     this.paperContext = paperContext;
     this.contextText = paperContext.selectedText;
     this.pdfFile = paperContext.file || null;
@@ -688,15 +748,6 @@ var PDFChatModal = class extends import_obsidian2.Modal {
     this.currentPresetId = lastPresetId && (lastPresetId === "__default__" || this.plugin.settings.promptPresets.find((p) => p.id === lastPresetId)) ? lastPresetId : "__default__";
     const lastModelId = this.plugin.settings.lastModelId;
     this.currentModelId = lastModelId && this.plugin.settings.models.find((m) => m.id === lastModelId) ? lastModelId : this.plugin.settings.activeModelId;
-    this.useDocSummary = false;
-    this.docSummaryEntry = null;
-    this.isGeneratingSummary = false;
-    this.useRag = false;
-    this.docChunksEntry = null;
-    this.isIndexingRag = false;
-    this.useFullTextMode = false;
-    this.fullTextForQA = null;
-    this.fullTextAttached = false;
     this.conversationKey = paperContext.conversationKey;
     const existingTranscript = this.services.conversations.get(this.conversationKey);
     this.hadExistingHistory = existingTranscript.length > 0;
@@ -780,7 +831,7 @@ ${this.contextText}`;
     });
     if (this.pdfFile) {
       const summaryRow = contentEl.createDiv({ cls: "pdf-chat-summary-row" });
-      this.summaryCheckbox = summaryRow.createEl("input", {
+      const summaryCheckbox = this.summaryCheckbox = summaryRow.createEl("input", {
         type: "checkbox",
         attr: { id: "pdf-chat-summary-toggle" }
       });
@@ -789,39 +840,39 @@ ${this.contextText}`;
         attr: { for: "pdf-chat-summary-toggle" }
       });
       this.summaryStatusEl = summaryRow.createEl("span", { cls: "pdf-chat-summary-status" });
-      this.summaryRefreshBtn = summaryRow.createEl("button", {
+      const summaryRefreshBtn = this.summaryRefreshBtn = summaryRow.createEl("button", {
         text: "\u751F\u6210/\u5237\u65B0\u6458\u8981",
         cls: "pdf-chat-summary-btn"
       });
       this.refreshSummaryStatus();
-      this.summaryCheckbox.addEventListener("change", async () => {
-        if (this.summaryCheckbox.checked) {
+      summaryCheckbox.addEventListener("change", async () => {
+        if (summaryCheckbox.checked) {
           await this.ensureDocSummary(false);
           this.useDocSummary = !!(this.docSummaryEntry && this.docSummaryEntry.summary);
-          this.summaryCheckbox.checked = this.useDocSummary;
+          summaryCheckbox.checked = this.useDocSummary;
         } else {
           this.useDocSummary = false;
         }
         this.messages[0] = this.buildSystemMessage();
       });
-      this.summaryRefreshBtn.addEventListener("click", async () => {
+      summaryRefreshBtn.addEventListener("click", async () => {
         await this.ensureDocSummary(true);
-        if (this.summaryCheckbox.checked) {
+        if (summaryCheckbox.checked) {
           this.useDocSummary = !!(this.docSummaryEntry && this.docSummaryEntry.summary);
         }
         this.messages[0] = this.buildSystemMessage();
       });
       if (this.plugin.settings.autoDocSummary) {
-        this.summaryCheckbox.checked = true;
+        summaryCheckbox.checked = true;
         this.useDocSummary = true;
         this.ensureDocSummary(false).then(() => {
           this.useDocSummary = !!(this.docSummaryEntry && this.docSummaryEntry.summary);
-          if (this.summaryCheckbox) this.summaryCheckbox.checked = this.useDocSummary;
+          summaryCheckbox.checked = this.useDocSummary;
           this.messages[0] = this.buildSystemMessage();
         });
       }
       const ragRow = contentEl.createDiv({ cls: "pdf-chat-summary-row" });
-      this.ragCheckbox = ragRow.createEl("input", {
+      const ragCheckbox = this.ragCheckbox = ragRow.createEl("input", {
         type: "checkbox",
         attr: { id: "pdf-chat-rag-toggle" }
       });
@@ -830,32 +881,32 @@ ${this.contextText}`;
         attr: { for: "pdf-chat-rag-toggle" }
       });
       this.ragStatusEl = ragRow.createEl("span", { cls: "pdf-chat-summary-status" });
-      this.ragRefreshBtn = ragRow.createEl("button", {
+      const ragRefreshBtn = this.ragRefreshBtn = ragRow.createEl("button", {
         text: "\u5EFA\u7ACB/\u5237\u65B0\u7D22\u5F15",
         cls: "pdf-chat-summary-btn"
       });
       this.refreshRagStatus();
-      this.ragCheckbox.addEventListener("change", async () => {
-        if (this.ragCheckbox.checked) {
+      ragCheckbox.addEventListener("change", async () => {
+        if (ragCheckbox.checked) {
           await this.ensureDocChunks(false);
           this.useRag = !!(this.docChunksEntry && this.docChunksEntry.chunks && this.docChunksEntry.chunks.length);
-          this.ragCheckbox.checked = this.useRag;
+          ragCheckbox.checked = this.useRag;
         } else {
           this.useRag = false;
         }
       });
-      this.ragRefreshBtn.addEventListener("click", async () => {
+      ragRefreshBtn.addEventListener("click", async () => {
         await this.ensureDocChunks(true);
-        if (this.ragCheckbox.checked) {
+        if (ragCheckbox.checked) {
           this.useRag = !!(this.docChunksEntry && this.docChunksEntry.chunks && this.docChunksEntry.chunks.length);
         }
       });
       if (this.plugin.settings.autoRag) {
-        this.ragCheckbox.checked = true;
+        ragCheckbox.checked = true;
         this.useRag = true;
         this.ensureDocChunks(false).then(() => {
           this.useRag = !!(this.docChunksEntry && this.docChunksEntry.chunks && this.docChunksEntry.chunks.length);
-          if (this.ragCheckbox) this.ragCheckbox.checked = this.useRag;
+          ragCheckbox.checked = this.useRag;
         });
       }
     }
@@ -895,7 +946,7 @@ ${this.contextText}`;
     });
     if (this.transcript.length) {
       this.restoreConversationHistory().catch((err) => {
-        new import_obsidian2.Notice("\u6062\u590D\u4E0A\u6B21\u5BF9\u8BDD\u663E\u793A\u5931\u8D25: " + (err && err.message ? err.message : String(err)));
+        new import_obsidian2.Notice("\u6062\u590D\u4E0A\u6B21\u5BF9\u8BDD\u663E\u793A\u5931\u8D25: " + errorMessage(err));
       });
     } else if (this.startFresh && this.hadExistingHistory) {
       new import_obsidian2.Notice("\u5DF2\u5F00\u59CB\u65B0\u5BF9\u8BDD(\u53D1\u51FA\u7B2C\u4E00\u6761\u6D88\u606F\u540E\u4F1A\u66FF\u6362\u6389\u4E0A\u6B21\u4FDD\u5B58\u7684\u8BB0\u5F55)");
@@ -930,7 +981,7 @@ ${this.contextText}`;
       await this.services.conversations.save(this.conversationKey, this.transcript);
       return true;
     } catch (err) {
-      new import_obsidian2.Notice("\u4FDD\u5B58\u5BF9\u8BDD\u5931\u8D25: " + (err && err.message ? err.message : String(err)));
+      new import_obsidian2.Notice("\u4FDD\u5B58\u5BF9\u8BDD\u5931\u8D25: " + errorMessage(err));
       return false;
     }
   }
@@ -956,7 +1007,7 @@ ${this.contextText}`;
       await this.services.conversations.clear(this.conversationKey);
       new import_obsidian2.Notice("\u5BF9\u8BDD\u5DF2\u6E05\u7A7A,\u539F\u6587\u4E0A\u4E0B\u6587\u4FDD\u7559");
     } catch (err) {
-      new import_obsidian2.Notice("\u754C\u9762\u5DF2\u6E05\u7A7A,\u4F46\u5220\u9664\u5DF2\u4FDD\u5B58\u5BF9\u8BDD\u5931\u8D25: " + (err && err.message ? err.message : String(err)));
+      new import_obsidian2.Notice("\u754C\u9762\u5DF2\u6E05\u7A7A,\u4F46\u5220\u9664\u5DF2\u4FDD\u5B58\u5BF9\u8BDD\u5931\u8D25: " + errorMessage(err));
     }
   }
   applyPreset(id) {
@@ -988,7 +1039,7 @@ ${this.contextText}`;
   applyFontScale(scale) {
     const clamped = Math.round(Math.min(1.6, Math.max(0.7, scale)) * 100) / 100;
     this.plugin.settings.fontScale = clamped;
-    this.contentEl.style.setProperty("--pdf-chat-font-scale", clamped);
+    this.contentEl.style.setProperty("--pdf-chat-font-scale", String(clamped));
     if (this.zoomLabel) this.zoomLabel.setText(Math.round(clamped * 100) + "%");
     this.plugin.saveSettings();
   }
@@ -1028,7 +1079,7 @@ ${this.contextText}`;
       new import_obsidian2.Notice("\u5168\u6587\u6458\u8981\u5DF2\u751F\u6210/\u66F4\u65B0");
     } catch (err) {
       notice.hide();
-      new import_obsidian2.Notice("\u751F\u6210\u6458\u8981\u5931\u8D25: " + (err && err.message ? err.message : String(err)));
+      new import_obsidian2.Notice("\u751F\u6210\u6458\u8981\u5931\u8D25: " + errorMessage(err));
       if (this.summaryCheckbox) this.summaryCheckbox.checked = false;
       this.useDocSummary = false;
     } finally {
@@ -1078,7 +1129,7 @@ ${this.contextText}`;
       this.docChunksEntry = await this.services.papers.getOrCreateDocChunks(this.pdfFile, forceRefresh);
       this.refreshRagStatus();
     } catch (err) {
-      new import_obsidian2.Notice("\u5EFA\u7ACB\u68C0\u7D22\u7D22\u5F15\u5931\u8D25: " + (err && err.message ? err.message : String(err)));
+      new import_obsidian2.Notice("\u5EFA\u7ACB\u68C0\u7D22\u7D22\u5F15\u5931\u8D25: " + errorMessage(err));
       if (this.ragCheckbox) this.ragCheckbox.checked = false;
       this.useRag = false;
     } finally {
@@ -1093,7 +1144,7 @@ ${this.contextText}`;
   setupDragging(handleEl) {
     handleEl.addClass("pdf-chat-drag-handle");
     handleEl.addEventListener("mousedown", (evt) => {
-      if (evt.target.closest && evt.target.closest("button, select, .pdf-chat-title-actions")) return;
+      if (evt.target instanceof Element && evt.target.closest("button, select, .pdf-chat-title-actions")) return;
       evt.preventDefault();
       const modalEl = this.modalEl;
       const doc = modalEl.ownerDocument;
@@ -1137,10 +1188,10 @@ ${this.contextText}`;
       submit: (options) => this.handleSubmit(options)
     });
   }
-  async handleSubmit(options) {
+  async handleSubmit(options = {}) {
     const opts = options || {};
     const usingOverride = typeof opts.question === "string";
-    const question = usingOverride ? opts.question.trim() : this.inputEl.value.trim();
+    const question = typeof opts.question === "string" ? opts.question.trim() : this.inputEl.value.trim();
     if (!question) return;
     if (this.isSending) {
       new import_obsidian2.Notice("\u4E0A\u4E00\u4E2A\u95EE\u9898\u8FD8\u5728\u751F\u6210\u4E2D,\u8BF7\u7A0D\u5019\u6216\u70B9\u51FB\u505C\u6B62");
@@ -1193,7 +1244,7 @@ ${c.text}`).join("\n\n---\n\n");
     try {
       fullText = await this.services.llm.chat({
         messages: this.messages,
-        onChunk: (piece, acc) => {
+        onChunk: (_piece, acc) => {
           fullText = acc;
           if (!firstChunkArrived) {
             firstChunkArrived = true;
@@ -1212,7 +1263,7 @@ ${c.text}`).join("\n\n---\n\n");
       await this.recordTranscriptTurn(question, fullText, "complete");
     } catch (err) {
       loadingBubble.removeClass("is-loading");
-      if (err && err.name === "AbortError") {
+      if (isAbortError(err)) {
         loadingBubble.addClass("is-stopped");
         loadingBubble.setText((fullText || "") + "\n\n[\u5DF2\u505C\u6B62\u751F\u6210]");
         if (fullText) {
@@ -1223,7 +1274,7 @@ ${c.text}`).join("\n\n---\n\n");
         }
       } else {
         loadingBubble.addClass("is-error");
-        loadingBubble.setText("\u8BF7\u6C42\u5931\u8D25: " + (err && err.message ? err.message : String(err)));
+        loadingBubble.setText("\u8BF7\u6C42\u5931\u8D25: " + errorMessage(err));
         this.messages.pop();
       }
     } finally {
@@ -1232,7 +1283,7 @@ ${c.text}`).join("\n\n---\n\n");
       this.inputEl.focus();
     }
   }
-  addBubble(role, text, opts) {
+  addBubble(role, text, opts = {}) {
     const bubble = this.historyEl.createDiv({ cls: `pdf-chat-bubble ${role}` });
     if (opts && opts.loading) bubble.addClass("is-loading");
     bubble.setText(text);
@@ -1300,6 +1351,7 @@ var import_obsidian3 = require("obsidian");
 var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
+    __publicField(this, "plugin");
     this.plugin = plugin;
   }
   display() {
@@ -1332,7 +1384,7 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
       header.addExtraButton(
         (btn) => btn.setIcon("trash").setTooltip("\u5220\u9664\u8FD9\u4E2A\u6A21\u578B").onClick(async () => {
           if (this.plugin.settings.models.length <= 1) {
-            new Notice("\u81F3\u5C11\u8981\u4FDD\u7559\u4E00\u4E2A\u6A21\u578B\u914D\u7F6E");
+            new import_obsidian3.Notice("\u81F3\u5C11\u8981\u4FDD\u7559\u4E00\u4E2A\u6A21\u578B\u914D\u7F6E");
             return;
           }
           this.plugin.settings.models.splice(idx, 1);
@@ -1580,6 +1632,15 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
 
 // src/main.ts
 var PDFChatPlugin = class extends import_obsidian4.Plugin {
+  constructor() {
+    super(...arguments);
+    __publicField(this, "_saveQueue", Promise.resolve());
+    __publicField(this, "conversationStore");
+    __publicField(this, "llmTransport");
+    __publicField(this, "paperContextService");
+    __publicField(this, "actionRegistry");
+    __publicField(this, "modalServices");
+  }
   async onload() {
     this._saveQueue = Promise.resolve();
     await this.loadSettings();
@@ -1701,12 +1762,14 @@ var PDFChatPlugin = class extends import_obsidian4.Plugin {
   async getOrCreateDocChunks(file, forceRefresh) {
     return this.paperContextService.getOrCreateDocChunks(file, forceRefresh);
   }
-  async chat(messages, onChunk, signal, modelProfile) {
+  async chat(messages, onChunk, signal, modelProfile, options = {}) {
     return this.llmTransport.chat({
       messages,
       onChunk,
       signal,
-      modelProfile
+      modelProfile,
+      stream: options.stream,
+      maxTokensOverride: options.maxTokensOverride
     });
   }
   async chatOnce(messages, signal, profile, maxTokensOverride) {

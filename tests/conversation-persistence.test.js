@@ -10,7 +10,7 @@ function plain(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function loadPluginModule() {
+function loadPluginModule(options = {}) {
   const filename = path.join(projectRoot, "main.js");
   const source = fs.readFileSync(filename, "utf8");
 
@@ -21,13 +21,93 @@ function loadPluginModule() {
     }
   }
   class PluginSettingTab {}
+  class Notice {
+    constructor(message) {
+      if (options.notices) options.notices.push(message);
+    }
+  }
+  class Setting {
+    constructor() {}
+
+    setName() {
+      return this;
+    }
+
+    setDesc() {
+      return this;
+    }
+
+    addControl(callback) {
+      const control = {
+        inputEl: { style: {} },
+        tooltip: "",
+        addOption() {
+          return this;
+        },
+        onChange() {
+          return this;
+        },
+        onClick(handler) {
+          if (this.tooltip === "删除这个模型" && options.deleteModelHandlers) {
+            options.deleteModelHandlers.push(handler);
+          }
+          return this;
+        },
+        setButtonText() {
+          return this;
+        },
+        setCta() {
+          return this;
+        },
+        setIcon() {
+          return this;
+        },
+        setPlaceholder() {
+          return this;
+        },
+        setTooltip(value) {
+          this.tooltip = value;
+          return this;
+        },
+        setValue() {
+          return this;
+        },
+      };
+      callback(control);
+      return this;
+    }
+
+    addButton(callback) {
+      return this.addControl(callback);
+    }
+
+    addDropdown(callback) {
+      return this.addControl(callback);
+    }
+
+    addExtraButton(callback) {
+      return this.addControl(callback);
+    }
+
+    addText(callback) {
+      return this.addControl(callback);
+    }
+
+    addTextArea(callback) {
+      return this.addControl(callback);
+    }
+
+    addToggle(callback) {
+      return this.addControl(callback);
+    }
+  }
 
   const obsidian = {
     Plugin,
     Modal,
-    Notice: class Notice {},
+    Notice,
     PluginSettingTab,
-    Setting: class Setting {},
+    Setting,
     requestUrl: async () => ({}),
     MarkdownRenderer: {},
   };
@@ -55,6 +135,7 @@ function loadPluginModule() {
   const PluginClass = bundle.default || bundle;
   PluginClass.__test = {
     createCompatibilityActionRegistry: bundle.createCompatibilityActionRegistry,
+    createPDFChatModalServices: bundle.createPDFChatModalServices,
     normalizeConversationHistories: bundle.normalizeConversationHistories,
     OpenAICompatibleTransport: bundle.OpenAICompatibleTransport,
     PDFChatModal: bundle.PDFChatModal,
@@ -607,6 +688,92 @@ test("non-streaming transport preserves endpoint error text when the JSON body i
     transport.chat({ messages: [{ role: "user", content: "Question" }] }),
     /gateway down/
   );
+});
+
+test("modal compatibility services forward the complete LlmRequest contract", async () => {
+  const PluginClass = loadPluginModule();
+  const createServices = PluginClass.__test.createPDFChatModalServices;
+  const forwarded = [];
+  const plugin = {
+    actionRegistry: { execute() {} },
+    app: {},
+    clearConversation: async () => {},
+    getConversation: () => [],
+    getConversationKey: () => "selection:key",
+    getModelProfile: () => ({}),
+    getOrCreateDocChunks: async () => ({}),
+    getOrCreateDocSummary: async () => ({}),
+    async chat(...args) {
+      forwarded.push({ legacyArgs: args });
+      return "answer";
+    },
+    llmTransport: {
+      async chat(request) {
+        forwarded.push(request);
+        return "answer";
+      },
+    },
+    planRagQueries: async () => [],
+    saveConversation: async () => {},
+  };
+  const services = createServices(plugin);
+  const signal = new AbortController().signal;
+  const onChunk = () => {};
+  const profile = { id: "model-a", endpoint: "", apiKey: "", model: "model-a" };
+  const request = {
+    messages: [{ role: "user", content: "Question" }],
+    onChunk,
+    signal,
+    modelProfile: profile,
+    stream: false,
+    maxTokensOverride: 321,
+  };
+
+  assert.equal(await services.llm.chat(request), "answer");
+  assert.equal(forwarded.length, 1);
+  assert.equal(forwarded[0], request);
+
+  forwarded.length = 0;
+  delete plugin.llmTransport;
+  const legacyServices = createServices(plugin);
+  assert.equal(await legacyServices.llm.chat(request), "answer");
+  assert.equal(forwarded.length, 1);
+  assert.equal(forwarded[0].legacyArgs[0], request.messages);
+  assert.equal(forwarded[0].legacyArgs[1], request.onChunk);
+  assert.equal(forwarded[0].legacyArgs[2], request.signal);
+  assert.equal(forwarded[0].legacyArgs[3], request.modelProfile);
+  assert.deepEqual(plain(forwarded[0].legacyArgs[4]), {
+    stream: false,
+    maxTokensOverride: 321,
+  });
+});
+
+test("deleting the sole model shows a Notice instead of throwing", async () => {
+  const notices = [];
+  const deleteModelHandlers = [];
+  const PluginClass = loadPluginModule({ notices, deleteModelHandlers });
+  const plugin = Object.create(PluginClass.prototype);
+  plugin.loadData = async () => ({});
+  plugin.saveData = async () => {};
+  plugin.addCommand = () => {};
+  let settingTab = null;
+  plugin.addSettingTab = (tab) => {
+    settingTab = tab;
+  };
+  await plugin.onload();
+  settingTab.containerEl = {
+    empty() {},
+    createEl() {
+      return {};
+    },
+  };
+
+  settingTab.display();
+  assert.equal(deleteModelHandlers.length, 1);
+  await deleteModelHandlers[0]();
+
+  assert.deepEqual(notices, ["至少要保留一个模型配置"]);
+  assert.equal(plugin.settings.models.length, 1);
 });
 
 test("onload registers separate new-conversation and continue-conversation hotkeys", async () => {

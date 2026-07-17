@@ -1,10 +1,17 @@
-// @ts-nocheck
 import { createCompatibilityActionRegistry } from "./actions";
 import { DEFAULT_SETTINGS } from "./default-settings";
 import { bm25RetrieveMulti, expandWithNeighbors, extractPdfFullText } from "./paper-context";
+import type {
+  PDFChatModalServiceOverrides,
+  PDFChatModalServices,
+  PDFChatPluginApi,
+} from "./types";
 
-export function createPDFChatModalServices(plugin, overrides = {}) {
-  const compatibility = {
+export function createPDFChatModalServices(
+  plugin: PDFChatPluginApi,
+  overrides: PDFChatModalServiceOverrides = {}
+): PDFChatModalServices {
+  const compatibility: PDFChatModalServices = {
     conversations: {
       getKey: (file, selectedText) => plugin.getConversationKey(file, selectedText),
       get: (key) => plugin.getConversation(key),
@@ -23,8 +30,16 @@ export function createPDFChatModalServices(plugin, overrides = {}) {
         expandWithNeighbors(chunks, bm25RetrieveMulti(chunks, queries, topK)),
     },
     llm: {
-      chat: (request) =>
-        plugin.chat(request.messages, request.onChunk, request.signal, request.modelProfile),
+      chat: (request) => {
+        if (plugin.llmTransport) return plugin.llmTransport.chat(request);
+        return plugin.chat(
+          request.messages,
+          request.onChunk,
+          request.signal,
+          request.modelProfile,
+          { stream: request.stream, maxTokensOverride: request.maxTokensOverride }
+        );
+      },
     },
     models: {
       get: (id) => plugin.getModelProfile(id),
@@ -39,5 +54,6 @@ export function createPDFChatModalServices(plugin, overrides = {}) {
     papers: { ...compatibility.papers, ...(overrides.papers || {}) },
     llm: { ...compatibility.llm, ...(overrides.llm || {}) },
     models: { ...compatibility.models, ...(overrides.models || {}) },
+    actions: overrides.actions || compatibility.actions,
   };
 }

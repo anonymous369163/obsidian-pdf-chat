@@ -10,6 +10,27 @@ export interface LlmTransportSettings {
 
 type RequestUrl = typeof requestUrl;
 
+interface CompletionDelta {
+  content?: string;
+  reasoning_content?: string;
+  text?: string;
+}
+
+interface CompletionChoice {
+  message?: CompletionDelta;
+  delta?: CompletionDelta;
+  text?: string;
+}
+
+interface CompletionPayload {
+  choices?: CompletionChoice[];
+  error?: { message?: string };
+}
+
+function asCompletionPayload(value: unknown): CompletionPayload | null {
+  return value && typeof value === "object" ? (value as CompletionPayload) : null;
+}
+
 export class OpenAICompatibleTransport {
   constructor(
     private readonly getSettings: () => LlmTransportSettings,
@@ -61,9 +82,9 @@ export class OpenAICompatibleTransport {
       throw abortError;
     }
 
-    let data: any = null;
+    let data: CompletionPayload | null = null;
     try {
-      data = response.json as any;
+      data = asCompletionPayload(response.json);
     } catch {
       data = null;
     }
@@ -119,7 +140,7 @@ export class OpenAICompatibleTransport {
     }
 
     if (!response.body?.getReader) {
-      const data = (await response.json()) as any;
+      const data = asCompletionPayload(await response.json());
       const content = data?.choices?.[0]?.message?.content || "";
       onChunk?.(content, content);
       return content;
@@ -144,9 +165,9 @@ export class OpenAICompatibleTransport {
         const payload = line.replace(/^data:\s*/i, "").trim();
         if (!payload || payload === "[DONE]") continue;
 
-        let parsed: any;
+        let parsed: CompletionPayload | null;
         try {
-          parsed = JSON.parse(payload);
+          parsed = asCompletionPayload(JSON.parse(payload) as unknown);
         } catch {
           continue;
         }

@@ -1,7 +1,12 @@
 import { normalizeConversationHistories } from "./conversation";
 import { DEFAULT_SETTINGS } from "./default-settings";
+import type { PDFChatSettings } from "./types";
 
-export type PDFChatSettings = typeof DEFAULT_SETTINGS & Record<string, unknown>;
+interface LegacySettings extends Partial<PDFChatSettings> {
+  endpoint?: string;
+  apiKey?: string;
+  model?: string;
+}
 
 export interface SettingsMigrationResult {
   settings: PDFChatSettings;
@@ -11,17 +16,17 @@ export interface SettingsMigrationResult {
 export function migrateSettings(savedValue: unknown, now: () => number = Date.now): SettingsMigrationResult {
   const saved =
     savedValue && typeof savedValue === "object" && !Array.isArray(savedValue)
-      ? (savedValue as Record<string, any>)
+      ? (savedValue as LegacySettings)
       : null;
-  const settings = Object.assign({}, DEFAULT_SETTINGS, saved) as Record<string, any>;
+  const settings = Object.assign({}, DEFAULT_SETTINGS, saved) as PDFChatSettings & LegacySettings;
 
   settings.models =
     saved && Array.isArray(saved.models) && saved.models.length
-      ? saved.models.map((model: Record<string, unknown>) => ({ ...model }))
+      ? saved.models.map((model) => ({ ...model }))
       : DEFAULT_SETTINGS.models.map((model) => ({ ...model }));
   settings.promptPresets =
     saved && Array.isArray(saved.promptPresets) && saved.promptPresets.length
-      ? saved.promptPresets.map((preset: Record<string, unknown>) => ({ ...preset }))
+      ? saved.promptPresets.map((preset) => ({ ...preset }))
       : DEFAULT_SETTINGS.promptPresets.map((preset) => ({ ...preset }));
   settings.docSummaries =
     saved && saved.docSummaries && typeof saved.docSummaries === "object" ? { ...saved.docSummaries } : {};
@@ -46,7 +51,7 @@ export function migrateSettings(savedValue: unknown, now: () => number = Date.no
     settings.models = DEFAULT_SETTINGS.models.map((model) => ({ ...model }));
     needsSave = true;
   }
-  if (!settings.models.find((model: Record<string, unknown>) => model.id === settings.activeModelId)) {
+  if (!settings.models.find((model) => model.id === settings.activeModelId)) {
     settings.activeModelId = settings.models[0].id;
     needsSave = true;
   }

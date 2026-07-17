@@ -1,7 +1,42 @@
 import type { App, TFile } from "obsidian";
 import { DEFAULT_SETTINGS } from "./default-settings";
 import type { OpenAICompatibleTransport } from "./llm-transport";
-import type { ModelProfile, PaperContext, PdfChunk, PdfPageText } from "./types";
+import type {
+  DocChunksEntry,
+  DocSummaryEntry,
+  ModelProfile,
+  PaperContext,
+  PdfChunk,
+  PdfPageText,
+  PDFChatSettings,
+} from "./types";
+
+interface PdfJsTextContent {
+  items: Array<{ str?: string }>;
+}
+
+interface PdfJsPage {
+  getTextContent(): Promise<PdfJsTextContent>;
+}
+
+interface PdfJsDocument {
+  numPages: number;
+  getPage(pageNumber: number): Promise<PdfJsPage>;
+}
+
+interface PdfJsLoadingTask {
+  promise: Promise<PdfJsDocument>;
+}
+
+interface PdfJsLibrary {
+  getDocument(options: { data: ArrayBuffer }): PdfJsLoadingTask;
+}
+
+declare global {
+  interface Window {
+    pdfjsLib?: PdfJsLibrary;
+  }
+}
 
 export function getActivePdfFile(app: App): TFile | null {
   const leaf = app.workspace.activeLeaf;
@@ -13,7 +48,7 @@ export function getActivePdfFile(app: App): TFile | null {
 }
 
 export async function extractPdfPages(app: App, file: TFile): Promise<PdfPageText[]> {
-  const pdfjsLib = (window as typeof window & { pdfjsLib?: any }).pdfjsLib;
+  const pdfjsLib = window.pdfjsLib;
   if (!pdfjsLib?.getDocument) {
     throw new Error("当前 Obsidian 版本没有暴露 pdfjsLib,无法提取全文");
   }
@@ -145,18 +180,19 @@ export function bm25RetrieveMulti(chunks: PdfChunk[], queries: string[], topK: n
     .map((entry) => entry.chunk);
 }
 
-export interface PaperServiceSettings {
-  summaryMaxChars: number;
-  summaryMaxTokens: number;
-  summaryPrompt: string;
-  summaryModelId: string;
-  activeModelId: string;
-  ragChunkSize: number;
-  ragChunkOverlap: number;
-  ragQueryPrompt: string;
-  docSummaries: Record<string, any>;
-  docChunks: Record<string, any>;
-}
+export type PaperServiceSettings = Pick<
+  PDFChatSettings,
+  | "summaryMaxChars"
+  | "summaryMaxTokens"
+  | "summaryPrompt"
+  | "summaryModelId"
+  | "activeModelId"
+  | "ragChunkSize"
+  | "ragChunkOverlap"
+  | "ragQueryPrompt"
+  | "docSummaries"
+  | "docChunks"
+>;
 
 export class PaperContextService {
   constructor(
@@ -201,7 +237,7 @@ export class PaperContextService {
     return { summary, fullLength: fullText.length, truncated };
   }
 
-  async getOrCreateDocSummary(file: TFile, forceRefresh: boolean): Promise<any> {
+  async getOrCreateDocSummary(file: TFile, forceRefresh: boolean): Promise<DocSummaryEntry> {
     const settings = this.getSettings();
     const mtime = file.stat && file.stat.mtime;
     const cached = settings.docSummaries[file.path];
@@ -244,7 +280,7 @@ export class PaperContextService {
       .filter(Boolean);
   }
 
-  async getOrCreateDocChunks(file: TFile, forceRefresh: boolean): Promise<any> {
+  async getOrCreateDocChunks(file: TFile, forceRefresh: boolean): Promise<DocChunksEntry> {
     const settings = this.getSettings();
     const mtime = file.stat && file.stat.mtime;
     const cached = settings.docChunks[file.path];
