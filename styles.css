@@ -392,14 +392,19 @@
 
 .pdf-chat-pdf-search-result {
   display: grid;
+  align-items: start;
   gap: 2px;
   width: 100%;
+  height: auto;
+  min-height: 0;
   padding: 7px 9px;
   border: 1px solid transparent;
   border-radius: var(--pdf-chat-radius-sm);
   background: color-mix(in srgb, var(--background-primary) 72%, var(--background-secondary));
   color: var(--text-normal);
+  line-height: 1.25;
   text-align: left;
+  white-space: normal;
   cursor: pointer;
 }
 
@@ -410,14 +415,22 @@
 }
 
 .pdf-chat-pdf-search-name {
+  display: block;
+  min-width: 0;
   font-size: 0.8rem;
   font-weight: var(--font-semibold);
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .pdf-chat-pdf-search-path {
+  display: block;
+  min-width: 0;
   overflow: hidden;
   color: var(--text-muted);
   font-size: 0.72rem;
+  line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -737,13 +750,20 @@
 
 .pdf-chat-composer-mention-option {
   display: grid;
+  grid-template-rows: auto auto;
+  align-items: start;
+  justify-items: stretch;
   gap: 2px;
   width: 100%;
+  height: auto;
+  min-height: 0;
   padding: 8px 10px;
   border: 1px solid transparent;
   border-radius: var(--pdf-chat-radius-sm);
   background: transparent;
+  line-height: 1.25;
   text-align: left;
+  white-space: normal;
   cursor: pointer;
 }
 

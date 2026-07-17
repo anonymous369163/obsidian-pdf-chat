@@ -1033,6 +1033,10 @@ test("CSS defines the scoped responsive, readable, selectable workbench contract
   const assistantRule = css.match(/\.pdf-chat-bubble\.assistant\s*\{([^}]*)\}/s)?.[1] || "";
   const userRule = css.match(/\.pdf-chat-bubble\.user\s*\{([^}]*)\}/s)?.[1] || "";
   const composerCardRule = css.match(/\.pdf-chat-composer-card\s*\{([^}]*)\}/s)?.[1] || "";
+  const mentionOptionRule =
+    css.match(/\.pdf-chat-composer-mention-option\s*\{([^}]*)\}/s)?.[1] || "";
+  const pdfSearchNameRule = css.match(/\.pdf-chat-pdf-search-name\s*\{([^}]*)\}/s)?.[1] || "";
+  const pdfSearchPathRule = css.match(/\.pdf-chat-pdf-search-path\s*\{([^}]*)\}/s)?.[1] || "";
   assert.match(contextPanelRule, /display:\s*flex/);
   assert.match(contextPanelRule, /flex-direction:\s*column/);
   assert.match(contextPanelRule, /flex:\s*0\s+0\s+auto/);
@@ -1049,6 +1053,14 @@ test("CSS defines the scoped responsive, readable, selectable workbench contract
   assert.match(headerRule, /flex:\s*0\s+0\s+auto/);
   assert.match(composerRule, /flex:\s*0\s+0\s+auto/);
   assert.match(composerCardRule, /box-shadow:/);
+  assert.match(mentionOptionRule, /height:\s*auto/);
+  assert.match(mentionOptionRule, /min-height:\s*0/);
+  assert.match(mentionOptionRule, /align-items:\s*start/);
+  assert.match(mentionOptionRule, /line-height:\s*1\.25/);
+  assert.match(pdfSearchNameRule, /display:\s*block/);
+  assert.match(pdfSearchNameRule, /line-height:\s*1\.25/);
+  assert.match(pdfSearchPathRule, /display:\s*block/);
+  assert.match(pdfSearchPathRule, /line-height:\s*1\.25/);
   assert.match(assistantRule, /box-shadow:/);
   assert.match(userRule, /border-inline-end:\s*0/);
   assert.match(
