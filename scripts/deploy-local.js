@@ -11,8 +11,51 @@ function sha256File(filePath) {
   return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
 }
 
+function lstatIfExists(filePath) {
+  try {
+    return fs.lstatSync(filePath);
+  } catch (error) {
+    if (error && error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function realpath(filePath) {
+  return fs.realpathSync.native ? fs.realpathSync.native(filePath) : fs.realpathSync(filePath);
+}
+
+function canonicalizePotentialPath(filePath) {
+  const suffix = [];
+  let existingPath = path.resolve(filePath);
+  let stats = lstatIfExists(existingPath);
+  while (!stats) {
+    const parent = path.dirname(existingPath);
+    if (parent === existingPath) throw new Error(`no existing parent for ${filePath}`);
+    suffix.unshift(path.basename(existingPath));
+    existingPath = parent;
+    stats = lstatIfExists(existingPath);
+  }
+  const canonicalParent = realpath(existingPath);
+  const canonicalStats = fs.statSync(canonicalParent);
+  if (suffix.length > 0 && !canonicalStats.isDirectory()) {
+    throw new Error("backup parent must be a directory");
+  }
+  return path.join(canonicalParent, ...suffix);
+}
+
+function assertRegularUnlinked(filePath, label, allowMissing = false) {
+  const stats = lstatIfExists(filePath);
+  if (!stats) {
+    if (allowMissing) return false;
+    throw new Error(`${label} must be a regular file and not a link`);
+  }
+  if (stats.isSymbolicLink() || !stats.isFile()) {
+    throw new Error(`${label} must be a regular file and not a link`);
+  }
+  return true;
+}
+
 function readManifest(manifestPath, label) {
-  if (!fs.existsSync(manifestPath)) throw new Error(`${label} manifest does not exist`);
   try {
     return JSON.parse(fs.readFileSync(manifestPath, "utf8"));
   } catch {
@@ -20,23 +63,39 @@ function readManifest(manifestPath, label) {
   }
 }
 
-function ensureValidSource(sourceRoot) {
+function canonicalSourceRoot(sourceRoot) {
+  const absolute = path.resolve(sourceRoot);
+  const stats = fs.statSync(absolute);
+  if (!stats.isDirectory()) throw new Error("release source must be a directory");
+  const canonical = realpath(absolute);
   for (const filename of RELEASE_FILES) {
-    const sourcePath = path.join(sourceRoot, filename);
-    if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) {
-      throw new Error(`release source is missing ${filename}`);
-    }
+    assertRegularUnlinked(path.join(canonical, filename), `release source ${filename}`);
   }
-  const manifest = readManifest(path.join(sourceRoot, "manifest.json"), "release source");
+  const manifest = readManifest(path.join(canonical, "manifest.json"), "release source");
   if (manifest.id !== "pdf-chat") throw new Error('expected release manifest id "pdf-chat"');
+  return canonical;
 }
 
-function ensureValidTarget(targetDir) {
-  if (!fs.existsSync(targetDir) || !fs.statSync(targetDir).isDirectory()) {
-    throw new Error("target plugin directory does not exist");
+function canonicalTargetRoot(targetDir) {
+  const absolute = path.resolve(targetDir);
+  const stats = lstatIfExists(absolute);
+  if (!stats || stats.isSymbolicLink() || !stats.isDirectory()) {
+    throw new Error("target directory must be a real directory, not a link");
+  }
+  return realpath(absolute);
+}
+
+function preflightTarget(targetDir) {
+  for (const filename of RELEASE_FILES) {
+    assertRegularUnlinked(
+      path.join(targetDir, filename),
+      filename === "manifest.json" ? "target manifest" : `target ${filename}`,
+      filename !== "manifest.json"
+    );
   }
   const manifest = readManifest(path.join(targetDir, "manifest.json"), "target");
   if (manifest.id !== "pdf-chat") throw new Error('expected target manifest id "pdf-chat"');
+  assertRegularUnlinked(path.join(targetDir, "data.json"), "target data.json", true);
 }
 
 function defaultBackupRoot() {
@@ -69,46 +128,117 @@ function nextBackupDirectory(backupRoot, now) {
   return candidate;
 }
 
-function deployRelease(options) {
-  const sourceRoot = path.resolve(options.sourceRoot || path.resolve(__dirname, ".."));
-  const targetDir = path.resolve(options.targetDir);
-  const backupRoot = path.resolve(options.backupRoot || defaultBackupRoot());
-  const now = options.now ? options.now() : new Date();
+function createFileOps(overrides = {}) {
+  return {
+    copyFile: overrides.copyFile || ((source, destination) => fs.copyFileSync(source, destination)),
+    copyTree:
+      overrides.copyTree ||
+      ((source, destination) => fs.cpSync(source, destination, { errorOnExist: true, recursive: true })),
+    hashFile: overrides.hashFile || sha256File,
+    removeFile: overrides.removeFile || ((filePath) => fs.rmSync(filePath, { force: true })),
+  };
+}
 
-  ensureValidSource(sourceRoot);
+function rollbackReleaseFiles(targetDir, backupDir, fileOps) {
+  const failures = [];
+  for (const filename of RELEASE_FILES) {
+    const backupPath = path.join(backupDir, filename);
+    const targetPath = path.join(targetDir, filename);
+    try {
+      if (lstatIfExists(backupPath)) fileOps.copyFile(backupPath, targetPath);
+      else fileOps.removeFile(targetPath);
+    } catch (error) {
+      failures.push(`${filename}: ${error instanceof Error ? error.message : "rollback failed"}`);
+    }
+  }
+  return failures;
+}
+
+function deploymentFailure(error, backupDir, rollbackFailures) {
+  const reason = error instanceof Error ? error.message : "local deployment failed";
+  const rollbackStatus =
+    rollbackFailures.length === 0
+      ? "release files restored"
+      : `rollback errors: ${rollbackFailures.join("; ")}`;
+  const wrapped = new Error(`${reason}; ${rollbackStatus}; backup: ${backupDir}`);
+  wrapped.backupDir = backupDir;
+  wrapped.cause = error;
+  return wrapped;
+}
+
+function deployRelease(options) {
+  const sourceRoot = canonicalSourceRoot(options.sourceRoot || path.resolve(__dirname, ".."));
+  const targetDir = canonicalTargetRoot(options.targetDir);
   if (isInside(sourceRoot, targetDir)) {
     throw new Error("target directory must be outside the repository");
   }
-  ensureValidTarget(targetDir);
+  preflightTarget(targetDir);
+
+  const requestedBackupRoot = options.backupRoot || defaultBackupRoot();
+  const backupRoot = canonicalizePotentialPath(requestedBackupRoot);
   if (isInside(sourceRoot, backupRoot)) {
     throw new Error("backup directory must be outside the repository");
   }
-
-  const dataPath = path.join(targetDir, "data.json");
-  const dataHashBefore = fs.existsSync(dataPath) ? sha256File(dataPath) : null;
-  const backupDir = nextBackupDirectory(backupRoot, now);
-  fs.mkdirSync(backupRoot, { recursive: true });
-  fs.cpSync(targetDir, backupDir, { errorOnExist: true, recursive: true });
-
-  const files = [];
-  for (const filename of RELEASE_FILES) {
-    const sourcePath = path.join(sourceRoot, filename);
-    const targetPath = path.join(targetDir, filename);
-    fs.copyFileSync(sourcePath, targetPath);
-    const sourceHash = sha256File(sourcePath);
-    const targetHash = sha256File(targetPath);
-    if (sourceHash !== targetHash) throw new Error(`hash verification failed for ${filename}`);
-    files.push({ filename, sourceHash, targetHash, status: "verified" });
+  if (isInside(targetDir, backupRoot)) {
+    throw new Error("backup directory must be outside the target plugin directory");
   }
 
-  const dataHashAfter = fs.existsSync(dataPath) ? sha256File(dataPath) : null;
-  if (dataHashBefore !== dataHashAfter) throw new Error("data.json changed during deployment");
+  const fileOps = createFileOps(options.fileOps);
+  const dataPath = path.join(targetDir, "data.json");
+  const now = options.now ? options.now() : new Date();
+  const backupDir = nextBackupDirectory(backupRoot, now);
+  fs.mkdirSync(backupRoot, { recursive: true });
+  try {
+    fileOps.copyTree(targetDir, backupDir);
+  } catch (error) {
+    throw deploymentFailure(error, backupDir, []);
+  }
 
-  return {
-    backupDir,
-    dataStatus: dataHashBefore === null ? "absent" : "preserved",
-    files,
-  };
+  let stageDir = null;
+  try {
+    const dataHashBefore = fs.existsSync(dataPath) ? fileOps.hashFile(dataPath) : null;
+    stageDir = fs.mkdtempSync(path.join(backupRoot, ".pdf-chat-stage-"));
+    const stagedFiles = [];
+    for (const filename of RELEASE_FILES) {
+      const sourcePath = path.join(sourceRoot, filename);
+      const stagePath = path.join(stageDir, filename);
+      fileOps.copyFile(sourcePath, stagePath);
+      const sourceHash = fileOps.hashFile(sourcePath);
+      const stagedHash = fileOps.hashFile(stagePath);
+      if (sourceHash !== stagedHash) throw new Error(`staging hash verification failed for ${filename}`);
+      stagedFiles.push({ filename, sourceHash, stagePath });
+    }
+
+    const files = [];
+    for (const staged of stagedFiles) {
+      const targetPath = path.join(targetDir, staged.filename);
+      fileOps.copyFile(staged.stagePath, targetPath);
+      const targetHash = fileOps.hashFile(targetPath);
+      if (staged.sourceHash !== targetHash) {
+        throw new Error(`hash verification failed for ${staged.filename}`);
+      }
+      files.push({
+        filename: staged.filename,
+        sourceHash: staged.sourceHash,
+        targetHash,
+        status: "verified",
+      });
+    }
+
+    const dataHashAfter = fs.existsSync(dataPath) ? fileOps.hashFile(dataPath) : null;
+    if (dataHashBefore !== dataHashAfter) throw new Error("data.json changed during deployment");
+
+    return {
+      backupDir,
+      dataStatus: dataHashBefore === null ? "absent" : "preserved",
+      files,
+    };
+  } catch (error) {
+    const rollbackFailures = rollbackReleaseFiles(targetDir, backupDir, fileOps);
+    throw deploymentFailure(error, backupDir, rollbackFailures);
+  } finally {
+    if (stageDir) fs.rmSync(stageDir, { force: true, recursive: true });
+  }
 }
 
 function parseTarget(argv, environment) {
@@ -140,6 +270,7 @@ if (require.main === module) runCli();
 
 module.exports = {
   RELEASE_FILES,
+  canonicalizePotentialPath,
   defaultBackupRoot,
   deployRelease,
   isInside,

@@ -26,18 +26,7 @@ test("package scripts provide secret scanning, comprehensive verification, and v
   assert.equal(scripts.test, "node --test");
   assert.equal(scripts["scan:secrets"], "node scripts/secret-scan.js");
   assert.equal(scripts["verify:release"], "node scripts/verify-release.js");
-  assert.equal(
-    scripts.verify,
-    [
-      "npm run typecheck",
-      "npm run build",
-      "npm test",
-      "npm run scan:secrets",
-      "npm run verify:release",
-      "node --check main.js",
-      "git diff --check",
-    ].join(" && ")
-  );
+  assert.equal(scripts.verify, "node scripts/verify.js");
   assert.equal(scripts["deploy:local"], "npm run verify && node scripts/deploy-local.js");
 });
 
@@ -47,8 +36,12 @@ test("CI verifies pushes and pull requests on a supported Node LTS without crede
   assert.match(workflow, /push:/);
   assert.match(workflow, /pull_request:/);
   assert.match(workflow, /node-version:\s*["']?22["']?/);
+  assert.match(workflow, /fetch-depth:\s*0/);
   assert.match(workflow, /npm ci/);
   assert.match(workflow, /npm run verify/);
+  assert.match(workflow, /VERIFY_BASE_SHA/);
+  assert.match(workflow, /github\.event\.pull_request\.base\.sha/);
+  assert.match(workflow, /github\.event\.before/);
   assert.doesNotMatch(workflow, /secrets\.|API_KEY|endpoint:|model:/i);
 });
 

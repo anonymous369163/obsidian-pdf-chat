@@ -9,6 +9,8 @@ const PLACEHOLDERS = new Set([
   "EXAMPLE",
   "PLACEHOLDER",
   "REPLACE_ME",
+  "SK-...",
+  "SK-YOUR_API_KEY_PLACEHOLDER",
   "YOUR_API_KEY",
   "YOUR_API_TOKEN",
 ]);
@@ -19,14 +21,11 @@ function normalizeFilePath(filePath, root) {
 }
 
 function isPlaceholder(value) {
-  const normalized = value.trim().replace(/^<|>$/g, "").toUpperCase();
-  return (
-    normalized === "" ||
-    normalized.includes("...") ||
-    PLACEHOLDERS.has(normalized) ||
-    normalized.startsWith("YOUR_") ||
-    normalized.endsWith("_HERE")
-  );
+  let normalized = value.trim().toUpperCase();
+  if (normalized.startsWith("<") && normalized.endsWith(">")) {
+    normalized = normalized.slice(1, -1).trim();
+  }
+  return normalized === "" || PLACEHOLDERS.has(normalized);
 }
 
 function lineNumberAt(text, index) {
@@ -35,6 +34,14 @@ function lineNumberAt(text, index) {
     if (text.charCodeAt(position) === 10) line += 1;
   }
   return line;
+}
+
+function isPackageLockDependencyVersion(file, fieldName, value) {
+  return (
+    path.basename(file).toLowerCase() === "package-lock.json" &&
+    fieldName.includes("-") &&
+    /^[~^]?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(value.trim())
+  );
 }
 
 function scanText(text, filePath) {
@@ -51,18 +58,21 @@ function scanText(text, filePath) {
   }
 
   const literalPattern =
-    /(?:["'`]\s*)?\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|secret|token)\b(?:\s*["'`])?\s*[:=]\s*(["'`])([^"'`\r\n]*)\1/gi;
+    /(?:^|[^\w$-])(?:["'`]\s*)?([A-Za-z_$][A-Za-z0-9_$-]*(?:key|token|secret|password|credential)[A-Za-z0-9_$-]*)(?:\s*["'`])?\s*[:=]\s*(["'`])([^"'`\r\n]*)\2/gim;
   for (const match of text.matchAll(literalPattern)) {
-    if (!isPlaceholder(match[2])) addFinding(match.index, "secret.api-key-literal");
+    if (!isPlaceholder(match[3]) && !isPackageLockDependencyVersion(file, match[1], match[3])) {
+      addFinding(match.index + match[0].indexOf(match[1]), "secret.api-key-literal");
+    }
   }
 
-  const bearerPattern = /\bBearer\s+([A-Za-z0-9._~+/=-]{16,})\b/g;
+  const bearerPattern =
+    /\bBearer[ \t]+([A-Za-z0-9._~+/=-]{11,}[A-Za-z0-9_=])(?=$|[\s"'`,;)\]}])/gim;
   for (const match of text.matchAll(bearerPattern)) {
     if (!isPlaceholder(match[1])) addFinding(match.index, "secret.bearer-token");
   }
 
   const providerPattern =
-    /\b(?:sk-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|AIza[A-Za-z0-9_-]{20,})\b/g;
+    /\b(?:sk-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|AIza[A-Za-z0-9_-]{20,})\b/gi;
   for (const match of text.matchAll(providerPattern)) {
     if (!isPlaceholder(match[0])) addFinding(match.index, "secret.provider-token");
   }

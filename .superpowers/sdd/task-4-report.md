@@ -83,3 +83,59 @@ No real installed plugin, private settings, deployment target, GitHub setting, o
 - `main.js` SHA-256: `5ee855ed1cddfb991a06d04b4f5149fd0e52d0ee99568a9f12b9eefcd3c2cfd6`
 - `manifest.json` SHA-256: `0a1ba667b8a46247c91b41dfe60e10f4843165b12329f3c4a80d9d2f2e7093c4`
 - `styles.css` SHA-256: `5a4d638e9806df1b7695257d4dc47e54044bac80035afca37ab3c35aac6af53c`
+
+## Review-fix follow-up
+
+### Additional RED evidence
+
+- `node --test tests/release-tooling.test.js` initially exited 1 with 8 passed and 14 failed. The failures reproduced permissive placeholders, missed 12-character Bearer detection, missed credential-bearing field names, lexical-only containment, linked/non-regular destinations, absent staging, and absent rollback.
+- `node --test tests/verify-tooling.test.js` initially exited 1 with 0 passed and 5 failed because the cross-platform verifier module did not exist. These tests cover stale-bundle rejection plus working-tree, staged, explicit-base commit-range, and fallback commit-range whitespace errors.
+- `node --test tests/release-contract.test.js` initially exited 1 with 4 passed and 2 failed because `package.json` still used the recursive shell chain and CI did not fetch history or pass a base SHA.
+- The first full verifier run reproduced a Windows-only `spawnSync` `EINVAL` error for direct command-shim execution. A focused test failed until npm was invoked through its JavaScript CLI entry point under Node.
+- Self-review RED tests proved that semver-looking text in a real API-key field must not be exempted and that an initial private-data hash failure must retain and surface the pre-deploy backup.
+
+### Canonical containment and preflight
+
+Deployment now resolves the repository and target with `realpath`, and resolves a not-yet-created backup root through its deepest existing real parent. It rejects a linked/junction target root, canonical targets inside the repository even when the lexical path is outside, canonical backup parents inside the repository, non-regular or linked manifests/release destinations, and non-regular or linked `data.json` before backup or target writes.
+
+The Windows test run used directory junctions for linked-root, linked-parent, and linked-destination cases. All link tests ran and passed; none were skipped.
+
+### Exact scanner rules
+
+Placeholder handling now normalizes and compares only against an exact allowlist. Ellipsis substrings and prefix/suffix heuristics no longer suppress findings. Exact allowlisted provider-shaped and Bearer placeholder forms remain accepted, while non-placeholder Bearer values of 12 characters are detected. Literal field scanning covers quoted and unquoted names containing key, token, secret, password, or credential. Package-lock dependency version syntax is narrowly distinguished from credential fields without exempting semver-looking values in an actual API-key field. Redacted diagnostics remain path, line, and rule ID only, and the staged repository/build scan passes.
+
+### Failure-atomic deployment
+
+After complete preflight, deployment creates the external backup, computes the initial private-data hash, copies all three source artifacts into an external staging directory, and verifies every staged SHA-256 before the first target mutation. Target copies are then verified individually.
+
+Any staging copy/hash, target copy/hash, initial/post private-data hash, or later deployment failure triggers restoration of all three release paths from the backup; paths absent before deployment are removed. The thrown error and CLI error include the retained backup path. Deterministic injected failures prove no mixed target after staging, target-copy, target-hash, and post-data failures, while synthetic `data.json` bytes remain unchanged.
+
+### Cross-platform verification and CI
+
+`npm run verify` now executes `scripts/verify.js`, which uses direct child processes rather than a recursive shell chain. It checks working and staged whitespace, resolves `VERIFY_BASE_SHA` through merge-base with remote/default-parent fallbacks for the committed range, runs strict typecheck, builds once while proving the pre-build `main.js` bytes were already current, then runs the full tests, secret scan, release consistency, and bundle syntax check. A stale build restores the original bundle and fails with an actionable message.
+
+CI fetches full history and passes the pull-request base SHA or push-before SHA. This makes stale bundles and committed whitespace errors fail in CI instead of being repaired or missed during verification.
+
+### Additional GREEN evidence
+
+- Focused release/security tooling: 24 passed, 0 failed, 0 skipped.
+- Focused verifier tooling: 6 passed, 0 failed, 0 skipped.
+- Focused release/CI contracts: 6 passed, 0 failed, 0 skipped.
+- Staged `npm run scan:secrets`: exit 0.
+- Fresh staged `npm run verify`: exit 0; 78 tests passed, 0 failed, 0 skipped. Typecheck, pre-build bundle freshness, production build, scanner, release metadata, syntax, and working/staged/commit-range whitespace checks all passed.
+
+### Review-fix files and self-review
+
+- Modified: `.github/workflows/verify.yml`, `package.json`, `scripts/deploy-local.js`, `scripts/secret-scan.js`, `tests/release-contract.test.js`, and `tests/release-tooling.test.js`.
+- Added: `scripts/verify.js` and `tests/verify-tooling.test.js`.
+- Appended: `.superpowers/sdd/task-4-report.md`.
+- No `src/` runtime behavior, dependencies, compiler settings, model defaults, or release metadata changed.
+- No real plugin, private data, remote branch, deployment target, or GitHub setting was accessed or mutated.
+
+### Review-fix SHAs
+
+- Base Git commit: `b6efa4b0f6f7301cb533675df3ad228c50d20162`
+- `main.js` SHA-256 (unchanged/current): `5ee855ed1cddfb991a06d04b4f5149fd0e52d0ee99568a9f12b9eefcd3c2cfd6`
+- `scripts/deploy-local.js` SHA-256: `375bebade6878dd611786fc53c0898e8ace16b9588404028e00e62a0bafb0cc5`
+- `scripts/secret-scan.js` SHA-256: `4bd5f46006572f3dafef0bfd3af0d507ae9017bf17fc32755b92506389137c1f`
+- `scripts/verify.js` SHA-256: `58edc16eb418e1b866af196e79eb44da9883c4f280083f37fd1015d2f8c8d025`

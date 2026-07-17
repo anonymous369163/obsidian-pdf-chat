@@ -11,7 +11,7 @@
     "test": "node --test",
     "scan:secrets": "node scripts/secret-scan.js",
     "verify:release": "node scripts/verify-release.js",
-    "verify": "npm run typecheck && npm run build && npm test && npm run scan:secrets && npm run verify:release && node --check main.js && git diff --check",
+    "verify": "node scripts/verify.js",
     "deploy:local": "npm run verify && node scripts/deploy-local.js"
   },
   "devDependencies": {

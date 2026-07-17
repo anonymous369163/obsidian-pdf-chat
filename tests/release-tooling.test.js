@@ -22,6 +22,47 @@ function writeReleaseFiles(directory, marker) {
   fs.writeFileSync(path.join(directory, "styles.css"), `/* ${marker} */\n`);
 }
 
+function createDirectoryLink(t, target, linkPath) {
+  try {
+    fs.symlinkSync(target, linkPath, process.platform === "win32" ? "junction" : "dir");
+    return true;
+  } catch (error) {
+    if (error && ["EPERM", "EACCES", "ENOTSUP"].includes(error.code)) {
+      t.skip(`directory links are unavailable: ${error.code}`);
+      return false;
+    }
+    throw error;
+  }
+}
+
+function snapshotReleaseFiles(targetDir) {
+  return new Map(
+    ["main.js", "manifest.json", "styles.css"].map((filename) => [
+      filename,
+      fs.existsSync(path.join(targetDir, filename))
+        ? fs.readFileSync(path.join(targetDir, filename))
+        : null,
+    ])
+  );
+}
+
+function assertReleaseSnapshot(targetDir, snapshot) {
+  for (const [filename, bytes] of snapshot) {
+    const filePath = path.join(targetDir, filename);
+    if (bytes === null) assert.equal(fs.existsSync(filePath), false, `${filename} must remain absent`);
+    else assert.deepEqual(fs.readFileSync(filePath), bytes, `${filename} must be restored`);
+  }
+}
+
+function captureError(operation) {
+  try {
+    operation();
+  } catch (error) {
+    return error;
+  }
+  assert.fail("expected operation to throw");
+}
+
 test("secret scanner detects API-key literals, bearer tokens, provider tokens, and private keys", () => {
   const { scanText } = require("../scripts/secret-scan");
   const apiKeyValue = `synthetic-${"a".repeat(24)}`;
@@ -50,15 +91,72 @@ test("secret scanner detects API-key literals, bearer tokens, provider tokens, a
 
 test("secret scanner accepts empty values and explicit placeholders", () => {
   const { scanText } = require("../scripts/secret-scan");
+  const providerPlaceholder = `${["s", "k"].join("")}-YOUR_API_KEY_PLACEHOLDER`;
   const source = [
     'const apiKey = "";',
     'const backupApiKey = "YOUR_API_KEY";',
     'const accessToken = "REPLACE_ME";',
     'const authorization = "Bearer YOUR_API_TOKEN";',
-    'const exampleProviderKey = "sk-...";',
+    `const exampleProviderKey = ${JSON.stringify(providerPlaceholder)};`,
   ].join("\n");
 
   assert.deepEqual(scanText(source, "placeholder.js"), []);
+});
+
+test("secret scanner never treats ellipsis, prefix, or suffix heuristics as placeholders", () => {
+  const { scanText } = require("../scripts/secret-scan");
+  const ellipsisValue = ["prefix", "...", "suffix"].join("");
+  const heuristicValue = ["YOUR", "SECRET", "HERE"].join("_");
+  const source = [
+    `const apiKey = ${JSON.stringify(ellipsisValue)};`,
+    `const backupApiKey = ${JSON.stringify(heuristicValue)};`,
+  ].join("\n");
+
+  assert.deepEqual(
+    scanText(source, "not-placeholders.js").map((finding) => finding.ruleId),
+    ["secret.api-key-literal", "secret.api-key-literal"]
+  );
+});
+
+test("secret scanner detects a twelve-character non-placeholder Bearer credential", () => {
+  const { scanText } = require("../scripts/secret-scan");
+  const bearer = `${["Bear", "er"].join("")} ${"b".repeat(12)}`;
+
+  assert.deepEqual(
+    scanText(`const authorization = ${JSON.stringify(bearer)};`, "short-bearer.js").map(
+      (finding) => finding.ruleId
+    ),
+    ["secret.bearer-token"]
+  );
+});
+
+test("secret scanner rejects a semver-looking non-placeholder API-key value", () => {
+  const { scanText } = require("../scripts/secret-scan");
+  const value = ["1", "2", "3"].join(".");
+
+  assert.deepEqual(
+    scanText(`const apiKey = ${JSON.stringify(value)};`, "settings.js").map(
+      (finding) => finding.ruleId
+    ),
+    ["secret.api-key-literal"]
+  );
+});
+
+test("secret scanner detects literal fields containing key, token, secret, password, or credential", () => {
+  const { scanText } = require("../scripts/secret-scan");
+  const value = `synthetic-${"v".repeat(24)}`;
+  const source = [
+    `const clientSecret = ${JSON.stringify(value)};`,
+    `${JSON.stringify("databasePassword")}: ${JSON.stringify(value)},`,
+    `serviceCredential: ${JSON.stringify(value)},`,
+    `signingKeyId: ${JSON.stringify(value)},`,
+    `refreshTokenValue: ${JSON.stringify(value)},`,
+  ].join("\n");
+
+  assert.deepEqual(
+    scanText(source, "broad-fields.js").map((finding) => finding.ruleId),
+    Array(5).fill("secret.api-key-literal")
+  );
 });
 
 test("secret scanner detects non-empty API keys under quoted object fields", () => {
@@ -189,4 +287,301 @@ test("local deployment refuses a target inside the repository before writing any
   );
   assert.deepEqual(fs.readFileSync(path.join(targetDir, "main.js")), targetBefore);
   assert.equal(fs.existsSync(backupRoot), false);
+});
+
+test("local deployment rejects a linked target root before writing anything", (t) => {
+  const { deployRelease } = require("../scripts/deploy-local");
+  const root = makeTempDirectory(t);
+  const sourceRoot = path.join(root, "source");
+  const realTarget = path.join(root, "real-target");
+  const linkedTarget = path.join(root, "linked-target");
+  const backupRoot = path.join(root, "backups");
+  writeReleaseFiles(sourceRoot, "new-release");
+  writeReleaseFiles(realTarget, "old-release");
+  if (!createDirectoryLink(t, realTarget, linkedTarget)) return;
+  const before = snapshotReleaseFiles(realTarget);
+
+  assert.throws(
+    () => deployRelease({ sourceRoot, targetDir: linkedTarget, backupRoot }),
+    /target directory must be a real directory, not a link/
+  );
+  assertReleaseSnapshot(realTarget, before);
+  assert.equal(fs.existsSync(backupRoot), false);
+});
+
+test("local deployment rejects an outside lexical target that resolves inside the repository", (t) => {
+  const { deployRelease } = require("../scripts/deploy-local");
+  const root = makeTempDirectory(t);
+  const sourceRoot = path.join(root, "source");
+  const internalTarget = path.join(sourceRoot, "internal-target");
+  const linkedParent = path.join(root, "linked-repository");
+  const backupRoot = path.join(root, "backups");
+  writeReleaseFiles(sourceRoot, "new-release");
+  writeReleaseFiles(internalTarget, "old-release");
+  if (!createDirectoryLink(t, sourceRoot, linkedParent)) return;
+  const before = snapshotReleaseFiles(internalTarget);
+
+  assert.throws(
+    () => deployRelease({ sourceRoot, targetDir: path.join(linkedParent, "internal-target"), backupRoot }),
+    /target directory must be outside the repository/
+  );
+  assertReleaseSnapshot(internalTarget, before);
+  assert.equal(fs.existsSync(backupRoot), false);
+});
+
+test("local deployment rejects a backup parent that resolves inside the repository", (t) => {
+  const { deployRelease } = require("../scripts/deploy-local");
+  const root = makeTempDirectory(t);
+  const sourceRoot = path.join(root, "source");
+  const targetDir = path.join(root, "target");
+  const linkedParent = path.join(root, "linked-repository");
+  writeReleaseFiles(sourceRoot, "new-release");
+  writeReleaseFiles(targetDir, "old-release");
+  fs.mkdirSync(path.join(sourceRoot, "internal-backups"));
+  if (!createDirectoryLink(t, sourceRoot, linkedParent)) return;
+  const before = snapshotReleaseFiles(targetDir);
+
+  assert.throws(
+    () =>
+      deployRelease({
+        sourceRoot,
+        targetDir,
+        backupRoot: path.join(linkedParent, "internal-backups"),
+      }),
+    /backup directory must be outside the repository/
+  );
+  assertReleaseSnapshot(targetDir, before);
+  assert.deepEqual(fs.readdirSync(path.join(sourceRoot, "internal-backups")), []);
+});
+
+test("local deployment rejects a non-regular target manifest before writing anything", (t) => {
+  const { deployRelease } = require("../scripts/deploy-local");
+  const root = makeTempDirectory(t);
+  const sourceRoot = path.join(root, "source");
+  const targetDir = path.join(root, "target");
+  const backupRoot = path.join(root, "backups");
+  writeReleaseFiles(sourceRoot, "new-release");
+  writeReleaseFiles(targetDir, "old-release");
+  fs.rmSync(path.join(targetDir, "manifest.json"));
+  fs.mkdirSync(path.join(targetDir, "manifest.json"));
+
+  assert.throws(
+    () => deployRelease({ sourceRoot, targetDir, backupRoot }),
+    /target manifest must be a regular file and not a link/
+  );
+  assert.equal(fs.existsSync(backupRoot), false);
+});
+
+test("local deployment rejects a linked release destination before writing anything", (t) => {
+  const { deployRelease } = require("../scripts/deploy-local");
+  const root = makeTempDirectory(t);
+  const sourceRoot = path.join(root, "source");
+  const targetDir = path.join(root, "target");
+  const externalDirectory = path.join(root, "external-directory");
+  const backupRoot = path.join(root, "backups");
+  writeReleaseFiles(sourceRoot, "new-release");
+  writeReleaseFiles(targetDir, "old-release");
+  fs.mkdirSync(externalDirectory);
+  fs.rmSync(path.join(targetDir, "main.js"));
+  if (!createDirectoryLink(t, externalDirectory, path.join(targetDir, "main.js"))) return;
+
+  assert.throws(
+    () => deployRelease({ sourceRoot, targetDir, backupRoot }),
+    /target main.js must be a regular file and not a link/
+  );
+  assert.equal(fs.existsSync(backupRoot), false);
+  assert.deepEqual(fs.readdirSync(externalDirectory), []);
+});
+
+test("local deployment rejects non-regular private data before writing anything", (t) => {
+  const { deployRelease } = require("../scripts/deploy-local");
+  const root = makeTempDirectory(t);
+  const sourceRoot = path.join(root, "source");
+  const targetDir = path.join(root, "target");
+  const backupRoot = path.join(root, "backups");
+  writeReleaseFiles(sourceRoot, "new-release");
+  writeReleaseFiles(targetDir, "old-release");
+  fs.mkdirSync(path.join(targetDir, "data.json"));
+  const before = snapshotReleaseFiles(targetDir);
+
+  assert.throws(
+    () => deployRelease({ sourceRoot, targetDir, backupRoot }),
+    /target data.json must be a regular file and not a link/
+  );
+  assertReleaseSnapshot(targetDir, before);
+  assert.equal(fs.existsSync(backupRoot), false);
+});
+
+test("local deployment stages and hashes every release file before target mutation", (t) => {
+  const { deployRelease } = require("../scripts/deploy-local");
+  const root = makeTempDirectory(t);
+  const sourceRoot = path.join(root, "source");
+  const targetDir = path.join(root, "target");
+  const backupRoot = path.join(root, "backups");
+  writeReleaseFiles(sourceRoot, "new-release");
+  writeReleaseFiles(targetDir, "old-release");
+  const before = snapshotReleaseFiles(targetDir);
+  let injected = false;
+
+  const error = captureError(() =>
+    deployRelease({
+      sourceRoot,
+      targetDir,
+      backupRoot,
+      fileOps: {
+        copyFile(source, destination) {
+          const destinationIsTarget = path.dirname(path.resolve(destination)) === path.resolve(targetDir);
+          if (!injected && path.basename(source) === "styles.css" && !destinationIsTarget) {
+            injected = true;
+            throw new Error("injected staging failure");
+          }
+          fs.copyFileSync(source, destination);
+        },
+      },
+    })
+  );
+
+  assert.match(error.message, /injected staging failure/);
+  assert.match(error.message, /backup:/i);
+  assert.ok(fs.existsSync(error.backupDir));
+  assertReleaseSnapshot(targetDir, before);
+});
+
+test("local deployment rolls back every release file after a target copy failure", (t) => {
+  const { deployRelease } = require("../scripts/deploy-local");
+  const root = makeTempDirectory(t);
+  const sourceRoot = path.join(root, "source");
+  const targetDir = path.join(root, "target");
+  const backupRoot = path.join(root, "backups");
+  writeReleaseFiles(sourceRoot, "new-release");
+  writeReleaseFiles(targetDir, "old-release");
+  const privateBytes = Buffer.from(JSON.stringify({ conversation: "unchanged" }));
+  fs.writeFileSync(path.join(targetDir, "data.json"), privateBytes);
+  const before = snapshotReleaseFiles(targetDir);
+  let injected = false;
+
+  const error = captureError(() =>
+    deployRelease({
+      sourceRoot,
+      targetDir,
+      backupRoot,
+      fileOps: {
+        copyFile(source, destination) {
+          if (!injected && path.resolve(destination) === path.resolve(targetDir, "styles.css")) {
+            injected = true;
+            throw new Error("injected target copy failure");
+          }
+          fs.copyFileSync(source, destination);
+        },
+      },
+    })
+  );
+
+  assert.match(error.message, /injected target copy failure/);
+  assert.match(error.message, /backup:/i);
+  assert.ok(fs.existsSync(error.backupDir));
+  assertReleaseSnapshot(targetDir, before);
+  assert.deepEqual(fs.readFileSync(path.join(targetDir, "data.json")), privateBytes);
+});
+
+test("local deployment rolls back every release file after target hash verification fails", (t) => {
+  const { deployRelease, sha256File } = require("../scripts/deploy-local");
+  const root = makeTempDirectory(t);
+  const sourceRoot = path.join(root, "source");
+  const targetDir = path.join(root, "target");
+  const backupRoot = path.join(root, "backups");
+  writeReleaseFiles(sourceRoot, "new-release");
+  writeReleaseFiles(targetDir, "old-release");
+  const before = snapshotReleaseFiles(targetDir);
+
+  const error = captureError(() =>
+    deployRelease({
+      sourceRoot,
+      targetDir,
+      backupRoot,
+      fileOps: {
+        hashFile(filePath) {
+          if (path.resolve(filePath) === path.resolve(targetDir, "styles.css")) return "0".repeat(64);
+          return sha256File(filePath);
+        },
+      },
+    })
+  );
+
+  assert.match(error.message, /hash verification failed for styles.css/);
+  assert.match(error.message, /backup:/i);
+  assertReleaseSnapshot(targetDir, before);
+});
+
+test("local deployment rolls back release files after post-deploy data verification fails", (t) => {
+  const { deployRelease, sha256File } = require("../scripts/deploy-local");
+  const root = makeTempDirectory(t);
+  const sourceRoot = path.join(root, "source");
+  const targetDir = path.join(root, "target");
+  const backupRoot = path.join(root, "backups");
+  writeReleaseFiles(sourceRoot, "new-release");
+  writeReleaseFiles(targetDir, "old-release");
+  const dataPath = path.join(targetDir, "data.json");
+  const privateBytes = Buffer.from(JSON.stringify({ conversation: "unchanged" }));
+  fs.writeFileSync(dataPath, privateBytes);
+  const before = snapshotReleaseFiles(targetDir);
+  let dataHashCalls = 0;
+
+  const error = captureError(() =>
+    deployRelease({
+      sourceRoot,
+      targetDir,
+      backupRoot,
+      fileOps: {
+        hashFile(filePath) {
+          if (path.resolve(filePath) === path.resolve(dataPath)) {
+            dataHashCalls += 1;
+            if (dataHashCalls === 2) return "f".repeat(64);
+          }
+          return sha256File(filePath);
+        },
+      },
+    })
+  );
+
+  assert.match(error.message, /data.json changed during deployment/);
+  assert.match(error.message, /backup:/i);
+  assertReleaseSnapshot(targetDir, before);
+  assert.deepEqual(fs.readFileSync(dataPath), privateBytes);
+});
+
+test("local deployment retains a backup when the initial private-data hash fails", (t) => {
+  const { deployRelease } = require("../scripts/deploy-local");
+  const root = makeTempDirectory(t);
+  const sourceRoot = path.join(root, "source");
+  const targetDir = path.join(root, "target");
+  const backupRoot = path.join(root, "backups");
+  writeReleaseFiles(sourceRoot, "new-release");
+  writeReleaseFiles(targetDir, "old-release");
+  const dataPath = path.join(targetDir, "data.json");
+  const privateBytes = Buffer.from(JSON.stringify({ conversation: "unchanged" }));
+  fs.writeFileSync(dataPath, privateBytes);
+  const before = snapshotReleaseFiles(targetDir);
+
+  const error = captureError(() =>
+    deployRelease({
+      sourceRoot,
+      targetDir,
+      backupRoot,
+      fileOps: {
+        hashFile(filePath) {
+          if (path.resolve(filePath) === path.resolve(dataPath)) {
+            throw new Error("injected initial data hash failure");
+          }
+          return "unused";
+        },
+      },
+    })
+  );
+
+  assert.match(error.message, /injected initial data hash failure/);
+  assert.match(error.message, /backup:/i);
+  assert.ok(fs.existsSync(error.backupDir));
+  assertReleaseSnapshot(targetDir, before);
+  assert.deepEqual(fs.readFileSync(dataPath), privateBytes);
 });
