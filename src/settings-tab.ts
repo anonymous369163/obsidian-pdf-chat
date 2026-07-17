@@ -139,6 +139,18 @@ export class PDFChatSettingTab extends PluginSettingTab {
       })
     );
     new Setting(containerEl)
+      .setName("继续对话使用的模型")
+      .setDesc("留空时优先选择 id、模型名或显示名称中包含 GLM 的模型，然后回退到默认模型。")
+      .addDropdown((dropdown) => {
+        dropdown.addOption("", "自动（优先 GLM）");
+        this.plugin.settings.models.forEach((model) => dropdown.addOption(model.id, model.name));
+        dropdown.setValue(this.plugin.settings.continueModelId);
+        dropdown.onChange(async (value) => {
+          this.plugin.settings.continueModelId = value;
+          await this.plugin.saveSettings();
+        });
+      });
+    new Setting(containerEl)
       .setName("系统提示词")
       .setDesc("会自动附加选中的原文片段在其后")
       .addTextArea((text) => {
@@ -151,6 +163,27 @@ export class PDFChatSettingTab extends PluginSettingTab {
   }
 
   private renderTranslationSection(containerEl: HTMLElement): void {
+    new Setting(containerEl)
+      .setName("翻译使用的模型")
+      .setDesc("留空时优先选择 id、模型名或显示名称中包含 DeepSeek 的模型，然后回退到默认模型。")
+      .addDropdown((dropdown) => {
+        dropdown.addOption("", "自动（优先 DeepSeek）");
+        this.plugin.settings.models.forEach((model) => dropdown.addOption(model.id, model.name));
+        dropdown.setValue(this.plugin.settings.translateModelId);
+        dropdown.onChange(async (value) => {
+          this.plugin.settings.translateModelId = value;
+          await this.plugin.saveSettings();
+        });
+      });
+    new Setting(containerEl)
+      .setName("划词后自动出现「译」悬浮图标")
+      .setDesc("仅在活动视图是 PDF 且选区非空时显示；点击后打开新弹窗并自动翻译。")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.quickTranslateMarkerEnabled).onChange(async (value) => {
+          this.plugin.settings.quickTranslateMarkerEnabled = value;
+          await this.plugin.saveSettings();
+        })
+      );
     new Setting(containerEl)
       .setName("翻译目标语言")
       .setDesc("用于弹窗中的选区翻译，例如 zh-CN、en 或 ja")

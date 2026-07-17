@@ -30,7 +30,7 @@ export function createPDFChatModalServices(
   };
   const compatibility: PDFChatModalServices = {
     conversations: {
-      getKey: (file, selectedText) => plugin.getConversationKey(file, selectedText),
+      getKey: (file, selectedText, kind) => plugin.getConversationKey(file, selectedText, kind),
       get: (key) => plugin.getConversation(key),
       save: (key, messages) => plugin.saveConversation(key, messages),
       clear: (key) => plugin.clearConversation(key),
@@ -49,6 +49,8 @@ export function createPDFChatModalServices(
     llm,
     models: {
       get: (id) => plugin.getModelProfile(id),
+      resolveTranslateId: () => plugin.resolveTranslateModelId(),
+      resolveContinueId: () => plugin.resolveContinueModelId(),
     },
     actions: plugin.actionRegistry || createResearchActionRegistry(),
     translations: plugin.translationService || new TranslationService(llm),

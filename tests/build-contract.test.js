@@ -23,7 +23,9 @@ test("TypeScript sources build the Obsidian-compatible root bundle through expli
     "src/llm-transport.ts",
     "src/paper-context.ts",
     "src/actions.ts",
+    "src/model-routing.ts",
     "src/pdf-chat-modal.ts",
+    "src/quick-translate-marker.ts",
     "src/settings-tab.ts",
   ]) {
     assert.ok(fs.existsSync(path.join(projectRoot, relativePath)), `expected ${relativePath}`);
@@ -36,7 +38,7 @@ test("TypeScript sources build the Obsidian-compatible root bundle through expli
   assert.match(buildConfig, /format:\s*['"]cjs['"]/);
 
   const bundle = fs.readFileSync(path.join(projectRoot, "main.js"), "utf8");
-  assert.match(bundle, /^\/\/ PDF Chat 0\.5\.0$/m);
+  assert.match(bundle, /^\/\/ PDF Chat 0\.7\.0$/m);
   assert.match(bundle, /require\(["']obsidian["']\)/);
   assert.doesNotMatch(bundle, /require\(["']typescript["']\)/);
 });

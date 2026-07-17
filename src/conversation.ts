@@ -1,4 +1,4 @@
-import type { ConversationHistory, ConversationMessage } from "./types";
+import type { ConversationHistory, ConversationKind, ConversationMessage } from "./types";
 
 export function cleanSelectionText(raw: string): string {
   return raw
@@ -51,9 +51,16 @@ export function normalizeConversationHistories(saved: unknown): Record<string, C
   return normalized;
 }
 
-export function getConversationKey(pdfFile: { path?: string } | null, contextText: string): string {
-  if (pdfFile && typeof pdfFile.path === "string" && pdfFile.path) return `pdf:${pdfFile.path}`;
-  return `selection:${stableConversationHash(cleanSelectionText(contextText || ""))}`;
+export function getConversationKey(
+  pdfFile: { path?: string } | null,
+  contextText: string,
+  kind: ConversationKind = "chat"
+): string {
+  const chatKey =
+    pdfFile && typeof pdfFile.path === "string" && pdfFile.path
+      ? `pdf:${pdfFile.path}`
+      : `selection:${stableConversationHash(cleanSelectionText(contextText || ""))}`;
+  return kind === "translate" ? `translate:${chatKey}` : chatKey;
 }
 
 export interface ConversationSettings {

@@ -25,6 +25,9 @@ export const DEFAULT_SETTINGS = {
   // 记住上一次对话用的模型/阅读模式,下次打开弹窗直接沿用,不用每次重新选。
   lastModelId: "",
   lastPresetId: "",
+  quickTranslateMarkerEnabled: true,
+  translateModelId: "",
+  continueModelId: "",
   systemPrompt:
     "你是我的阅读助手。请结合下面提供的原文片段回答我的问题。\n" +
     "1. 优先基于原文片段回答,不要脱离它另起炉灶。\n" +

@@ -9,14 +9,20 @@ import {
   normalizeConversationMessages,
 } from "./conversation";
 import { OpenAICompatibleTransport } from "./llm-transport";
+import { resolveContinueModelId, resolveTranslateModelId } from "./model-routing";
 import { getActivePdfFile, PaperContextService } from "./paper-context";
 import { createPDFChatModalServices } from "./modal-services";
 import { PDFChatModal } from "./pdf-chat-modal";
+import {
+  QuickTranslateMarker,
+  type QuickTranslateOpenRequest,
+} from "./quick-translate-marker";
 import { enqueueSettingsSave, migrateSettings } from "./settings";
 import { PDFChatSettingTab } from "./settings-tab";
 import { TranslationService } from "./translation";
 import type {
   ConversationMessage,
+  ConversationKind,
   DocChunksEntry,
   DocSummaryEntry,
   LlmCompatibilityOptions,
@@ -46,6 +52,7 @@ export {
 } from "./conversation";
 export { DEFAULT_SETTINGS, LEGACY_0_4_0_TRANSLATE_PROMPT } from "./default-settings";
 export { OpenAICompatibleTransport } from "./llm-transport";
+export { resolveContinueModelId, resolveTranslateModelId } from "./model-routing";
 export {
   bm25Retrieve,
   bm25RetrieveMulti,
@@ -58,6 +65,7 @@ export {
 } from "./paper-context";
 export { createPDFChatModalServices } from "./modal-services";
 export { PDFChatModal } from "./pdf-chat-modal";
+export { QuickTranslateMarker } from "./quick-translate-marker";
 export { migrateSettings } from "./settings";
 export { buildTranslationMessages, splitTranslationChunks, TranslationService } from "./translation";
 export type { LlmRequest, PaperContext, ResearchAction } from "./types";
@@ -71,6 +79,7 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
   translationService?: TranslationOperations;
   actionRegistry?: ActionRegistry;
   modalServices?: PDFChatModalServices;
+  quickTranslateMarker?: QuickTranslateMarker;
 
   async onload(): Promise<void> {
     this._saveQueue = Promise.resolve();
@@ -94,7 +103,7 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
     this.actionRegistry = createResearchActionRegistry();
     this.modalServices = createPDFChatModalServices(this, {
       conversations: {
-        getKey: (file, selectedText) => getConversationKey(file, selectedText),
+        getKey: (file, selectedText, kind) => getConversationKey(file, selectedText, kind),
         get: (key) => this.conversationStore!.get(key),
         save: (key, messages) => this.conversationStore!.save(key, messages),
         clear: (key) => this.conversationStore!.clear(key),
@@ -110,7 +119,11 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
           this.paperContextService!.retrieveContext(chunks, queries, topK),
       },
       llm: { chat: (request) => this.llmTransport!.chat(request) },
-      models: { get: (id) => this.getModelProfile(id) },
+      models: {
+        get: (id) => this.getModelProfile(id),
+        resolveTranslateId: () => this.resolveTranslateModelId(),
+        resolveContinueId: () => this.resolveContinueModelId(),
+      },
       actions: this.actionRegistry,
       translations: this.translationService,
     });
@@ -129,6 +142,25 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
       hotkeys: [{ modifiers: ["Mod"], key: "Q" }],
       callback: () => this.openChatModal(false),
     });
+
+    this.quickTranslateMarker = new QuickTranslateMarker({
+      isEnabled: () => this.settings.quickTranslateMarkerEnabled,
+      getActivePdfFile: () => getActivePdfFile(this.app),
+      openModal: (request) => this.openQuickTranslateModal(request),
+    });
+    if (typeof document !== "undefined") this.quickTranslateMarker.attach(document);
+    const workspace = this.app?.workspace;
+    workspace?.onLayoutReady(() => {
+      const eventRef = workspace.on("window-open", (workspaceWindow) => {
+        if (workspaceWindow?.doc) this.quickTranslateMarker?.attach(workspaceWindow.doc);
+      });
+      this.registerEvent(eventRef);
+    });
+  }
+
+  onunload(): void {
+    this.quickTranslateMarker?.destroy();
+    this.quickTranslateMarker = undefined;
   }
 
   // startFresh=true: 新开一份对话,不加载这个 PDF(或选区)之前保存的记录;
@@ -153,6 +185,23 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
     new PDFChatModal(this.app, this, paperContext, null, startFresh, this.modalServices).open();
   }
 
+  openQuickTranslateModal(request: QuickTranslateOpenRequest): void {
+    const paperContext = this.paperContextService!.createContext(
+      request.file,
+      request.selectedText,
+      getConversationKey(request.file, request.selectedText)
+    );
+    new PDFChatModal(
+      this.app,
+      this,
+      paperContext,
+      null,
+      request.startFresh,
+      this.modalServices,
+      request.autoTranslateOnOpen
+    ).open();
+  }
+
   async loadSettings(): Promise<void> {
     const { settings, needsSave } = migrateSettings(await this.loadData());
     this.settings = settings;
@@ -163,8 +212,12 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
     return enqueueSettingsSave(this);
   }
 
-  getConversationKey(pdfFile: TFile | null, contextText: string): string {
-    return getConversationKey(pdfFile, contextText);
+  getConversationKey(
+    pdfFile: TFile | null,
+    contextText: string,
+    kind: ConversationKind = "chat"
+  ): string {
+    return getConversationKey(pdfFile, contextText, kind);
   }
 
   getConversation(key: string): ConversationMessage[] {
@@ -200,6 +253,14 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
     file: TFile
   ): Promise<{ summary: string; fullLength: number; truncated: boolean }> {
     return this.paperContextService!.generateDocSummary(file);
+  }
+
+  resolveTranslateModelId(): string {
+    return resolveTranslateModelId(this.settings);
+  }
+
+  resolveContinueModelId(): string {
+    return resolveContinueModelId(this.settings);
   }
 
   async getOrCreateDocSummary(file: TFile, forceRefresh: boolean): Promise<DocSummaryEntry> {

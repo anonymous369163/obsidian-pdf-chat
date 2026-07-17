@@ -369,6 +369,43 @@ test("closing an empty fresh-started modal does not erase previously saved histo
   ]);
 });
 
+test("closing defensively saves chat and translation transcripts under separate keys", async () => {
+  const PluginClass = loadPluginModule();
+  const PDFChatModal = PluginClass.__test.PDFChatModal;
+  const saved = [];
+  const plugin = Object.create(PluginClass.prototype);
+  plugin.settings = {
+    activeModelId: "model-a",
+    conversationHistories: {},
+    lastModelId: "",
+    lastPresetId: "",
+    models: [{ id: "model-a" }],
+    promptPresets: [],
+    systemPrompt: "System instructions",
+  };
+  plugin.saveConversation = async (key, messages) => {
+    saved.push({ key, messages: plain(messages) });
+  };
+  const modal = new PDFChatModal({}, plugin, "Selection", { path: "demo.pdf" });
+  modal.transcript = [
+    { role: "user", content: "Chat question", status: "complete" },
+    { role: "assistant", content: "Chat answer", status: "complete" },
+  ];
+  modal.translateTranscript = [
+    { role: "user", content: "Translate selection", status: "complete" },
+    { role: "assistant", content: "Translation", status: "stopped" },
+  ];
+  modal.contentEl = { empty() {} };
+
+  modal.onClose();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(saved.map((entry) => entry.key).sort(), [
+    "pdf:demo.pdf",
+    "translate:pdf:demo.pdf",
+  ]);
+});
+
 test("modal records only finalized visible turns", async () => {
   const PluginClass = loadPluginModule();
   const PDFChatModal = PluginClass.__test.PDFChatModal;
@@ -500,6 +537,10 @@ test("resetConversation clears runtime and persisted state for the active key", 
     },
   };
   modal.fullTextAttached = true;
+  modal.translateTranscript = [
+    { role: "user", content: "Translate selection", status: "complete" },
+    { role: "assistant", content: "Translation", status: "complete" },
+  ];
 
   await modal.resetConversation();
 
@@ -509,6 +550,10 @@ test("resetConversation clears runtime and persisted state for the active key", 
   assert.equal(modal.messages[0].role, "system");
   assert.equal(modal.fullTextAttached, false);
   assert.equal(historyEmptied, true);
+  assert.deepEqual(plain(modal.translateTranscript), [
+    { role: "user", content: "Translate selection", status: "complete" },
+    { role: "assistant", content: "Translation", status: "complete" },
+  ]);
 });
 
 test("handleSubmit persists streamed partial text when generation is stopped", async () => {
@@ -800,16 +845,16 @@ test("onload registers separate new-conversation and continue-conversation hotke
   assert.deepEqual(plain(continued.hotkeys), [{ modifiers: ["Mod"], key: "Q" }]);
 });
 
-test("release metadata and CSS expose the exact 0.5.0 selectable-text contract", () => {
+test("release metadata and CSS expose the exact 0.7.0 selectable-text contract", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8"));
   const manifest = JSON.parse(fs.readFileSync(path.join(projectRoot, "manifest.json"), "utf8"));
   const versions = JSON.parse(fs.readFileSync(path.join(projectRoot, "versions.json"), "utf8"));
   const css = fs.readFileSync(path.join(projectRoot, "styles.css"), "utf8");
 
-  assert.equal(pkg.version, "0.5.0");
-  assert.equal(manifest.version, "0.5.0");
+  assert.equal(pkg.version, "0.7.0");
+  assert.equal(manifest.version, "0.7.0");
   assert.equal(manifest.minAppVersion, "1.4.0");
-  assert.equal(versions["0.5.0"], "1.4.0");
+  assert.equal(versions["0.7.0"], "1.4.0");
   assert.match(css, /\.pdf-chat-bubble[^}]*user-select:\s*text/s);
   assert.match(css, /-webkit-user-select:\s*text/);
   assert.match(css, /\.pdf-chat-bubble[^}]*cursor:\s*text/s);

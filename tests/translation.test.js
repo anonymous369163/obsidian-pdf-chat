@@ -239,7 +239,7 @@ test("keeps supplementary math characters intact in chunks and translation reque
   const source = "ab𝛼cd";
   const chunks = plain(splitTranslationChunks(source, 3));
 
-  assert.deepEqual(chunks, ["ab", "𝛼c", "d"]);
+  assert.deepEqual(chunks, ["ab𝛼", "cd"]);
   assert.equal(chunks.join(""), source);
   assert.ok(chunks.every((chunk) => !/[\uD800-\uDBFF]$/.test(chunk)));
   assert.ok(chunks.every((chunk) => !/^[\uDC00-\uDFFF]/.test(chunk)));
@@ -265,7 +265,7 @@ test("keeps supplementary math characters intact in chunks and translation reque
     modelProfile: { id: "model-a", name: "A", endpoint: "", apiKey: "", model: "a" },
   });
 
-  assert.deepEqual(requestedSources, ["ab", "𝛼c", "d"]);
+  assert.deepEqual(requestedSources, ["ab𝛼", "cd"]);
   assert.equal(requestedSources.join(""), source);
 });
 
@@ -314,11 +314,11 @@ test("translates chunks sequentially and combines streamed output in source orde
   );
 });
 
-test("fails on an empty middle chunk and does not start later chunks", async () => {
+test("retries an empty middle chunk once and continues in source order", async () => {
   const { TranslationService } = loadBundle();
   const calls = [];
   const updates = [];
-  const outputs = ["第一段", "", "不应调用"];
+  const outputs = ["第一段", "", "第二段", "第三段"];
   const service = new TranslationService({
     async chat(request) {
       calls.push(request.messages[1].content);
@@ -326,24 +326,24 @@ test("fails on an empty middle chunk and does not start later chunks", async () 
     },
   });
 
-  await assert.rejects(
-    service.translate({
-      source: "AAAA\n\nBBBB\n\nCCCC",
-      settings: {
-        targetLanguage: "zh-CN",
-        temperature: 0.1,
-        maxTokens: 4000,
-        chunkChars: 6,
-        additionalInstruction: "",
-      },
-      modelProfile: { id: "model-a", name: "A", endpoint: "", apiKey: "", model: "a" },
-      onChunk: (update) => updates.push(plain(update)),
-    }),
-    /empty translation output/i
-  );
+  const result = await service.translate({
+    source: "AAAA\n\nBBBB\n\nCCCC",
+    settings: {
+      targetLanguage: "zh-CN",
+      temperature: 0.1,
+      maxTokens: 4000,
+      chunkChars: 6,
+      additionalInstruction: "",
+    },
+    modelProfile: { id: "model-a", name: "A", endpoint: "", apiKey: "", model: "a" },
+    onChunk: (update) => updates.push(plain(update)),
+  });
 
-  assert.equal(calls.length, 2);
-  assert.equal(updates.at(-1).combinedText, "第一段");
+  assert.equal(calls.length, 4);
+  assert.equal(result.text, "第一段\n\n第二段\n\n第三段");
+  assert.deepEqual(plain(result.failedChunkIndexes), []);
+  assert.equal(result.stoppedEarly, false);
+  assert.equal(updates.length, 3);
 });
 
 test("checks cancellation before calls and after an ignoring LLM returns", async () => {
@@ -363,55 +363,57 @@ test("checks cancellation before calls and after an ignoring LLM returns", async
   const preAbortedService = new TranslationService({
     async chat() {
       preAbortedCalls += 1;
-      return "不应调用";
+      return "must not be used";
     },
   });
-  await assert.rejects(
-    preAbortedService.translate({
-      source: "AAAA\n\nBBBB",
-      settings,
-      modelProfile,
-      signal: alreadyAborted.signal,
-    }),
-    (error) => error?.name === "AbortError"
-  );
+  const preAbortedResult = await preAbortedService.translate({
+    source: "AAAA\n\nBBBB",
+    settings,
+    modelProfile,
+    signal: alreadyAborted.signal,
+  });
   assert.equal(preAbortedCalls, 0);
+  assert.equal(preAbortedResult.text, "");
+  assert.equal(preAbortedResult.stoppedEarly, true);
 
   const abortedAfterFirst = new AbortController();
   let ignoredSignalCalls = 0;
   const ignoringService = new TranslationService({
     async chat(request) {
       ignoredSignalCalls += 1;
-      request.onChunk?.("第一段", "第一段");
+      request.onChunk?.("ignored streamed text", "ignored streamed text");
       abortedAfterFirst.abort();
-      return "第一段";
+      return "ignored final text";
     },
   });
-  await assert.rejects(
-    ignoringService.translate({
-      source: "AAAA\n\nBBBB\n\nCCCC",
-      settings,
-      modelProfile,
-      signal: abortedAfterFirst.signal,
-    }),
-    (error) => error?.name === "AbortError"
-  );
+  const ignoredResult = await ignoringService.translate({
+    source: "AAAA\n\nBBBB\n\nCCCC",
+    settings,
+    modelProfile,
+    signal: abortedAfterFirst.signal,
+  });
   assert.equal(ignoredSignalCalls, 1);
+  assert.equal(ignoredResult.text, "");
+  assert.equal(ignoredResult.stoppedEarly, true);
 });
 
 function createModalHarness(bundle, translate, options = {}) {
   const PDFChatModal = bundle.PDFChatModal;
   const source = options.source || "Selected source";
   const persisted = [];
+  const resolvedModelIds = [];
   const plugin = {
     settings: {
       activeModelId: "model-a",
+      continueModelId: "",
       conversationHistories: {},
       lastModelId: "",
       lastPresetId: "",
       models: [{ id: "model-a", name: "A", endpoint: "", apiKey: "", model: "a" }],
+      quickTranslateMarkerEnabled: true,
       promptPresets: [],
       systemPrompt: "Generic chat prompt",
+      translateModelId: "",
       translation: {
         targetLanguage: "zh-CN",
         temperature: 0.1,
@@ -426,7 +428,8 @@ function createModalHarness(bundle, translate, options = {}) {
   const services = {
     actions: { async execute() {} },
     conversations: {
-      getKey: () => "selection:key",
+      getKey: (_file, _text, kind) =>
+        kind === "translate" ? "translate:selection:key" : "selection:key",
       get: () => [],
       async save(key, messages) {
         persisted.push({ key, messages: plain(messages) });
@@ -434,7 +437,14 @@ function createModalHarness(bundle, translate, options = {}) {
       async clear() {},
     },
     llm: { async chat() { throw new Error("Generic chat must not run"); } },
-    models: { get: () => plugin.settings.models[0] },
+    models: {
+      get: (id) => {
+        resolvedModelIds.push(id);
+        return plugin.settings.models[0];
+      },
+      resolveContinueId: () => "model-a",
+      resolveTranslateId: () => options.translateModelId || "model-a",
+    },
     papers: {
       async getOrCreateDocSummary() { return {}; },
       async getOrCreateDocChunks() { return {}; },
@@ -465,7 +475,7 @@ function createModalHarness(bundle, translate, options = {}) {
   };
   modal.inputEl = { value: "unrelated draft", focus() {} };
   modal.sendBtn = { setText() {}, toggleClass() {} };
-  return { bubbles, modal, persisted, source };
+  return { bubbles, modal, persisted, resolvedModelIds, source };
 }
 
 test("registered translation action invokes the dedicated translation task", async () => {
@@ -482,7 +492,7 @@ test("registered translation action invokes the dedicated translation task", asy
   assert.equal(taskCalls, 1);
 });
 
-test("persists partial aborted translation but drops empty failed translation", async () => {
+test("persists stopped translation separately but drops empty failed translation", async () => {
   const bundle = loadBundle();
   const stopped = createModalHarness(bundle, async (request) => {
     request.onChunk({
@@ -491,26 +501,30 @@ test("persists partial aborted translation but drops empty failed translation", 
       chunkText: "部分译文",
       combinedText: "部分译文",
     });
-    const error = new Error("Aborted");
-    error.name = "AbortError";
-    throw error;
+    return {
+      text: "部分译文",
+      chunkCount: 2,
+      stoppedEarly: true,
+      failedChunkIndexes: [],
+    };
   });
 
   await stopped.modal.runTranslation();
 
   const friendlyLabel = `翻译当前选区（${stopped.source.length} 字）`;
-  assert.deepEqual(plain(stopped.modal.transcript), [
+  assert.deepEqual(plain(stopped.modal.transcript), []);
+  assert.deepEqual(plain(stopped.modal.translateTranscript), [
     { role: "user", content: friendlyLabel, status: "complete" },
     { role: "assistant", content: "部分译文", status: "stopped" },
   ]);
   assert.deepEqual(stopped.persisted, [
-    { key: "selection:key", messages: plain(stopped.modal.transcript) },
+    { key: "translate:selection:key", messages: plain(stopped.modal.translateTranscript) },
   ]);
   assert.equal(stopped.bubbles[0].text, friendlyLabel);
-  assert.equal(stopped.bubbles[1].text, "部分译文\n\n[已停止生成]");
+  assert.match(stopped.bubbles[1].text, /部分译文/);
+  assert.match(stopped.bubbles[1].text, /已停止生成/);
   assert.match(JSON.stringify(stopped.modal.messages), /部分译文/);
-  assert.doesNotMatch(JSON.stringify(stopped.modal.messages.slice(1)), /<source_text>|Selected source/);
-  assert.doesNotMatch(JSON.stringify(stopped.modal.transcript), /<source_text>|Selected source/);
+  assert.doesNotMatch(JSON.stringify(stopped.modal.transcript), /部分译文|Selected source/);
 
   const failed = createModalHarness(bundle, async () => {
     throw new Error("translation endpoint failed");
@@ -520,14 +534,15 @@ test("persists partial aborted translation but drops empty failed translation", 
   await failed.modal.runTranslation();
 
   assert.deepEqual(plain(failed.modal.transcript), []);
+  assert.deepEqual(plain(failed.modal.translateTranscript), []);
   assert.deepEqual(plain(failed.modal.messages), originalMessages);
   assert.deepEqual(failed.persisted, []);
-  assert.equal(failed.bubbles[1].text, "翻译失败，请检查模型配置或稍后重试。");
+  assert.match(failed.bubbles[1].text, /翻译失败/);
 });
 
-test("modal persists prior output as stopped when a middle translation chunk is empty", async () => {
+test("modal persists fallback translation as complete under the translate key", async () => {
   const bundle = loadBundle();
-  const serviceOutputs = ["第一段", "", "不应调用"];
+  const serviceOutputs = ["第一段", "", "", "第三段"];
   let serviceCalls = 0;
   const service = new bundle.TranslationService({
     async chat() {
@@ -545,18 +560,20 @@ test("modal persists prior output as stopped when a middle translation chunk is 
   await harness.modal.runTranslation();
 
   const friendlyLabel = `翻译当前选区（${harness.source.length} 字）`;
-  assert.equal(serviceCalls, 2);
-  assert.deepEqual(plain(harness.modal.transcript), [
+  const expected = "第一段\n\n[翻译失败，保留原文]\nBBBB\n\n\n\n第三段";
+  assert.equal(serviceCalls, 4);
+  assert.deepEqual(plain(harness.modal.transcript), []);
+  assert.deepEqual(plain(harness.modal.translateTranscript), [
     { role: "user", content: friendlyLabel, status: "complete" },
-    { role: "assistant", content: "第一段", status: "stopped" },
+    { role: "assistant", content: expected, status: "complete" },
   ]);
-  assert.equal(harness.bubbles[1].text, "第一段\n\n[已停止生成]");
+  assert.equal(harness.bubbles[1].text, expected);
   assert.deepEqual(plain(harness.modal.messages.slice(-2)), [
     { role: "user", content: friendlyLabel },
-    { role: "assistant", content: "第一段" },
+    { role: "assistant", content: expected },
   ]);
   assert.deepEqual(harness.persisted, [
-    { key: "selection:key", messages: plain(harness.modal.transcript) },
+    { key: "translate:selection:key", messages: plain(harness.modal.translateTranscript) },
   ]);
 });
 
@@ -578,7 +595,7 @@ test("modal sanitizes translation endpoint errors that contain internal prompts"
   assert.deepEqual(failed.persisted, []);
 });
 
-test("completed translation replaces progress in one assistant bubble and stores visible messages", async () => {
+test("completed translation uses one bubble, runtime follow-up messages, and separate persistence", async () => {
   const bundle = loadBundle();
   let taskRequest = null;
   const completed = createModalHarness(bundle, async (request) => {
@@ -595,13 +612,19 @@ test("completed translation replaces progress in one assistant bubble and stores
       chunkText: "第二段",
       combinedText: "第一段\n\n第二段",
     });
-    return { text: "第一段\n\n第二段", chunkCount: 2 };
-  });
+    return {
+      text: "第一段\n\n第二段",
+      chunkCount: 2,
+      stoppedEarly: false,
+      failedChunkIndexes: [],
+    };
+  }, { translateModelId: "translation-model" });
 
   await completed.modal.runTranslation();
 
   const friendlyLabel = `翻译当前选区（${completed.source.length} 字）`;
   assert.equal(taskRequest.source, completed.source);
+  assert.deepEqual(completed.resolvedModelIds, ["translation-model"]);
   assert.equal(taskRequest.settings.targetLanguage, "zh-CN");
   assert.equal(completed.bubbles.length, 2);
   assert.equal(completed.bubbles[0].text, friendlyLabel);
@@ -611,16 +634,24 @@ test("completed translation replaces progress in one assistant bubble and stores
     { role: "user", content: friendlyLabel },
     { role: "assistant", content: "第一段\n\n第二段" },
   ]);
-  assert.deepEqual(plain(completed.modal.transcript), [
+  assert.deepEqual(plain(completed.modal.transcript), []);
+  assert.deepEqual(plain(completed.modal.translateTranscript), [
     { role: "user", content: friendlyLabel, status: "complete" },
     { role: "assistant", content: "第一段\n\n第二段", status: "complete" },
+  ]);
+  assert.deepEqual(completed.persisted, [
+    { key: "translate:selection:key", messages: plain(completed.modal.translateTranscript) },
   ]);
   assert.doesNotMatch(JSON.stringify(completed.persisted), /正在翻译|<source_text>/);
 });
 
-test("settings UI binds target language and additional translation instruction", () => {
+test("settings UI binds translation model, marker, target, and additional instruction", () => {
   const source = fs.readFileSync(path.join(projectRoot, "src", "settings-tab.ts"), "utf8");
   assert.match(source, /settings\.translation\.targetLanguage/);
   assert.match(source, /settings\.translation\.additionalInstruction/);
+  assert.match(source, /settings\.translateModelId/);
+  assert.match(source, /settings\.quickTranslateMarkerEnabled/);
+  assert.match(source, /settings\.continueModelId/);
   assert.doesNotMatch(source, /settings\.translatePrompt/);
+  assert.doesNotMatch(source, /settings\.translateChunkMaxChars/);
 });

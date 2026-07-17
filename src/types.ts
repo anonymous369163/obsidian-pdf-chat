@@ -84,7 +84,11 @@ export interface TranslationTaskRequest {
 export interface TranslationTaskResult {
   text: string;
   chunkCount: number;
+  stoppedEarly: boolean;
+  failedChunkIndexes: number[];
 }
+
+export type ConversationKind = "chat" | "translate";
 
 export interface PDFChatSettings {
   models: ModelProfile[];
@@ -95,6 +99,9 @@ export interface PDFChatSettings {
   fontScale: number;
   lastModelId: string;
   lastPresetId: string;
+  quickTranslateMarkerEnabled: boolean;
+  translateModelId: string;
+  continueModelId: string;
   systemPrompt: string;
   translation: TranslationSettings;
   summaryModelId: string;
@@ -145,7 +152,7 @@ export interface PdfChunk extends PdfPageText {
 }
 
 export interface ConversationOperations {
-  getKey(file: TFile | null, selectedText: string): string;
+  getKey(file: TFile | null, selectedText: string, kind?: ConversationKind): string;
   get(key: string): ConversationMessage[];
   save(key: string, messages: ConversationMessage[]): Promise<void>;
   clear(key: string): Promise<void>;
@@ -169,6 +176,8 @@ export interface TranslationOperations {
 
 export interface ModelOperations {
   get(id: string): ModelProfile;
+  resolveTranslateId(): string;
+  resolveContinueId(): string;
 }
 
 export interface ResearchActionOperations {
@@ -207,11 +216,13 @@ export interface PDFChatPluginApi extends Plugin {
   llmTransport?: LlmOperations;
   translationService?: TranslationOperations;
   saveSettings(): Promise<void>;
-  getConversationKey(file: TFile | null, contextText: string): string;
+  getConversationKey(file: TFile | null, contextText: string, kind?: ConversationKind): string;
   getConversation(key: string): ConversationMessage[];
   saveConversation(key: string, messages: ConversationMessage[]): Promise<void>;
   clearConversation(key: string): Promise<void>;
   getModelProfile(id: string): ModelProfile;
+  resolveTranslateModelId(): string;
+  resolveContinueModelId(): string;
   getOrCreateDocSummary(file: TFile, forceRefresh: boolean): Promise<DocSummaryEntry>;
   getOrCreateDocChunks(file: TFile, forceRefresh: boolean): Promise<DocChunksEntry>;
   planRagQueries(question: string): Promise<string[]>;

@@ -1,55 +1,47 @@
 import type {
   LlmMessage,
   LlmOperations,
-  ModelProfile,
   TranslationProgress,
   TranslationSettings,
   TranslationTaskRequest,
   TranslationTaskResult,
 } from "./types";
 
-function lastRegexBoundary(text: string, start: number, end: number, pattern: RegExp): number {
-  pattern.lastIndex = start;
+const FAILED_CHUNK_PREFIX = "[翻译失败，保留原文]";
+const GENERIC_TRANSLATION_FAILURE = "Translation failed for every chunk.";
+
+function isWhitespace(value: string): boolean {
+  return /^\s$/u.test(value);
+}
+
+function sentenceBoundary(points: string[], start: number, hardEnd: number): number {
+  const punctuation = new Set([".", "!", "?", "。", "！", "？"]);
+  const closers = new Set(['"', "'", "”", "’", "）", "]"]);
   let boundary = -1;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(text)) !== null) {
-    const candidate = match.index + match[0].length;
-    if (candidate > end) break;
-    if (candidate > start) boundary = candidate;
-    if (match[0].length === 0) pattern.lastIndex += 1;
+  for (let index = start; index < hardEnd; index += 1) {
+    if (!punctuation.has(points[index])) continue;
+    let after = index + 1;
+    while (after < hardEnd && closers.has(points[after])) after += 1;
+    if (after >= hardEnd || !isWhitespace(points[after])) continue;
+    while (after < hardEnd && isWhitespace(points[after])) after += 1;
+    boundary = after;
   }
   return boundary;
 }
 
-function findPreferredBoundary(source: string, start: number, hardEnd: number): number {
-  const paragraph = source.lastIndexOf("\n\n", hardEnd - 2);
-  if (paragraph >= start) return paragraph + 2;
-
-  const line = source.lastIndexOf("\n", hardEnd - 1);
-  if (line >= start) return line + 1;
-
-  const sentence = lastRegexBoundary(
-    source,
-    start,
-    hardEnd,
-    /[.!?。！？](?:["'”’）\]]*)\s+/g
-  );
-  if (sentence > start) return sentence;
-
+function preferredBoundary(points: string[], start: number, hardEnd: number): number {
+  for (let index = hardEnd - 2; index >= start; index -= 1) {
+    if (points[index] === "\n" && points[index + 1] === "\n") return index + 2;
+  }
   for (let index = hardEnd - 1; index >= start; index -= 1) {
-    if (/\s/.test(source[index])) return index + 1;
+    if (points[index] === "\n") return index + 1;
+  }
+  const sentence = sentenceBoundary(points, start, hardEnd);
+  if (sentence > start) return sentence;
+  for (let index = hardEnd - 1; index >= start; index -= 1) {
+    if (isWhitespace(points[index])) return index + 1;
   }
   return hardEnd;
-}
-
-function keepSurrogatePairTogether(source: string, start: number, end: number): number {
-  if (end <= start || end >= source.length) return end;
-  const previous = source.charCodeAt(end - 1);
-  const next = source.charCodeAt(end);
-  const splitsPair =
-    previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff;
-  if (!splitsPair) return end;
-  return end - 1 > start ? end - 1 : end + 1;
 }
 
 export function splitTranslationChunks(source: string, limit: number): string[] {
@@ -57,16 +49,15 @@ export function splitTranslationChunks(source: string, limit: number): string[] 
   if (!Number.isInteger(limit) || limit <= 0) {
     throw new RangeError("Translation chunk limit must be a positive integer");
   }
-  if (source.length <= limit) return [source];
+  const points = Array.from(source);
+  if (points.length <= limit) return [source];
 
   const chunks: string[] = [];
   let start = 0;
-  while (start < source.length) {
-    const hardEnd = Math.min(start + limit, source.length);
-    const preferredEnd =
-      hardEnd === source.length ? hardEnd : findPreferredBoundary(source, start, hardEnd);
-    const end = keepSurrogatePairTogether(source, start, preferredEnd);
-    chunks.push(source.slice(start, end));
+  while (start < points.length) {
+    const hardEnd = Math.min(start + limit, points.length);
+    const end = hardEnd === points.length ? hardEnd : preferredBoundary(points, start, hardEnd);
+    chunks.push(points.slice(start, end).join(""));
     start = end;
   }
   return chunks;
@@ -96,11 +87,33 @@ function combineTranslations(translations: string[]): string {
   return translations.filter((translation) => translation.trim().length > 0).join("\n\n");
 }
 
-function throwIfTranslationAborted(signal: AbortSignal | undefined): void {
-  if (!signal?.aborted) return;
-  const error = new Error("Translation aborted");
-  error.name = "AbortError";
-  throw error;
+function stoppedResult(
+  chunks: string[],
+  completed: string[],
+  failedChunkIndexes: number[]
+): TranslationTaskResult {
+  return {
+    text: combineTranslations(completed),
+    chunkCount: chunks.length,
+    stoppedEarly: true,
+    failedChunkIndexes: [...failedChunkIndexes],
+  };
+}
+
+function emitProgress(
+  request: TranslationTaskRequest,
+  chunkIndex: number,
+  chunkCount: number,
+  chunkText: string,
+  completed: string[]
+): void {
+  const progress: TranslationProgress = {
+    chunkIndex: chunkIndex + 1,
+    chunkCount,
+    chunkText,
+    combinedText: combineTranslations(completed),
+  };
+  request.onChunk?.(progress);
 }
 
 export class TranslationService {
@@ -108,46 +121,73 @@ export class TranslationService {
 
   async translate(request: TranslationTaskRequest): Promise<TranslationTaskResult> {
     const chunks = splitTranslationChunks(request.source, request.settings.chunkChars);
-    if (!chunks.length) return { text: "", chunkCount: 0 };
-    const completed: string[] = [];
+    if (!chunks.length) {
+      return {
+        text: "",
+        chunkCount: 0,
+        stoppedEarly: false,
+        failedChunkIndexes: [],
+      };
+    }
 
-    for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
-      throwIfTranslationAborted(request.signal);
-      let streamedChunk = "";
-      const translated = await this.llm.chat({
-        messages: buildTranslationMessages(chunks[chunkIndex], request.settings),
+    const completed: string[] = [];
+    const failedChunkIndexes: number[] = [];
+
+    const requestOnce = async (chunk: string): Promise<string> => {
+      return this.llm.chat({
+        messages: buildTranslationMessages(chunk, request.settings),
         modelProfile: request.modelProfile,
         signal: request.signal,
         stream: true,
         temperatureOverride: request.settings.temperature,
         maxTokensOverride: request.settings.maxTokens,
-        onChunk: (_piece, accumulatedText) => {
-          streamedChunk = accumulatedText;
-          request.onChunk?.({
-            chunkIndex: chunkIndex + 1,
-            chunkCount: chunks.length,
-            chunkText: accumulatedText,
-            combinedText: combineTranslations([...completed, accumulatedText]),
-          });
-        },
       });
-      throwIfTranslationAborted(request.signal);
-      const finalChunk = translated.trim();
-      if (!finalChunk) {
-        throw new Error(`Empty translation output for chunk ${chunkIndex + 1}/${chunks.length}`);
+    };
+
+    for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+      if (request.signal?.aborted) {
+        return stoppedResult(chunks, completed, failedChunkIndexes);
       }
-      if (finalChunk !== streamedChunk) {
-        request.onChunk?.({
-          chunkIndex: chunkIndex + 1,
-          chunkCount: chunks.length,
-          chunkText: finalChunk,
-          combinedText: combineTranslations([...completed, finalChunk]),
-        });
+
+      const chunk = chunks[chunkIndex];
+      let translated = "";
+      let failed = false;
+      try {
+        translated = (await requestOnce(chunk)).trim();
+        if (request.signal?.aborted) {
+          return stoppedResult(chunks, completed, failedChunkIndexes);
+        }
+        if (!translated) {
+          if (request.signal?.aborted) {
+            return stoppedResult(chunks, completed, failedChunkIndexes);
+          }
+          translated = (await requestOnce(chunk)).trim();
+          if (request.signal?.aborted) {
+            return stoppedResult(chunks, completed, failedChunkIndexes);
+          }
+          failed = !translated;
+        }
+      } catch {
+        if (request.signal?.aborted) {
+          return stoppedResult(chunks, completed, failedChunkIndexes);
+        }
+        failed = true;
       }
-      completed.push(finalChunk);
+
+      const output = failed ? `${FAILED_CHUNK_PREFIX}\n${chunk}` : translated;
+      if (failed) failedChunkIndexes.push(chunkIndex);
+      completed.push(output);
+      emitProgress(request, chunkIndex, chunks.length, output, completed);
     }
 
-    throwIfTranslationAborted(request.signal);
-    return { text: combineTranslations(completed), chunkCount: chunks.length };
+    if (failedChunkIndexes.length === chunks.length) {
+      throw new Error(GENERIC_TRANSLATION_FAILURE);
+    }
+    return {
+      text: combineTranslations(completed),
+      chunkCount: chunks.length,
+      stoppedEarly: false,
+      failedChunkIndexes,
+    };
   }
 }

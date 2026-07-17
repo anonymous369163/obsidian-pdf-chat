@@ -1,19 +1,21 @@
 # Obsidian PDF Chat
 
+Version 0.7.0 reconciles the typed research workbench with the quick-translation and model-routing behavior introduced in the live 0.6 release.
+
 PDF Chat turns an Obsidian PDF view into a compact research workbench. Select paper text, open the workbench, and ask questions without leaving the document. User and assistant messages are selectable and copyable, and the most recent conversation is restored per-PDF.
 
 ## Research workflow
 
 - Chat about the current selection with streaming responses and follow-up questions.
 - Run dedicated one-click academic translation on the selected passage.
+- Use the PDF-only quick-translate marker beside a non-empty selection to open a fresh modal and translate immediately.
 - Generate or reuse a paper summary for compact global context.
 - Read shorter papers in full or use local BM25 RAG for long-paper retrieval.
 - Switch model profiles and research prompts from the workbench.
+- Choose an independent translation model and continue model. Empty choices automatically prefer DeepSeek and GLM profiles, respectively, before falling back to the active model.
 - Stop an in-progress response, clear the current conversation, and resize or move the modal.
 
-The plugin registers commands for a fresh conversation and for continuing the saved conversation. Their default shortcuts are `Ctrl/Cmd + Alt + Q` and `Ctrl/Cmd + Q`, respectively.
-
-Online paper search is not implemented. PPT generation is not implemented. Those are possible future integrations, not current features.
+The plugin registers commands for a fresh conversation and for continuing the saved conversation. Their default shortcuts are `Ctrl/Cmd + Alt + Q` and `Ctrl/Cmd + Q`, respectively. Translation is available to immediate follow-up questions in the open modal, while separate translation history prevents it from replacing the academic chat restored by the continue command.
 
 ## Manual installation
 
@@ -29,7 +31,7 @@ Restart Obsidian or reload community plugins, then enable **PDF Chat**. Do not d
 
 Configure your own API keys, endpoints, and model profiles in **Settings → PDF Chat**. Public endpoint, API-key, and model defaults are empty; the project does not ship a credential or private provider configuration.
 
-Obsidian stores API keys, endpoints, model profiles, summaries, retrieval caches, and conversation text as local plaintext in the ignored `data.json` file. Never commit or share it. If a former locally hardcoded `main.js` was shared outside a trusted machine, rotate those provider keys before using them again.
+Obsidian stores API keys, endpoints, model profiles, summaries, retrieval caches, chat history, and separate translation history as local plaintext in the ignored `data.json` file. Never commit or share it. If a former locally hardcoded `main.js` was shared outside a trusted machine, rotate those provider keys before using them again.
 
 For public forks and release branches, enable [GitHub Secret Scanning and Push Protection](https://docs.github.com/en/code-security/secret-scanning/introduction/about-secret-scanning) as an additional safeguard.
 

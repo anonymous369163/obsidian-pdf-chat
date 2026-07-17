@@ -79,7 +79,9 @@ export class PDFChatModal extends Modal {
   private readonly contextText: string;
   private readonly pdfFile: TFile | null;
   readonly startFresh: boolean;
+  readonly autoTranslateOnOpen: boolean;
   readonly conversationKey: string;
+  readonly translateConversationKey: string;
   readonly hadExistingHistory: boolean;
   currentPresetId: string;
   currentModelId: string;
@@ -93,6 +95,7 @@ export class PDFChatModal extends Modal {
   fullTextForQA: string | null = null;
   fullTextAttached = false;
   transcript: ConversationMessage[];
+  translateTranscript: ConversationMessage[] = [];
   messages: LlmMessage[];
   isSending = false;
   abortController: AbortController | null = null;
@@ -120,7 +123,8 @@ export class PDFChatModal extends Modal {
     contextText: string | PaperContext,
     pdfFile: TFile | null,
     startFresh?: boolean,
-    services?: PDFChatModalServices
+    services?: PDFChatModalServices,
+    autoTranslateOnOpen?: boolean
   ) {
     super(app);
     this.plugin = plugin;
@@ -138,6 +142,7 @@ export class PDFChatModal extends Modal {
     this.contextText = paperContext.selectedText;
     this.pdfFile = paperContext.file || null;
     this.startFresh = !!startFresh;
+    this.autoTranslateOnOpen = !!autoTranslateOnOpen;
 
     const lastPresetId = this.plugin.settings.lastPresetId;
     this.currentPresetId =
@@ -146,16 +151,25 @@ export class PDFChatModal extends Modal {
         ? lastPresetId
         : "__default__";
 
-    const lastModelId = this.plugin.settings.lastModelId;
-    this.currentModelId =
-      lastModelId && this.plugin.settings.models.find((m) => m.id === lastModelId)
-        ? lastModelId
-        : this.plugin.settings.activeModelId;
+    if (this.startFresh) {
+      const lastModelId = this.plugin.settings.lastModelId;
+      this.currentModelId =
+        lastModelId && this.plugin.settings.models.find((m) => m.id === lastModelId)
+          ? lastModelId
+          : this.plugin.settings.activeModelId;
+    } else {
+      this.currentModelId = this.services.models.resolveContinueId();
+    }
 
     // 全文只需要在对话历史里出现一次:聊天接口是无状态的,每轮都会把 this.messages 整个重新发送,
     // 已经进过历史的第一轮全文会随着后续每轮继续被带上,不需要再重复拼接一份,否则每多聊一轮,
     // 实际发给模型的内容就多一份完整全文,输入越滚越大、越聊越慢、越聊越贵。
     this.conversationKey = paperContext.conversationKey;
+    this.translateConversationKey = this.services.conversations.getKey(
+      this.pdfFile,
+      this.contextText,
+      "translate"
+    );
     // “新开对话”按快捷键触发时不加载旧记录:这次会话从空白开始,只要发出第一条消息,
     // 旧的这份记录就会被 recordTranscriptTurn 整份替换掉(每个 key 只保留一份最近对话)。
     // 如果只是打开看看什么都没问就关闭,onClose 里的保存会因为 transcript 仍是空数组而跳过,
@@ -256,7 +270,8 @@ export class PDFChatModal extends Modal {
     } else if (this.startFresh && this.hadExistingHistory) {
       new Notice("已开始新对话(发出第一条消息后会替换掉上次保存的记录)");
     }
-    this.inputEl.focus();
+    if (this.autoTranslateOnOpen) this.handleTranslate();
+    else this.inputEl.focus();
   }
 
   private getDocumentName(): string {
@@ -419,6 +434,19 @@ export class PDFChatModal extends Modal {
     }
   }
 
+  async persistTranslationConversation(): Promise<boolean> {
+    try {
+      await this.services.conversations.save(
+        this.translateConversationKey,
+        this.translateTranscript
+      );
+      return true;
+    } catch (err) {
+      new Notice("保存翻译记录失败: " + errorMessage(err));
+      return false;
+    }
+  }
+
   async recordTranscriptTurn(
     question: string,
     answer: string,
@@ -430,6 +458,20 @@ export class PDFChatModal extends Modal {
       { role: "assistant", content: answer, status: status === "stopped" ? "stopped" : "complete" }
     );
     await this.persistConversation();
+    return true;
+  }
+
+  async recordTranslateTurn(
+    question: string,
+    answer: string,
+    status: ConversationMessage["status"]
+  ): Promise<boolean> {
+    if (typeof answer !== "string" || !answer.trim()) return false;
+    this.translateTranscript.push(
+      { role: "user", content: question, status: "complete" },
+      { role: "assistant", content: answer, status: status === "stopped" ? "stopped" : "complete" }
+    );
+    await this.persistTranslationConversation();
     return true;
   }
 
@@ -681,7 +723,7 @@ export class PDFChatModal extends Modal {
       const result = await this.services.translations.translate({
         source: this.contextText,
         settings: this.plugin.settings.translation,
-        modelProfile: this.services.models.get(this.currentModelId),
+        modelProfile: this.services.models.get(this.services.models.resolveTranslateId()),
         signal: this.abortController.signal,
         onChunk: (progress) => {
           fullText = progress.combinedText;
@@ -702,24 +744,29 @@ export class PDFChatModal extends Modal {
         return;
       }
 
-      loadingBubble.addClass("is-rendered");
-      await renderMarkdownInto(this.app, this.plugin, loadingBubble, fullText);
+      const status: ConversationMessage["status"] = result.stoppedEarly ? "stopped" : "complete";
+      if (result.stoppedEarly) {
+        loadingBubble.addClass("is-stopped");
+        loadingBubble.setText(fullText + "\n\n[已停止生成]");
+      } else {
+        loadingBubble.addClass("is-rendered");
+        await renderMarkdownInto(this.app, this.plugin, loadingBubble, fullText);
+      }
       this.messages.push(
         { role: "user", content: friendlyLabel },
         { role: "assistant", content: fullText }
       );
-      await this.recordTranscriptTurn(friendlyLabel, fullText, "complete");
+      await this.recordTranslateTurn(friendlyLabel, fullText, status);
     } catch (err) {
       loadingBubble.removeClass("is-loading");
-      if (fullText.trim()) {
+      if (isAbortError(err) && fullText.trim()) {
         loadingBubble.addClass("is-stopped");
-        if (!isAbortError(err)) loadingBubble.addClass("is-error");
         loadingBubble.setText(fullText + "\n\n[已停止生成]");
         this.messages.push(
           { role: "user", content: friendlyLabel },
           { role: "assistant", content: fullText }
         );
-        await this.recordTranscriptTurn(friendlyLabel, fullText, "stopped");
+        await this.recordTranslateTurn(friendlyLabel, fullText, "stopped");
       } else {
         loadingBubble.addClass("is-error");
         loadingBubble.setText("翻译失败，请检查模型配置或稍后重试。");
@@ -882,6 +929,9 @@ export class PDFChatModal extends Modal {
     // 直接关闭弹窗,却因为 this.transcript 一开始就是空数组而把上次保存的记录误清空。
     if (this.transcript.length) {
       void this.persistConversation();
+    }
+    if (this.translateTranscript.length) {
+      void this.persistTranslationConversation();
     }
     this.contentEl.empty();
   }

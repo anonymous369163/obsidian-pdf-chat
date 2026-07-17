@@ -3,7 +3,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-const RELEASE_VERSION = "0.5.0";
+const RELEASE_VERSION = "0.7.0";
 const MIN_APP_VERSION = "1.4.0";
 
 function readJson(root, filename) {
@@ -15,14 +15,18 @@ function verifyReleaseMetadata(root = process.cwd()) {
   const manifest = readJson(root, "manifest.json");
   const versions = readJson(root, "versions.json");
   const failures = [];
-  if (pkg.version !== RELEASE_VERSION) failures.push("package.json version must be 0.5.0");
-  if (manifest.version !== RELEASE_VERSION) failures.push("manifest.json version must be 0.5.0");
+  if (pkg.version !== RELEASE_VERSION) {
+    failures.push(`package.json version must be ${RELEASE_VERSION}`);
+  }
+  if (manifest.version !== RELEASE_VERSION) {
+    failures.push(`manifest.json version must be ${RELEASE_VERSION}`);
+  }
   if (manifest.id !== "pdf-chat") failures.push("manifest.json id must be pdf-chat");
   if (manifest.minAppVersion !== MIN_APP_VERSION) {
     failures.push("manifest.json minAppVersion must be 1.4.0");
   }
   if (versions[RELEASE_VERSION] !== MIN_APP_VERSION) {
-    failures.push("versions.json must map 0.5.0 to 1.4.0");
+    failures.push(`versions.json must map ${RELEASE_VERSION} to ${MIN_APP_VERSION}`);
   }
   if (failures.length > 0) throw new Error(failures.join("\n"));
   return { minAppVersion: MIN_APP_VERSION, version: RELEASE_VERSION };
@@ -31,7 +35,7 @@ function verifyReleaseMetadata(root = process.cwd()) {
 function runCli() {
   try {
     verifyReleaseMetadata();
-    console.log("Release metadata verified: 0.5.0 / Obsidian 1.4.0.");
+    console.log(`Release metadata verified: ${RELEASE_VERSION} / Obsidian ${MIN_APP_VERSION}.`);
   } catch (error) {
     console.error(error instanceof Error ? error.message : "release metadata verification failed");
     process.exitCode = 1;

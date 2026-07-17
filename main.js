@@ -1,4 +1,4 @@
-// PDF Chat 0.5.0
+// PDF Chat 0.7.0
 var global = globalThis;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -30,6 +30,7 @@ __export(main_exports, {
   OpenAICompatibleTransport: () => OpenAICompatibleTransport,
   PDFChatModal: () => PDFChatModal,
   PaperContextService: () => PaperContextService,
+  QuickTranslateMarker: () => QuickTranslateMarker,
   ResearchActionRegistry: () => ResearchActionRegistry,
   TranslationService: () => TranslationService,
   bm25Retrieve: () => bm25Retrieve,
@@ -48,6 +49,8 @@ __export(main_exports, {
   migrateSettings: () => migrateSettings,
   normalizeConversationHistories: () => normalizeConversationHistories,
   normalizeConversationMessages: () => normalizeConversationMessages,
+  resolveContinueModelId: () => resolveContinueModelId,
+  resolveTranslateModelId: () => resolveTranslateModelId,
   splitTranslationChunks: () => splitTranslationChunks,
   stableConversationHash: () => stableConversationHash,
   tokenizeForBM25: () => tokenizeForBM25
@@ -138,9 +141,9 @@ function normalizeConversationHistories(saved) {
   }
   return normalized;
 }
-function getConversationKey(pdfFile, contextText) {
-  if (pdfFile && typeof pdfFile.path === "string" && pdfFile.path) return `pdf:${pdfFile.path}`;
-  return `selection:${stableConversationHash(cleanSelectionText(contextText || ""))}`;
+function getConversationKey(pdfFile, contextText, kind = "chat") {
+  const chatKey = pdfFile && typeof pdfFile.path === "string" && pdfFile.path ? `pdf:${pdfFile.path}` : `selection:${stableConversationHash(cleanSelectionText(contextText || ""))}`;
+  return kind === "translate" ? `translate:${chatKey}` : chatKey;
 }
 var ConversationStore = class {
   constructor(getSettings, persistSettings, now = Date.now) {
@@ -326,6 +329,34 @@ var OpenAICompatibleTransport = class {
   }
 };
 
+// src/model-routing.ts
+function validConfiguredId(models, configuredId) {
+  if (!configuredId) return null;
+  return models.some((model) => model.id === configuredId) ? configuredId : null;
+}
+function keywordModelId(models, keyword) {
+  var _a;
+  const normalizedKeyword = keyword.toLocaleLowerCase();
+  const match = models.find(
+    (model) => [model.id, model.model, model.name].some(
+      (value) => String(value != null ? value : "").toLocaleLowerCase().includes(normalizedKeyword)
+    )
+  );
+  return (_a = match == null ? void 0 : match.id) != null ? _a : null;
+}
+function activeOrFirstId(settings) {
+  var _a, _b, _c;
+  return (_c = (_b = validConfiguredId(settings.models, settings.activeModelId)) != null ? _b : (_a = settings.models[0]) == null ? void 0 : _a.id) != null ? _c : "";
+}
+function resolveTranslateModelId(settings) {
+  var _a, _b;
+  return (_b = (_a = validConfiguredId(settings.models, settings.translateModelId)) != null ? _a : keywordModelId(settings.models, "deepseek")) != null ? _b : activeOrFirstId(settings);
+}
+function resolveContinueModelId(settings) {
+  var _a, _b;
+  return (_b = (_a = validConfiguredId(settings.models, settings.continueModelId)) != null ? _a : keywordModelId(settings.models, "glm")) != null ? _b : activeOrFirstId(settings);
+}
+
 // src/default-settings.ts
 var LEGACY_0_4_0_TRANSLATE_PROMPT = "\u8BF7\u628A\u3010\u6211\u5F53\u524D\u9009\u4E2D\u5E76\u60F3\u8BA8\u8BBA\u7684\u539F\u6587\u7247\u6BB5\u3011\u5B8C\u6574\u7FFB\u8BD1\u6210\u4E2D\u6587\u3002\n1. \u9010\u6BB5\u5BF9\u5E94\u539F\u6587\u5206\u6BB5,\u4E0D\u8981\u5408\u5E76\u6216\u7701\u7565\u6BB5\u843D\u3002\n2. \u4E13\u4E1A\u672F\u8BED\u53EF\u4FDD\u7559\u82F1\u6587\u539F\u8BCD(\u62EC\u53F7\u6807\u6CE8\u5373\u53EF),\u516C\u5F0F\u3001\u4EE3\u7801\u3001\u53D8\u91CF\u540D\u3001\u56FE\u8868\u7F16\u53F7\u7B49\u4FDD\u6301\u539F\u6837\u4E0D\u7FFB\u8BD1\u3002\n3. \u53EA\u8F93\u51FA\u7FFB\u8BD1\u7ED3\u679C,\u4E0D\u8981\u8F93\u51FA\u539F\u6587\u3001\u4E0D\u8981\u590D\u8FF0\u8981\u6C42\u3001\u4E0D\u8981\u52A0\u989D\u5916\u89E3\u91CA\u6216\u603B\u7ED3\u3002";
 var DEFAULT_SETTINGS = {
@@ -347,6 +378,9 @@ var DEFAULT_SETTINGS = {
   // 记住上一次对话用的模型/阅读模式,下次打开弹窗直接沿用,不用每次重新选。
   lastModelId: "",
   lastPresetId: "",
+  quickTranslateMarkerEnabled: true,
+  translateModelId: "",
+  continueModelId: "",
   systemPrompt: "\u4F60\u662F\u6211\u7684\u9605\u8BFB\u52A9\u624B\u3002\u8BF7\u7ED3\u5408\u4E0B\u9762\u63D0\u4F9B\u7684\u539F\u6587\u7247\u6BB5\u56DE\u7B54\u6211\u7684\u95EE\u9898\u3002\n1. \u4F18\u5148\u57FA\u4E8E\u539F\u6587\u7247\u6BB5\u56DE\u7B54,\u4E0D\u8981\u8131\u79BB\u5B83\u53E6\u8D77\u7089\u7076\u3002\n2. \u5982\u679C\u95EE\u9898\u5728\u539F\u6587\u7247\u6BB5\u4E2D\u627E\u4E0D\u5230\u4F9D\u636E,\u8BF7\u660E\u786E\u8BF4\u660E,\u4E0D\u8981\u7F16\u9020\u3002\n3. \u76F4\u63A5\u8F93\u51FA\u56DE\u7B54\u5185\u5BB9,\u4E0D\u8981\u590D\u8FF0\u89C4\u5219,\u4E0D\u8981\u52A0\u201C\u6839\u636E\u539F\u6587...\u201D\u8FD9\u7C7B\u5957\u8BDD\u5F00\u5934\u3002\n4. \u540E\u7EED\u8FFD\u95EE\u8981\u7ED3\u5408\u4E4B\u524D\u7684\u5BF9\u8BDD\u4E0A\u4E0B\u6587,\u4FDD\u6301\u8FDE\u8D2F\u3002",
   translation: {
     targetLanguage: "zh-CN",
@@ -654,56 +688,52 @@ var PaperContextService = class {
 };
 
 // src/translation.ts
-function lastRegexBoundary(text, start, end, pattern) {
-  pattern.lastIndex = start;
+var FAILED_CHUNK_PREFIX = "[\u7FFB\u8BD1\u5931\u8D25\uFF0C\u4FDD\u7559\u539F\u6587]";
+var GENERIC_TRANSLATION_FAILURE = "Translation failed for every chunk.";
+function isWhitespace(value) {
+  return /^\s$/u.test(value);
+}
+function sentenceBoundary(points, start, hardEnd) {
+  const punctuation = /* @__PURE__ */ new Set([".", "!", "?", "\u3002", "\uFF01", "\uFF1F"]);
+  const closers = /* @__PURE__ */ new Set(['"', "'", "\u201D", "\u2019", "\uFF09", "]"]);
   let boundary = -1;
-  let match;
-  while ((match = pattern.exec(text)) !== null) {
-    const candidate = match.index + match[0].length;
-    if (candidate > end) break;
-    if (candidate > start) boundary = candidate;
-    if (match[0].length === 0) pattern.lastIndex += 1;
+  for (let index = start; index < hardEnd; index += 1) {
+    if (!punctuation.has(points[index])) continue;
+    let after = index + 1;
+    while (after < hardEnd && closers.has(points[after])) after += 1;
+    if (after >= hardEnd || !isWhitespace(points[after])) continue;
+    while (after < hardEnd && isWhitespace(points[after])) after += 1;
+    boundary = after;
   }
   return boundary;
 }
-function findPreferredBoundary(source, start, hardEnd) {
-  const paragraph = source.lastIndexOf("\n\n", hardEnd - 2);
-  if (paragraph >= start) return paragraph + 2;
-  const line = source.lastIndexOf("\n", hardEnd - 1);
-  if (line >= start) return line + 1;
-  const sentence = lastRegexBoundary(
-    source,
-    start,
-    hardEnd,
-    /[.!?。！？](?:["'”’）\]]*)\s+/g
-  );
+function preferredBoundary(points, start, hardEnd) {
+  for (let index = hardEnd - 2; index >= start; index -= 1) {
+    if (points[index] === "\n" && points[index + 1] === "\n") return index + 2;
+  }
+  for (let index = hardEnd - 1; index >= start; index -= 1) {
+    if (points[index] === "\n") return index + 1;
+  }
+  const sentence = sentenceBoundary(points, start, hardEnd);
   if (sentence > start) return sentence;
   for (let index = hardEnd - 1; index >= start; index -= 1) {
-    if (/\s/.test(source[index])) return index + 1;
+    if (isWhitespace(points[index])) return index + 1;
   }
   return hardEnd;
-}
-function keepSurrogatePairTogether(source, start, end) {
-  if (end <= start || end >= source.length) return end;
-  const previous = source.charCodeAt(end - 1);
-  const next = source.charCodeAt(end);
-  const splitsPair = previous >= 55296 && previous <= 56319 && next >= 56320 && next <= 57343;
-  if (!splitsPair) return end;
-  return end - 1 > start ? end - 1 : end + 1;
 }
 function splitTranslationChunks(source, limit) {
   if (!source) return [];
   if (!Number.isInteger(limit) || limit <= 0) {
     throw new RangeError("Translation chunk limit must be a positive integer");
   }
-  if (source.length <= limit) return [source];
+  const points = Array.from(source);
+  if (points.length <= limit) return [source];
   const chunks = [];
   let start = 0;
-  while (start < source.length) {
-    const hardEnd = Math.min(start + limit, source.length);
-    const preferredEnd = hardEnd === source.length ? hardEnd : findPreferredBoundary(source, start, hardEnd);
-    const end = keepSurrogatePairTogether(source, start, preferredEnd);
-    chunks.push(source.slice(start, end));
+  while (start < points.length) {
+    const hardEnd = Math.min(start + limit, points.length);
+    const end = hardEnd === points.length ? hardEnd : preferredBoundary(points, start, hardEnd);
+    chunks.push(points.slice(start, end).join(""));
     start = end;
   }
   return chunks;
@@ -727,59 +757,94 @@ ${source}
 function combineTranslations(translations) {
   return translations.filter((translation) => translation.trim().length > 0).join("\n\n");
 }
-function throwIfTranslationAborted(signal) {
-  if (!(signal == null ? void 0 : signal.aborted)) return;
-  const error = new Error("Translation aborted");
-  error.name = "AbortError";
-  throw error;
+function stoppedResult(chunks, completed, failedChunkIndexes) {
+  return {
+    text: combineTranslations(completed),
+    chunkCount: chunks.length,
+    stoppedEarly: true,
+    failedChunkIndexes: [...failedChunkIndexes]
+  };
+}
+function emitProgress(request, chunkIndex, chunkCount, chunkText, completed) {
+  var _a;
+  const progress = {
+    chunkIndex: chunkIndex + 1,
+    chunkCount,
+    chunkText,
+    combinedText: combineTranslations(completed)
+  };
+  (_a = request.onChunk) == null ? void 0 : _a.call(request, progress);
 }
 var TranslationService = class {
   constructor(llm) {
     this.llm = llm;
   }
   async translate(request) {
-    var _a;
+    var _a, _b, _c, _d, _e;
     const chunks = splitTranslationChunks(request.source, request.settings.chunkChars);
-    if (!chunks.length) return { text: "", chunkCount: 0 };
+    if (!chunks.length) {
+      return {
+        text: "",
+        chunkCount: 0,
+        stoppedEarly: false,
+        failedChunkIndexes: []
+      };
+    }
     const completed = [];
-    for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
-      throwIfTranslationAborted(request.signal);
-      let streamedChunk = "";
-      const translated = await this.llm.chat({
-        messages: buildTranslationMessages(chunks[chunkIndex], request.settings),
+    const failedChunkIndexes = [];
+    const requestOnce = async (chunk) => {
+      return this.llm.chat({
+        messages: buildTranslationMessages(chunk, request.settings),
         modelProfile: request.modelProfile,
         signal: request.signal,
         stream: true,
         temperatureOverride: request.settings.temperature,
-        maxTokensOverride: request.settings.maxTokens,
-        onChunk: (_piece, accumulatedText) => {
-          var _a2;
-          streamedChunk = accumulatedText;
-          (_a2 = request.onChunk) == null ? void 0 : _a2.call(request, {
-            chunkIndex: chunkIndex + 1,
-            chunkCount: chunks.length,
-            chunkText: accumulatedText,
-            combinedText: combineTranslations([...completed, accumulatedText])
-          });
-        }
+        maxTokensOverride: request.settings.maxTokens
       });
-      throwIfTranslationAborted(request.signal);
-      const finalChunk = translated.trim();
-      if (!finalChunk) {
-        throw new Error(`Empty translation output for chunk ${chunkIndex + 1}/${chunks.length}`);
+    };
+    for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+      if ((_a = request.signal) == null ? void 0 : _a.aborted) {
+        return stoppedResult(chunks, completed, failedChunkIndexes);
       }
-      if (finalChunk !== streamedChunk) {
-        (_a = request.onChunk) == null ? void 0 : _a.call(request, {
-          chunkIndex: chunkIndex + 1,
-          chunkCount: chunks.length,
-          chunkText: finalChunk,
-          combinedText: combineTranslations([...completed, finalChunk])
-        });
+      const chunk = chunks[chunkIndex];
+      let translated = "";
+      let failed = false;
+      try {
+        translated = (await requestOnce(chunk)).trim();
+        if ((_b = request.signal) == null ? void 0 : _b.aborted) {
+          return stoppedResult(chunks, completed, failedChunkIndexes);
+        }
+        if (!translated) {
+          if ((_c = request.signal) == null ? void 0 : _c.aborted) {
+            return stoppedResult(chunks, completed, failedChunkIndexes);
+          }
+          translated = (await requestOnce(chunk)).trim();
+          if ((_d = request.signal) == null ? void 0 : _d.aborted) {
+            return stoppedResult(chunks, completed, failedChunkIndexes);
+          }
+          failed = !translated;
+        }
+      } catch (e) {
+        if ((_e = request.signal) == null ? void 0 : _e.aborted) {
+          return stoppedResult(chunks, completed, failedChunkIndexes);
+        }
+        failed = true;
       }
-      completed.push(finalChunk);
+      const output = failed ? `${FAILED_CHUNK_PREFIX}
+${chunk}` : translated;
+      if (failed) failedChunkIndexes.push(chunkIndex);
+      completed.push(output);
+      emitProgress(request, chunkIndex, chunks.length, output, completed);
     }
-    throwIfTranslationAborted(request.signal);
-    return { text: combineTranslations(completed), chunkCount: chunks.length };
+    if (failedChunkIndexes.length === chunks.length) {
+      throw new Error(GENERIC_TRANSLATION_FAILURE);
+    }
+    return {
+      text: combineTranslations(completed),
+      chunkCount: chunks.length,
+      stoppedEarly: false,
+      failedChunkIndexes
+    };
   }
 };
 
@@ -803,7 +868,7 @@ function createPDFChatModalServices(plugin, overrides = {}) {
   };
   const compatibility = {
     conversations: {
-      getKey: (file, selectedText) => plugin.getConversationKey(file, selectedText),
+      getKey: (file, selectedText, kind) => plugin.getConversationKey(file, selectedText, kind),
       get: (key) => plugin.getConversation(key),
       save: (key, messages) => plugin.saveConversation(key, messages),
       clear: (key) => plugin.clearConversation(key)
@@ -817,7 +882,9 @@ function createPDFChatModalServices(plugin, overrides = {}) {
     },
     llm,
     models: {
-      get: (id) => plugin.getModelProfile(id)
+      get: (id) => plugin.getModelProfile(id),
+      resolveTranslateId: () => plugin.resolveTranslateModelId(),
+      resolveContinueId: () => plugin.resolveContinueModelId()
     },
     actions: plugin.actionRegistry || createResearchActionRegistry(),
     translations: plugin.translationService || new TranslationService(llm)
@@ -1068,7 +1135,7 @@ async function renderMarkdownInto(app, component, el, text) {
   el.setText(text);
 }
 var PDFChatModal = class extends import_obsidian2.Modal {
-  constructor(app, plugin, contextText, pdfFile, startFresh, services) {
+  constructor(app, plugin, contextText, pdfFile, startFresh, services, autoTranslateOnOpen) {
     super(app);
     __publicField(this, "plugin");
     __publicField(this, "services");
@@ -1076,7 +1143,9 @@ var PDFChatModal = class extends import_obsidian2.Modal {
     __publicField(this, "contextText");
     __publicField(this, "pdfFile");
     __publicField(this, "startFresh");
+    __publicField(this, "autoTranslateOnOpen");
     __publicField(this, "conversationKey");
+    __publicField(this, "translateConversationKey");
     __publicField(this, "hadExistingHistory");
     __publicField(this, "currentPresetId");
     __publicField(this, "currentModelId");
@@ -1090,6 +1159,7 @@ var PDFChatModal = class extends import_obsidian2.Modal {
     __publicField(this, "fullTextForQA", null);
     __publicField(this, "fullTextAttached", false);
     __publicField(this, "transcript");
+    __publicField(this, "translateTranscript", []);
     __publicField(this, "messages");
     __publicField(this, "isSending", false);
     __publicField(this, "abortController", null);
@@ -1121,11 +1191,21 @@ var PDFChatModal = class extends import_obsidian2.Modal {
     this.contextText = paperContext.selectedText;
     this.pdfFile = paperContext.file || null;
     this.startFresh = !!startFresh;
+    this.autoTranslateOnOpen = !!autoTranslateOnOpen;
     const lastPresetId = this.plugin.settings.lastPresetId;
     this.currentPresetId = lastPresetId && (lastPresetId === "__default__" || this.plugin.settings.promptPresets.find((p) => p.id === lastPresetId)) ? lastPresetId : "__default__";
-    const lastModelId = this.plugin.settings.lastModelId;
-    this.currentModelId = lastModelId && this.plugin.settings.models.find((m) => m.id === lastModelId) ? lastModelId : this.plugin.settings.activeModelId;
+    if (this.startFresh) {
+      const lastModelId = this.plugin.settings.lastModelId;
+      this.currentModelId = lastModelId && this.plugin.settings.models.find((m) => m.id === lastModelId) ? lastModelId : this.plugin.settings.activeModelId;
+    } else {
+      this.currentModelId = this.services.models.resolveContinueId();
+    }
     this.conversationKey = paperContext.conversationKey;
+    this.translateConversationKey = this.services.conversations.getKey(
+      this.pdfFile,
+      this.contextText,
+      "translate"
+    );
     const existingTranscript = this.services.conversations.get(this.conversationKey);
     this.hadExistingHistory = existingTranscript.length > 0;
     this.transcript = this.startFresh ? [] : existingTranscript;
@@ -1217,7 +1297,8 @@ ${this.contextText}`;
     } else if (this.startFresh && this.hadExistingHistory) {
       new import_obsidian2.Notice("\u5DF2\u5F00\u59CB\u65B0\u5BF9\u8BDD(\u53D1\u51FA\u7B2C\u4E00\u6761\u6D88\u606F\u540E\u4F1A\u66FF\u6362\u6389\u4E0A\u6B21\u4FDD\u5B58\u7684\u8BB0\u5F55)");
     }
-    this.inputEl.focus();
+    if (this.autoTranslateOnOpen) this.handleTranslate();
+    else this.inputEl.focus();
   }
   getDocumentName() {
     if (!this.pdfFile) return "\u9009\u533A\u5BF9\u8BDD";
@@ -1360,6 +1441,18 @@ ${this.contextText}`;
       return false;
     }
   }
+  async persistTranslationConversation() {
+    try {
+      await this.services.conversations.save(
+        this.translateConversationKey,
+        this.translateTranscript
+      );
+      return true;
+    } catch (err) {
+      new import_obsidian2.Notice("\u4FDD\u5B58\u7FFB\u8BD1\u8BB0\u5F55\u5931\u8D25: " + errorMessage(err));
+      return false;
+    }
+  }
   async recordTranscriptTurn(question, answer, status) {
     if (typeof answer !== "string" || !answer.trim()) return false;
     this.transcript.push(
@@ -1367,6 +1460,15 @@ ${this.contextText}`;
       { role: "assistant", content: answer, status: status === "stopped" ? "stopped" : "complete" }
     );
     await this.persistConversation();
+    return true;
+  }
+  async recordTranslateTurn(question, answer, status) {
+    if (typeof answer !== "string" || !answer.trim()) return false;
+    this.translateTranscript.push(
+      { role: "user", content: question, status: "complete" },
+      { role: "assistant", content: answer, status: status === "stopped" ? "stopped" : "complete" }
+    );
+    await this.persistTranslationConversation();
     return true;
   }
   async resetConversation() {
@@ -1593,7 +1695,7 @@ ${this.contextText}`;
       const result = await this.services.translations.translate({
         source: this.contextText,
         settings: this.plugin.settings.translation,
-        modelProfile: this.services.models.get(this.currentModelId),
+        modelProfile: this.services.models.get(this.services.models.resolveTranslateId()),
         signal: this.abortController.signal,
         onChunk: (progress) => {
           fullText = progress.combinedText;
@@ -1612,24 +1714,29 @@ ${this.contextText}`;
         loadingBubble.setText("\u7FFB\u8BD1\u672A\u8FD4\u56DE\u5185\u5BB9");
         return;
       }
-      loadingBubble.addClass("is-rendered");
-      await renderMarkdownInto(this.app, this.plugin, loadingBubble, fullText);
+      const status = result.stoppedEarly ? "stopped" : "complete";
+      if (result.stoppedEarly) {
+        loadingBubble.addClass("is-stopped");
+        loadingBubble.setText(fullText + "\n\n[\u5DF2\u505C\u6B62\u751F\u6210]");
+      } else {
+        loadingBubble.addClass("is-rendered");
+        await renderMarkdownInto(this.app, this.plugin, loadingBubble, fullText);
+      }
       this.messages.push(
         { role: "user", content: friendlyLabel },
         { role: "assistant", content: fullText }
       );
-      await this.recordTranscriptTurn(friendlyLabel, fullText, "complete");
+      await this.recordTranslateTurn(friendlyLabel, fullText, status);
     } catch (err) {
       loadingBubble.removeClass("is-loading");
-      if (fullText.trim()) {
+      if (isAbortError(err) && fullText.trim()) {
         loadingBubble.addClass("is-stopped");
-        if (!isAbortError(err)) loadingBubble.addClass("is-error");
         loadingBubble.setText(fullText + "\n\n[\u5DF2\u505C\u6B62\u751F\u6210]");
         this.messages.push(
           { role: "user", content: friendlyLabel },
           { role: "assistant", content: fullText }
         );
-        await this.recordTranscriptTurn(friendlyLabel, fullText, "stopped");
+        await this.recordTranslateTurn(friendlyLabel, fullText, "stopped");
       } else {
         loadingBubble.addClass("is-error");
         loadingBubble.setText("\u7FFB\u8BD1\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u6A21\u578B\u914D\u7F6E\u6216\u7A0D\u540E\u91CD\u8BD5\u3002");
@@ -1761,12 +1868,163 @@ ${c.text}`).join("\n\n---\n\n");
     if (this.transcript.length) {
       void this.persistConversation();
     }
+    if (this.translateTranscript.length) {
+      void this.persistTranslationConversation();
+    }
     this.contentEl.empty();
+  }
+};
+
+// src/quick-translate-marker.ts
+var MARKER_GAP = 8;
+var SELECTION_DEBOUNCE_MS = 150;
+function readSelection(doc) {
+  var _a;
+  const selection = (_a = doc.defaultView) == null ? void 0 : _a.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
+  const text = cleanSelectionText(selection.toString());
+  if (!text) return null;
+  const range = selection.getRangeAt(selection.rangeCount - 1);
+  const rectangles = Array.from(range.getClientRects());
+  const rect = rectangles.length ? rectangles[rectangles.length - 1] : range.getBoundingClientRect();
+  if (!rect) return null;
+  return { text, rect };
+}
+function clamp(value, minimum, maximum) {
+  return Math.min(Math.max(value, minimum), Math.max(minimum, maximum));
+}
+var QuickTranslateMarker = class {
+  constructor(dependencies) {
+    this.dependencies = dependencies;
+    __publicField(this, "attached", /* @__PURE__ */ new Map());
+    __publicField(this, "markerEl", null);
+    __publicField(this, "markerDocument", null);
+    __publicField(this, "pendingTimer", null);
+    __publicField(this, "setTimer");
+    __publicField(this, "clearTimer");
+    var _a, _b;
+    this.setTimer = (_a = dependencies.setTimer) != null ? _a : ((callback, delay) => setTimeout(callback, delay));
+    this.clearTimer = (_b = dependencies.clearTimer) != null ? _b : ((timer) => clearTimeout(timer));
+  }
+  attach(doc) {
+    if (!doc || this.attached.has(doc)) return;
+    const selectionChange = () => this.scheduleUpdate(doc);
+    const mouseDown = (event) => {
+      const target = event.target;
+      if (this.markerEl && target && this.markerEl.contains(target)) return;
+      this.hide();
+    };
+    const scroll = () => this.hide();
+    const keyDown = (event) => {
+      if (event.key === "Escape") this.hide();
+    };
+    doc.addEventListener("selectionchange", selectionChange);
+    doc.addEventListener("mousedown", mouseDown, true);
+    doc.addEventListener("scroll", scroll, true);
+    doc.addEventListener("keydown", keyDown);
+    this.attached.set(doc, { selectionChange, mouseDown, scroll, keyDown });
+  }
+  hide() {
+    if (this.markerEl) this.markerEl.hidden = true;
+  }
+  destroy() {
+    var _a;
+    if (this.pendingTimer !== null) {
+      this.clearTimer(this.pendingTimer);
+      this.pendingTimer = null;
+    }
+    for (const [doc, listeners] of this.attached) {
+      doc.removeEventListener("selectionchange", listeners.selectionChange);
+      doc.removeEventListener("mousedown", listeners.mouseDown, true);
+      doc.removeEventListener("scroll", listeners.scroll, true);
+      doc.removeEventListener("keydown", listeners.keyDown);
+    }
+    this.attached.clear();
+    (_a = this.markerEl) == null ? void 0 : _a.remove();
+    this.markerEl = null;
+    this.markerDocument = null;
+  }
+  scheduleUpdate(doc) {
+    if (this.pendingTimer !== null) this.clearTimer(this.pendingTimer);
+    this.pendingTimer = this.setTimer(() => {
+      this.pendingTimer = null;
+      this.updateFromSelection(doc);
+    }, SELECTION_DEBOUNCE_MS);
+  }
+  updateFromSelection(doc) {
+    if (!this.dependencies.isEnabled() || !this.dependencies.getActivePdfFile()) {
+      this.hide();
+      return;
+    }
+    const snapshot = readSelection(doc);
+    if (!snapshot) {
+      this.hide();
+      return;
+    }
+    const marker = this.ensureMarker(doc);
+    marker.hidden = false;
+    this.position(marker, doc, snapshot.rect);
+  }
+  ensureMarker(doc) {
+    var _a;
+    if (this.markerEl && this.markerDocument === doc) return this.markerEl;
+    (_a = this.markerEl) == null ? void 0 : _a.remove();
+    const marker = doc.createElement("button");
+    marker.type = "button";
+    marker.className = "pdf-chat-quick-translate-marker";
+    marker.textContent = "\u8BD1";
+    marker.setAttribute("aria-label", "\u7FFB\u8BD1\u5F53\u524D PDF \u9009\u533A");
+    marker.setAttribute("title", "\u7FFB\u8BD1\u5F53\u524D PDF \u9009\u533A");
+    marker.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    marker.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.openCurrentSelection(doc);
+    });
+    doc.body.appendChild(marker);
+    this.markerEl = marker;
+    this.markerDocument = doc;
+    return marker;
+  }
+  openCurrentSelection(doc) {
+    const snapshot = readSelection(doc);
+    const file = this.dependencies.getActivePdfFile();
+    if (!this.dependencies.isEnabled() || !snapshot || !file) {
+      this.hide();
+      return;
+    }
+    this.hide();
+    this.dependencies.openModal({
+      file,
+      selectedText: snapshot.text,
+      startFresh: true,
+      autoTranslateOnOpen: true
+    });
+  }
+  position(marker, doc, selectionRect) {
+    var _a, _b, _c, _d;
+    const viewportWidth = (_b = (_a = doc.defaultView) == null ? void 0 : _a.innerWidth) != null ? _b : doc.documentElement.clientWidth;
+    const viewportHeight = (_d = (_c = doc.defaultView) == null ? void 0 : _c.innerHeight) != null ? _d : doc.documentElement.clientHeight;
+    const markerRect = marker.getBoundingClientRect();
+    const width = markerRect.width || 32;
+    const height = markerRect.height || 32;
+    let left = selectionRect.right + MARKER_GAP;
+    if (left + width + MARKER_GAP > viewportWidth) {
+      left = selectionRect.left - width - MARKER_GAP;
+    }
+    let top = selectionRect.top - height - MARKER_GAP;
+    if (top < MARKER_GAP) top = selectionRect.bottom + MARKER_GAP;
+    marker.style.left = `${clamp(left, MARKER_GAP, viewportWidth - width - MARKER_GAP)}px`;
+    marker.style.top = `${clamp(top, MARKER_GAP, viewportHeight - height - MARKER_GAP)}px`;
   }
 };
 
 // src/settings.ts
 function migrateSettings(savedValue, now = Date.now) {
+  var _a, _b;
   const saved = savedValue && typeof savedValue === "object" && !Array.isArray(savedValue) ? savedValue : null;
   const settings = Object.assign({}, DEFAULT_SETTINGS, saved);
   settings.models = saved && Array.isArray(saved.models) && saved.models.length ? saved.models.map((model) => ({ ...model })) : DEFAULT_SETTINGS.models.map((model) => ({ ...model }));
@@ -1778,13 +2036,22 @@ function migrateSettings(savedValue, now = Date.now) {
   const hasTranslationObject = Boolean(
     saved && saved.translation && typeof saved.translation === "object" && !Array.isArray(saved.translation)
   );
+  const nestedChunkChars = (_a = saved == null ? void 0 : saved.translation) == null ? void 0 : _a.chunkChars;
+  const validNestedChunkChars = typeof nestedChunkChars === "number" && Number.isFinite(nestedChunkChars) && nestedChunkChars > 0 ? nestedChunkChars : null;
+  const legacyChunkChars = saved == null ? void 0 : saved.translateChunkMaxChars;
+  const validLegacyChunkChars = typeof legacyChunkChars === "number" && Number.isFinite(legacyChunkChars) && legacyChunkChars > 0 ? legacyChunkChars : null;
   if (hasTranslationObject) {
-    settings.translation = { ...DEFAULT_SETTINGS.translation, ...saved.translation };
+    settings.translation = {
+      ...DEFAULT_SETTINGS.translation,
+      ...saved.translation,
+      chunkChars: (_b = validNestedChunkChars != null ? validNestedChunkChars : validLegacyChunkChars) != null ? _b : DEFAULT_SETTINGS.translation.chunkChars
+    };
   } else {
     const legacyInstruction = typeof (saved == null ? void 0 : saved.translatePrompt) === "string" ? saved.translatePrompt : "";
     settings.translation = {
       ...DEFAULT_SETTINGS.translation,
-      additionalInstruction: legacyInstruction.trim() && legacyInstruction !== LEGACY_0_4_0_TRANSLATE_PROMPT ? legacyInstruction : ""
+      additionalInstruction: legacyInstruction.trim() && legacyInstruction !== LEGACY_0_4_0_TRANSLATE_PROMPT ? legacyInstruction : "",
+      chunkChars: validLegacyChunkChars != null ? validLegacyChunkChars : DEFAULT_SETTINGS.translation.chunkChars
     };
     needsSave = true;
   }
@@ -1816,6 +2083,10 @@ function migrateSettings(savedValue, now = Date.now) {
   }
   if (settings.translatePrompt !== void 0) {
     delete settings.translatePrompt;
+    needsSave = true;
+  }
+  if (settings.translateChunkMaxChars !== void 0) {
+    delete settings.translateChunkMaxChars;
     needsSave = true;
   }
   return { settings, needsSave };
@@ -1955,6 +2226,15 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
+    new import_obsidian3.Setting(containerEl).setName("\u7EE7\u7EED\u5BF9\u8BDD\u4F7F\u7528\u7684\u6A21\u578B").setDesc("\u7559\u7A7A\u65F6\u4F18\u5148\u9009\u62E9 id\u3001\u6A21\u578B\u540D\u6216\u663E\u793A\u540D\u79F0\u4E2D\u5305\u542B GLM \u7684\u6A21\u578B\uFF0C\u7136\u540E\u56DE\u9000\u5230\u9ED8\u8BA4\u6A21\u578B\u3002").addDropdown((dropdown) => {
+      dropdown.addOption("", "\u81EA\u52A8\uFF08\u4F18\u5148 GLM\uFF09");
+      this.plugin.settings.models.forEach((model) => dropdown.addOption(model.id, model.name));
+      dropdown.setValue(this.plugin.settings.continueModelId);
+      dropdown.onChange(async (value) => {
+        this.plugin.settings.continueModelId = value;
+        await this.plugin.saveSettings();
+      });
+    });
     new import_obsidian3.Setting(containerEl).setName("\u7CFB\u7EDF\u63D0\u793A\u8BCD").setDesc("\u4F1A\u81EA\u52A8\u9644\u52A0\u9009\u4E2D\u7684\u539F\u6587\u7247\u6BB5\u5728\u5176\u540E").addTextArea((text) => {
       text.inputEl.rows = 6;
       text.setValue(this.plugin.settings.systemPrompt).onChange(async (value) => {
@@ -1964,6 +2244,21 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
     });
   }
   renderTranslationSection(containerEl) {
+    new import_obsidian3.Setting(containerEl).setName("\u7FFB\u8BD1\u4F7F\u7528\u7684\u6A21\u578B").setDesc("\u7559\u7A7A\u65F6\u4F18\u5148\u9009\u62E9 id\u3001\u6A21\u578B\u540D\u6216\u663E\u793A\u540D\u79F0\u4E2D\u5305\u542B DeepSeek \u7684\u6A21\u578B\uFF0C\u7136\u540E\u56DE\u9000\u5230\u9ED8\u8BA4\u6A21\u578B\u3002").addDropdown((dropdown) => {
+      dropdown.addOption("", "\u81EA\u52A8\uFF08\u4F18\u5148 DeepSeek\uFF09");
+      this.plugin.settings.models.forEach((model) => dropdown.addOption(model.id, model.name));
+      dropdown.setValue(this.plugin.settings.translateModelId);
+      dropdown.onChange(async (value) => {
+        this.plugin.settings.translateModelId = value;
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian3.Setting(containerEl).setName("\u5212\u8BCD\u540E\u81EA\u52A8\u51FA\u73B0\u300C\u8BD1\u300D\u60AC\u6D6E\u56FE\u6807").setDesc("\u4EC5\u5728\u6D3B\u52A8\u89C6\u56FE\u662F PDF \u4E14\u9009\u533A\u975E\u7A7A\u65F6\u663E\u793A\uFF1B\u70B9\u51FB\u540E\u6253\u5F00\u65B0\u5F39\u7A97\u5E76\u81EA\u52A8\u7FFB\u8BD1\u3002").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.quickTranslateMarkerEnabled).onChange(async (value) => {
+        this.plugin.settings.quickTranslateMarkerEnabled = value;
+        await this.plugin.saveSettings();
+      })
+    );
     new import_obsidian3.Setting(containerEl).setName("\u7FFB\u8BD1\u76EE\u6807\u8BED\u8A00").setDesc("\u7528\u4E8E\u5F39\u7A97\u4E2D\u7684\u9009\u533A\u7FFB\u8BD1\uFF0C\u4F8B\u5982 zh-CN\u3001en \u6216 ja").addText(
       (text) => text.setValue(this.plugin.settings.translation.targetLanguage).onChange(async (value) => {
         this.plugin.settings.translation.targetLanguage = value.trim() || DEFAULT_SETTINGS.translation.targetLanguage;
@@ -2147,8 +2442,10 @@ var PDFChatPlugin = class extends import_obsidian4.Plugin {
     __publicField(this, "translationService");
     __publicField(this, "actionRegistry");
     __publicField(this, "modalServices");
+    __publicField(this, "quickTranslateMarker");
   }
   async onload() {
+    var _a;
     this._saveQueue = Promise.resolve();
     await this.loadSettings();
     this.conversationStore = new ConversationStore(
@@ -2170,7 +2467,7 @@ var PDFChatPlugin = class extends import_obsidian4.Plugin {
     this.actionRegistry = createResearchActionRegistry();
     this.modalServices = createPDFChatModalServices(this, {
       conversations: {
-        getKey: (file, selectedText) => getConversationKey(file, selectedText),
+        getKey: (file, selectedText, kind) => getConversationKey(file, selectedText, kind),
         get: (key) => this.conversationStore.get(key),
         save: (key, messages) => this.conversationStore.save(key, messages),
         clear: (key) => this.conversationStore.clear(key)
@@ -2183,7 +2480,11 @@ var PDFChatPlugin = class extends import_obsidian4.Plugin {
         retrieveContext: (chunks, queries, topK) => this.paperContextService.retrieveContext(chunks, queries, topK)
       },
       llm: { chat: (request) => this.llmTransport.chat(request) },
-      models: { get: (id) => this.getModelProfile(id) },
+      models: {
+        get: (id) => this.getModelProfile(id),
+        resolveTranslateId: () => this.resolveTranslateModelId(),
+        resolveContinueId: () => this.resolveContinueModelId()
+      },
       actions: this.actionRegistry,
       translations: this.translationService
     });
@@ -2200,6 +2501,25 @@ var PDFChatPlugin = class extends import_obsidian4.Plugin {
       hotkeys: [{ modifiers: ["Mod"], key: "Q" }],
       callback: () => this.openChatModal(false)
     });
+    this.quickTranslateMarker = new QuickTranslateMarker({
+      isEnabled: () => this.settings.quickTranslateMarkerEnabled,
+      getActivePdfFile: () => getActivePdfFile(this.app),
+      openModal: (request) => this.openQuickTranslateModal(request)
+    });
+    if (typeof document !== "undefined") this.quickTranslateMarker.attach(document);
+    const workspace = (_a = this.app) == null ? void 0 : _a.workspace;
+    workspace == null ? void 0 : workspace.onLayoutReady(() => {
+      const eventRef = workspace.on("window-open", (workspaceWindow) => {
+        var _a2;
+        if (workspaceWindow == null ? void 0 : workspaceWindow.doc) (_a2 = this.quickTranslateMarker) == null ? void 0 : _a2.attach(workspaceWindow.doc);
+      });
+      this.registerEvent(eventRef);
+    });
+  }
+  onunload() {
+    var _a;
+    (_a = this.quickTranslateMarker) == null ? void 0 : _a.destroy();
+    this.quickTranslateMarker = void 0;
   }
   // startFresh=true: 新开一份对话,不加载这个 PDF(或选区)之前保存的记录;
   // startFresh=false: 加载并接续之前保存的记录(如果有)。两个快捷键共用同一段取选中文字的逻辑。
@@ -2220,6 +2540,22 @@ var PDFChatPlugin = class extends import_obsidian4.Plugin {
     );
     new PDFChatModal(this.app, this, paperContext, null, startFresh, this.modalServices).open();
   }
+  openQuickTranslateModal(request) {
+    const paperContext = this.paperContextService.createContext(
+      request.file,
+      request.selectedText,
+      getConversationKey(request.file, request.selectedText)
+    );
+    new PDFChatModal(
+      this.app,
+      this,
+      paperContext,
+      null,
+      request.startFresh,
+      this.modalServices,
+      request.autoTranslateOnOpen
+    ).open();
+  }
   async loadSettings() {
     const { settings, needsSave } = migrateSettings(await this.loadData());
     this.settings = settings;
@@ -2228,8 +2564,8 @@ var PDFChatPlugin = class extends import_obsidian4.Plugin {
   async saveSettings() {
     return enqueueSettingsSave(this);
   }
-  getConversationKey(pdfFile, contextText) {
-    return getConversationKey(pdfFile, contextText);
+  getConversationKey(pdfFile, contextText, kind = "chat") {
+    return getConversationKey(pdfFile, contextText, kind);
   }
   getConversation(key) {
     if (this.conversationStore) return this.conversationStore.get(key);
@@ -2258,6 +2594,12 @@ var PDFChatPlugin = class extends import_obsidian4.Plugin {
   }
   async generateDocSummary(file) {
     return this.paperContextService.generateDocSummary(file);
+  }
+  resolveTranslateModelId() {
+    return resolveTranslateModelId(this.settings);
+  }
+  resolveContinueModelId() {
+    return resolveContinueModelId(this.settings);
   }
   async getOrCreateDocSummary(file, forceRefresh) {
     return this.paperContextService.getOrCreateDocSummary(file, forceRefresh);

@@ -7,6 +7,7 @@ interface LegacySettings extends Omit<Partial<PDFChatSettings>, "translation"> {
   apiKey?: string;
   model?: string;
   translatePrompt?: string;
+  translateChunkMaxChars?: number;
   translation?: Partial<TranslationSettings>;
 }
 
@@ -39,8 +40,23 @@ export function migrateSettings(savedValue: unknown, now: () => number = Date.no
   const hasTranslationObject = Boolean(
     saved && saved.translation && typeof saved.translation === "object" && !Array.isArray(saved.translation)
   );
+  const nestedChunkChars = saved?.translation?.chunkChars;
+  const validNestedChunkChars =
+    typeof nestedChunkChars === "number" && Number.isFinite(nestedChunkChars) && nestedChunkChars > 0
+      ? nestedChunkChars
+      : null;
+  const legacyChunkChars = saved?.translateChunkMaxChars;
+  const validLegacyChunkChars =
+    typeof legacyChunkChars === "number" && Number.isFinite(legacyChunkChars) && legacyChunkChars > 0
+      ? legacyChunkChars
+      : null;
   if (hasTranslationObject) {
-    settings.translation = { ...DEFAULT_SETTINGS.translation, ...saved!.translation };
+    settings.translation = {
+      ...DEFAULT_SETTINGS.translation,
+      ...saved!.translation,
+      chunkChars:
+        validNestedChunkChars ?? validLegacyChunkChars ?? DEFAULT_SETTINGS.translation.chunkChars,
+    };
   } else {
     const legacyInstruction = typeof saved?.translatePrompt === "string" ? saved.translatePrompt : "";
     settings.translation = {
@@ -49,6 +65,7 @@ export function migrateSettings(savedValue: unknown, now: () => number = Date.no
         legacyInstruction.trim() && legacyInstruction !== LEGACY_0_4_0_TRANSLATE_PROMPT
           ? legacyInstruction
           : "",
+      chunkChars: validLegacyChunkChars ?? DEFAULT_SETTINGS.translation.chunkChars,
     };
     needsSave = true;
   }
@@ -82,6 +99,10 @@ export function migrateSettings(savedValue: unknown, now: () => number = Date.no
   }
   if (settings.translatePrompt !== undefined) {
     delete settings.translatePrompt;
+    needsSave = true;
+  }
+  if (settings.translateChunkMaxChars !== undefined) {
+    delete settings.translateChunkMaxChars;
     needsSave = true;
   }
 

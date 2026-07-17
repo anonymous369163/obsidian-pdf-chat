@@ -314,7 +314,14 @@ function loadBundle(options = {}) {
   return { bundle: sandbox.module.exports, settingTabs };
 }
 
-function createModalHarness({ transcript = [], markdownRenderer, llmChat } = {}) {
+function createModalHarness({
+  transcript = [],
+  markdownRenderer,
+  llmChat,
+  translation,
+  autoTranslateOnOpen = false,
+  startFresh = false,
+} = {}) {
   const { bundle } = loadBundle({ markdownRenderer });
   const settings = JSON.parse(JSON.stringify(bundle.DEFAULT_SETTINGS));
   settings.autoDocSummary = false;
@@ -325,7 +332,8 @@ function createModalHarness({ transcript = [], markdownRenderer, llmChat } = {})
   };
   const services = {
     conversations: {
-      getKey: () => "pdf:papers/demo.pdf",
+      getKey: (_file, _text, kind) =>
+        kind === "translate" ? "translate:pdf:papers/demo.pdf" : "pdf:papers/demo.pdf",
       get: () => transcript,
       save: async () => {},
       clear: async () => {},
@@ -342,15 +350,61 @@ function createModalHarness({ transcript = [], markdownRenderer, llmChat } = {})
       retrieveContext: () => [],
     },
     llm: { chat: llmChat || (async () => "Answer") },
-    models: { get: () => settings.models[0] },
-    actions: { list: () => [], execute: async () => {} },
-    translations: { translate: async () => ({ text: "译文", chunkCount: 1 }) },
+    models: {
+      get: () => settings.models[0],
+      resolveContinueId: () => settings.activeModelId,
+      resolveTranslateId: () => settings.activeModelId,
+    },
+    actions: {
+      list: () => [],
+      execute: async (_id, context) => context.translate(),
+    },
+    translations: {
+      translate:
+        translation ||
+        (async () => ({
+          text: "译文",
+          chunkCount: 1,
+          stoppedEarly: false,
+          failedChunkIndexes: [],
+        })),
+    },
   };
   const pdfFile = { name: "demo.pdf", path: "papers/demo.pdf", stat: { mtime: 1 } };
-  const modal = new bundle.PDFChatModal({}, plugin, "Selected source", pdfFile, false, services);
+  const modal = new bundle.PDFChatModal(
+    {},
+    plugin,
+    "Selected source",
+    pdfFile,
+    startFresh,
+    services,
+    autoTranslateOnOpen
+  );
   modal.onOpen();
   return { modal, plugin };
 }
+
+test("quick-translate modal starts translation automatically instead of focusing the composer", async () => {
+  let translationCalls = 0;
+  const { modal } = createModalHarness({
+    autoTranslateOnOpen: true,
+    startFresh: true,
+    translation: async () => {
+      translationCalls += 1;
+      return {
+        text: "Automatic translation",
+        chunkCount: 1,
+        stoppedEarly: false,
+        failedChunkIndexes: [],
+      };
+    },
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(modal.autoTranslateOnOpen, true);
+  assert.equal(translationCalls, 1);
+  assert.equal(byClass(modal.historyEl, "pdf-chat-bubble").length, 2);
+});
 
 test("modal builds the accessible research-workbench regions and interactions", () => {
   const { modal } = createModalHarness();
@@ -517,8 +571,8 @@ test("settings preserve every legacy control in the correct ordered section and 
       "API Key",
       "模型名(model 字段)",
     ],
-    ["流式输出", "Temperature", "Max Tokens", "系统提示词"],
-    ["翻译目标语言", "翻译附加要求"],
+    ["流式输出", "Temperature", "Max Tokens", "继续对话使用的模型", "系统提示词"],
+    ["翻译使用的模型", "划词后自动出现「译」悬浮图标", "翻译目标语言", "翻译附加要求"],
     [
       "打开 PDF 划词弹窗时自动附带全文摘要",
       "摘要生成用的模型",
@@ -601,6 +655,15 @@ test("settings preserve every legacy control in the correct ordered section and 
   const stream = controlFor(sections[1], "流式输出", "input");
   stream.value = false;
   stream.dispatch("change");
+  const continueModel = controlFor(sections[1], "继续对话使用的模型", "select");
+  continueModel.value = "second-model";
+  continueModel.dispatch("change");
+  const translateModel = controlFor(sections[2], "翻译使用的模型", "select");
+  translateModel.value = "second-model";
+  translateModel.dispatch("change");
+  const quickMarker = controlFor(sections[2], "划词后自动出现「译」悬浮图标", "input");
+  quickMarker.value = false;
+  quickMarker.dispatch("change");
   const targetLanguage = controlFor(sections[2], "翻译目标语言", "input");
   targetLanguage.value = " ja ";
   targetLanguage.dispatch("change");
@@ -614,6 +677,9 @@ test("settings preserve every legacy control in the correct ordered section and 
 
   assert.equal(plugin.settings.models[0].endpoint, "https://example.invalid/v1/chat/completions");
   assert.equal(plugin.settings.stream, false);
+  assert.equal(plugin.settings.continueModelId, "second-model");
+  assert.equal(plugin.settings.translateModelId, "second-model");
+  assert.equal(plugin.settings.quickTranslateMarkerEnabled, false);
   assert.equal(plugin.settings.translation.targetLanguage, "ja");
   assert.equal(plugin.settings.ragTopK, 7);
   assert.equal(plugin.settings.promptPresets[0].name, "Updated preset");
