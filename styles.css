@@ -113,6 +113,8 @@
   margin-top: 6px;
   max-height: 160px;
   overflow-y: auto;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .pdf-chat-context-text.is-collapsed {
@@ -154,6 +156,14 @@
   gap: 10px;
   padding-right: 4px;
   font-size: calc(1em * var(--pdf-chat-font-scale, 1));
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.pdf-chat-bubble,
+.pdf-chat-bubble * {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .pdf-chat-bubble {
@@ -161,6 +171,14 @@
   border-radius: 8px;
   white-space: pre-wrap;
   line-height: 1.5;
+  cursor: text;
+}
+
+.pdf-chat-bubble a,
+.pdf-chat-bubble button,
+.pdf-chat-bubble input,
+.pdf-chat-bubble select {
+  cursor: pointer;
 }
 
 /* 最终 Markdown 渲染完成后切换到这个状态:去掉 pre-wrap,避免渲染出来的标签
@@ -219,6 +237,12 @@
 
 .pdf-chat-bubble.assistant.is-stopped {
   color: var(--text-muted);
+}
+
+.pdf-chat-stopped-label {
+  margin: 0.5em 0 0;
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 .pdf-chat-input-row {

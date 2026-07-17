@@ -81,6 +81,9 @@ const DEFAULT_SETTINGS = {
     "直接输出这3行,不要编号、不要解释、不要输出问题本身、不要输出这3行以外的任何文字。",
   // key 是文件的 vault 相对路径,value 形如 { mtime, chunks: [{page, text}], generatedAt }
   docChunks: {},
+  // 每篇 PDF(或精确匹配的非 PDF 选区)只保存一份最近对话。这里只存用户实际看到的问答,
+  // 不保存 system prompt、全文或 RAG 检索片段,避免 data.json 被隐藏上下文快速撑大。
+  conversationHistories: {},
   promptPresets: [
     {
       id: "paper-map",
@@ -147,6 +150,46 @@ function cleanSelectionText(raw) {
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function stableConversationHash(text) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function normalizeConversationMessages(messages) {
+  if (!Array.isArray(messages)) return [];
+  const normalized = [];
+  for (const message of messages) {
+    if (!message || (message.role !== "user" && message.role !== "assistant")) continue;
+    if (typeof message.content !== "string" || !message.content.trim()) continue;
+    normalized.push({
+      role: message.role,
+      content: message.content,
+      status: message.role === "assistant" && message.status === "stopped" ? "stopped" : "complete",
+    });
+  }
+  return normalized;
+}
+
+function normalizeConversationHistories(saved) {
+  if (!saved || typeof saved !== "object" || Array.isArray(saved)) return {};
+  const normalized = {};
+  for (const [key, entry] of Object.entries(saved)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const messages = normalizeConversationMessages(entry.messages);
+    if (!messages.length) continue;
+    normalized[key] = {
+      version: 1,
+      updatedAt: Number.isFinite(entry.updatedAt) ? entry.updatedAt : 0,
+      messages,
+    };
+  }
+  return normalized;
 }
 
 /**
@@ -375,7 +418,12 @@ class PDFChatModal extends Modal {
     // 已经进过历史的第一轮全文会随着后续每轮继续被带上,不需要再重复拼接一份,否则每多聊一轮,
     // 实际发给模型的内容就多一份完整全文,输入越滚越大、越聊越慢、越聊越贵。
     this.fullTextAttached = false;
-    this.messages = [this.buildSystemMessage()];
+    this.conversationKey = this.plugin.getConversationKey(this.pdfFile, this.contextText);
+    this.transcript = this.plugin.getConversation(this.conversationKey);
+    this.messages = [
+      this.buildSystemMessage(),
+      ...this.transcript.map((message) => ({ role: message.role, content: message.content })),
+    ];
   }
 
   buildSystemMessage() {
@@ -582,18 +630,73 @@ class PDFChatModal extends Modal {
       text: "多轮追问会带着完整对话历史一起发送给模型,答案会实时流式显示。",
     });
 
+    if (this.transcript.length) {
+      this.restoreConversationHistory().catch((err) => {
+        new Notice("恢复上次对话显示失败: " + (err && err.message ? err.message : String(err)));
+      });
+    }
     this.inputEl.focus();
   }
 
-  resetConversation() {
+  async restoreConversationHistory() {
+    const renderJobs = [];
+    for (const message of this.transcript) {
+      if (message.role === "user") {
+        this.addBubble("user", message.content, { skipScroll: true });
+        continue;
+      }
+      const bubble = this.addBubble("assistant", message.content, { skipScroll: true });
+      bubble.addClass("is-rendered");
+      renderJobs.push(
+        renderMarkdownInto(this.app, this.plugin, bubble, message.content).then(() => {
+          if (message.status === "stopped") {
+            bubble.addClass("is-stopped");
+            bubble.createEl("p", { cls: "pdf-chat-stopped-label", text: "[已停止生成]" });
+          }
+        })
+      );
+    }
+    await Promise.all(renderJobs);
+    this.historyEl.scrollTo({ top: this.historyEl.scrollHeight, behavior: "auto" });
+    const scope = this.pdfFile ? "本 PDF" : "当前选区";
+    new Notice(`已恢复${scope}上次对话(${this.transcript.length} 条消息)`);
+  }
+
+  async persistConversation() {
+    try {
+      await this.plugin.saveConversation(this.conversationKey, this.transcript);
+      return true;
+    } catch (err) {
+      new Notice("保存对话失败: " + (err && err.message ? err.message : String(err)));
+      return false;
+    }
+  }
+
+  async recordTranscriptTurn(question, answer, status) {
+    if (typeof answer !== "string" || !answer.trim()) return false;
+    this.transcript.push(
+      { role: "user", content: question, status: "complete" },
+      { role: "assistant", content: answer, status: status === "stopped" ? "stopped" : "complete" }
+    );
+    await this.persistConversation();
+    return true;
+  }
+
+  async resetConversation() {
     if (this.isSending) {
       new Notice("正在生成中,请先停止或等待完成后再清空");
       return;
     }
+    this.transcript = [];
     this.messages = [this.buildSystemMessage()];
     this.fullTextAttached = false;
     this.historyEl.empty();
-    new Notice("对话已清空,原文上下文保留");
+    try {
+      await this.plugin.clearConversation(this.conversationKey);
+      new Notice("对话已清空,原文上下文保留");
+    } catch (err) {
+      new Notice("界面已清空,但删除已保存对话失败: " + (err && err.message ? err.message : String(err)));
+    }
   }
 
   applyPreset(id) {
@@ -856,6 +959,7 @@ class PDFChatModal extends Modal {
       fullText = await this.plugin.chat(
         this.messages,
         (piece, acc) => {
+          fullText = acc;
           if (!firstChunkArrived) {
             firstChunkArrived = true;
             loadingBubble.removeClass("is-loading");
@@ -873,12 +977,18 @@ class PDFChatModal extends Modal {
       loadingBubble.addClass("is-rendered");
       this.messages.push({ role: "assistant", content: fullText });
       await renderMarkdownInto(this.app, this.plugin, loadingBubble, fullText);
+      await this.recordTranscriptTurn(question, fullText, "complete");
     } catch (err) {
       loadingBubble.removeClass("is-loading");
       if (err && err.name === "AbortError") {
         loadingBubble.addClass("is-stopped");
         loadingBubble.setText((fullText || "") + "\n\n[已停止生成]");
-        if (fullText) this.messages.push({ role: "assistant", content: fullText });
+        if (fullText) {
+          this.messages.push({ role: "assistant", content: fullText });
+          await this.recordTranscriptTurn(question, fullText, "stopped");
+        } else {
+          this.messages.pop();
+        }
       } else {
         loadingBubble.addClass("is-error");
         loadingBubble.setText("请求失败: " + (err && err.message ? err.message : String(err)));
@@ -895,12 +1005,15 @@ class PDFChatModal extends Modal {
     const bubble = this.historyEl.createDiv({ cls: `pdf-chat-bubble ${role}` });
     if (opts && opts.loading) bubble.addClass("is-loading");
     bubble.setText(text);
-    this.historyEl.scrollTo({ top: this.historyEl.scrollHeight, behavior: "smooth" });
+    if (!(opts && opts.skipScroll)) {
+      this.historyEl.scrollTo({ top: this.historyEl.scrollHeight, behavior: "smooth" });
+    }
     return bubble;
   }
 
   onClose() {
     this.stopGenerating();
+    void this.persistConversation();
     this.contentEl.empty();
   }
 }
@@ -1307,6 +1420,7 @@ class PDFChatSettingTab extends PluginSettingTab {
 
 module.exports = class PDFChatPlugin extends Plugin {
   async onload() {
+    this._saveQueue = Promise.resolve();
     await this.loadSettings();
     this.addSettingTab(new PDFChatSettingTab(this.app, this));
 
@@ -1350,6 +1464,9 @@ module.exports = class PDFChatPlugin extends Plugin {
         : {};
     this.settings.docChunks =
       saved && saved.docChunks && typeof saved.docChunks === "object" ? { ...saved.docChunks } : {};
+    this.settings.conversationHistories = normalizeConversationHistories(
+      saved && saved.conversationHistories
+    );
     let needsSave = false;
 
     // 迁移旧版本(单一 endpoint/apiKey/model 字段)到模型列表
@@ -1386,7 +1503,48 @@ module.exports = class PDFChatPlugin extends Plugin {
   }
 
   async saveSettings() {
-    await this.saveData(this.settings);
+    const previousSave = this._saveQueue || Promise.resolve();
+    const nextSave = previousSave.catch(() => {}).then(() => this.saveData(this.settings));
+    this._saveQueue = nextSave;
+    return nextSave;
+  }
+
+  getConversationKey(pdfFile, contextText) {
+    if (pdfFile && typeof pdfFile.path === "string" && pdfFile.path) {
+      return `pdf:${pdfFile.path}`;
+    }
+    const normalizedSelection = cleanSelectionText(contextText || "");
+    return `selection:${stableConversationHash(normalizedSelection)}`;
+  }
+
+  getConversation(key) {
+    const histories = this.settings.conversationHistories || {};
+    const entry = histories[key];
+    return entry ? normalizeConversationMessages(entry.messages) : [];
+  }
+
+  async saveConversation(key, messages) {
+    if (!this.settings.conversationHistories || typeof this.settings.conversationHistories !== "object") {
+      this.settings.conversationHistories = {};
+    }
+    const normalizedMessages = normalizeConversationMessages(messages);
+    if (!normalizedMessages.length) {
+      delete this.settings.conversationHistories[key];
+    } else {
+      this.settings.conversationHistories[key] = {
+        version: 1,
+        updatedAt: Date.now(),
+        messages: normalizedMessages,
+      };
+    }
+    await this.saveSettings();
+  }
+
+  async clearConversation(key) {
+    if (this.settings.conversationHistories && this.settings.conversationHistories[key]) {
+      delete this.settings.conversationHistories[key];
+    }
+    await this.saveSettings();
   }
 
   getModelProfile(id) {
