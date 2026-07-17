@@ -1,163 +1,261 @@
 .pdf-chat-modal.modal {
+  --pdf-chat-space: 10px;
+  --pdf-chat-space-small: 6px;
+  --pdf-chat-radius: 8px;
+  --pdf-chat-border: 1px solid var(--background-modifier-border);
+  --pdf-chat-panel-background: var(--background-secondary);
+  --pdf-chat-readable-width: 72ch;
   resize: both;
   overflow: hidden;
   display: flex;
   flex-direction: column;
   min-width: 420px;
   min-height: 380px;
-  width: 640px;
-  height: 620px;
+  width: 760px;
+  height: 680px;
   max-width: 95vw;
   max-height: 92vh;
 }
 
 .pdf-chat-modal .modal-content {
+  container: pdf-chat-workbench / inline-size;
   flex: 1;
   min-height: 0;
+  max-height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  max-height: 100%;
+  gap: var(--pdf-chat-space);
   overflow: hidden;
 }
 
-.pdf-chat-title-row {
+.pdf-chat-workbench-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: var(--pdf-chat-space);
+  flex: 0 0 auto;
+  min-width: 0;
   cursor: move;
-  flex-shrink: 0;
-}
-
-.pdf-chat-drag-handle {
+  -webkit-user-select: none;
   user-select: none;
 }
 
-.pdf-chat-title-row h3 {
-  margin: 0;
+.pdf-chat-identity {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 7rem;
+  max-width: 15rem;
+  flex-direction: column;
+  gap: 1px;
+  overflow: hidden;
 }
 
-.pdf-chat-title-actions {
+.pdf-chat-identity h2 {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.1;
+}
+
+.pdf-chat-document-name {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-chat-header-controls {
   display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
   align-items: center;
-  gap: 10px;
+  justify-content: flex-end;
+  gap: var(--pdf-chat-space-small);
   cursor: default;
 }
 
+.pdf-chat-control-group,
 .pdf-chat-zoom-group {
   display: flex;
+  min-width: 0;
   align-items: center;
-  gap: 2px;
-  font-size: 0.8em;
-  color: var(--text-muted);
+  gap: 4px;
 }
 
-.pdf-chat-zoom-btn {
-  font-size: 0.85em;
-  line-height: 1;
+.pdf-chat-control-group label {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.pdf-chat-select {
+  min-width: 6rem;
+  max-width: 11rem;
+  cursor: pointer;
+}
+
+.pdf-chat-zoom-group {
+  flex: 0 0 auto;
+}
+
+.pdf-chat-zoom-btn,
+.pdf-chat-zoom-label,
+.pdf-chat-reset-btn {
+  min-height: 28px;
   padding: 2px 7px;
+  font-size: 0.75rem;
+  line-height: 1;
   cursor: pointer;
 }
 
 .pdf-chat-zoom-label {
-  min-width: 3.2em;
+  min-width: 3.5rem;
   text-align: center;
-  cursor: pointer;
-  user-select: none;
 }
 
-.pdf-chat-reset-btn {
-  font-size: 0.8em;
-  cursor: pointer;
-}
-
-.pdf-chat-model-row,
-.pdf-chat-mode-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.pdf-chat-select-label {
-  font-size: 0.85em;
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-
-.pdf-chat-select {
-  flex: 1;
-  cursor: pointer;
-}
-
-.pdf-chat-context-wrapper {
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
-  background: var(--background-secondary);
-  padding: 8px 10px;
-  flex-shrink: 0;
+.pdf-chat-context-panel {
+  flex: 0 0 auto;
+  overflow: hidden;
+  border: var(--pdf-chat-border);
+  border-radius: var(--pdf-chat-radius);
+  background: var(--pdf-chat-panel-background);
 }
 
 .pdf-chat-context-toggle {
-  cursor: pointer;
-  font-size: 0.85em;
+  width: 100%;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: var(--pdf-chat-space-small);
+  border: 0;
+  border-radius: var(--pdf-chat-radius);
+  background: var(--pdf-chat-panel-background);
   color: var(--text-muted);
+  text-align: left;
+  cursor: pointer;
+  -webkit-user-select: none;
   user-select: none;
-  margin: 0;
+}
+
+.pdf-chat-context-title {
+  color: var(--text-normal);
+  font-size: 0.82rem;
+  font-weight: var(--font-semibold);
+}
+
+.pdf-chat-status-chip {
+  padding: 2px 6px;
+  border: var(--pdf-chat-border);
+  border-radius: var(--pdf-chat-radius);
+  background: var(--background-primary-alt);
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.pdf-chat-context-chevron {
+  margin-inline-start: auto;
+  transition: transform 120ms ease;
+}
+
+.pdf-chat-context-panel.is-expanded .pdf-chat-context-chevron {
+  transform: rotate(180deg);
+}
+
+.pdf-chat-context-body {
+  display: grid;
+  gap: var(--pdf-chat-space-small);
+  padding: 0 var(--pdf-chat-space) var(--pdf-chat-space);
+  border-top: var(--pdf-chat-border);
+}
+
+.pdf-chat-context-body.is-collapsed {
+  display: none;
+}
+
+.pdf-chat-context-heading {
+  margin: var(--pdf-chat-space-small) 0 0;
+  color: var(--text-muted);
+  font-size: 0.75rem;
 }
 
 .pdf-chat-context-text {
+  max-height: 150px;
+  overflow: auto;
   white-space: pre-wrap;
-  font-size: calc(0.85em * var(--pdf-chat-font-scale, 1));
   color: var(--text-muted);
-  margin-top: 6px;
-  max-height: 160px;
-  overflow-y: auto;
+  font-size: calc(0.84em * var(--pdf-chat-font-scale, 1));
+  line-height: 1.45;
+  cursor: text;
   -webkit-user-select: text;
   user-select: text;
 }
 
-.pdf-chat-context-text.is-collapsed {
-  display: none;
+.pdf-chat-context-tools {
+  display: grid;
+  gap: var(--pdf-chat-space-small);
 }
 
 .pdf-chat-summary-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-  font-size: 0.85em;
+  gap: var(--pdf-chat-space-small);
   color: var(--text-muted);
+  font-size: 0.8rem;
 }
 
-.pdf-chat-summary-row label {
+.pdf-chat-check-label {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--pdf-chat-space-small);
   cursor: pointer;
+}
+
+.pdf-chat-summary-btn,
+.pdf-chat-research-action-btn {
+  flex: 0 0 auto;
+  font-size: 0.75rem;
   white-space: nowrap;
-}
-
-.pdf-chat-summary-status {
-  flex: 1;
-  font-size: 0.9em;
-  color: var(--text-faint);
-}
-
-.pdf-chat-summary-btn {
-  font-size: 0.8em;
   cursor: pointer;
-  white-space: nowrap;
+}
+
+.pdf-chat-research-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--pdf-chat-space-small);
+}
+
+.pdf-chat-research-actions:empty {
+  display: none;
 }
 
 .pdf-chat-history {
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 80px;
   overflow-y: auto;
-  min-height: 60px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding-right: 4px;
+  gap: var(--pdf-chat-space);
+  padding: var(--pdf-chat-space-small);
   font-size: calc(1em * var(--pdf-chat-font-scale, 1));
+  cursor: text;
   -webkit-user-select: text;
   user-select: text;
+  scroll-padding-block: var(--pdf-chat-space);
+}
+
+.pdf-chat-empty-state {
+  max-width: var(--pdf-chat-readable-width);
+  margin: auto;
+  padding: calc(var(--pdf-chat-space) * 2);
+  border: var(--pdf-chat-border);
+  border-radius: var(--pdf-chat-radius);
+  background: var(--pdf-chat-panel-background);
+  color: var(--text-muted);
+  text-align: center;
 }
 
 .pdf-chat-bubble,
@@ -167,22 +265,40 @@
 }
 
 .pdf-chat-bubble {
+  box-sizing: border-box;
+  width: fit-content;
+  max-width: min(100%, var(--pdf-chat-readable-width));
   padding: 8px 12px;
-  border-radius: 8px;
+  border-radius: var(--pdf-chat-radius);
   white-space: pre-wrap;
-  line-height: 1.5;
+  color: var(--text-normal);
+  line-height: 1.55;
   cursor: text;
 }
 
-.pdf-chat-bubble a,
-.pdf-chat-bubble button,
-.pdf-chat-bubble input,
-.pdf-chat-bubble select {
-  cursor: pointer;
+.pdf-chat-bubble::before {
+  content: attr(data-speaker);
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  font-weight: var(--font-semibold);
+  line-height: 1.2;
+  letter-spacing: 0.02em;
 }
 
-/* 最终 Markdown 渲染完成后切换到这个状态:去掉 pre-wrap,避免渲染出来的标签
-   (段落/公式/代码块/列表)之间的空白文本节点被当成强制换行,导致排版挤在一起或错位。 */
+.pdf-chat-bubble.user {
+  align-self: flex-end;
+  background: var(--background-modifier-hover);
+  border-inline-end: 3px solid var(--interactive-accent);
+}
+
+.pdf-chat-bubble.assistant {
+  align-self: flex-start;
+  background: var(--pdf-chat-panel-background);
+  border-inline-start: 3px solid var(--background-modifier-border-hover);
+}
+
 .pdf-chat-bubble.is-rendered {
   white-space: normal;
 }
@@ -195,38 +311,36 @@
   margin-bottom: 0;
 }
 
-/* 公式(MathJax 输出的 mjx-container)如果很长,允许在气泡内部单独横向滚动,
-   而不是把整个弹窗撑破或被裁掉。 */
+.pdf-chat-bubble pre,
+.pdf-chat-bubble table,
 .pdf-chat-bubble mjx-container {
   max-width: 100%;
   overflow-x: auto;
-  overflow-y: hidden;
+  cursor: text;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.pdf-chat-bubble table {
+  display: block;
+  width: max-content;
 }
 
 .pdf-chat-bubble mjx-container[display="true"] {
   display: block;
   margin: 0.5em 0;
+  overflow-y: hidden;
 }
 
-.pdf-chat-bubble.assistant pre {
-  max-width: 100%;
-  overflow-x: auto;
+.pdf-chat-bubble a,
+.pdf-chat-bubble button,
+.pdf-chat-bubble input,
+.pdf-chat-bubble select {
+  cursor: pointer;
 }
 
-.pdf-chat-bubble.user {
-  background: var(--interactive-accent);
-  color: var(--text-on-accent);
-  align-self: flex-end;
-  max-width: 85%;
-}
-
-.pdf-chat-bubble.assistant {
-  background: var(--background-secondary);
-  align-self: flex-start;
-  max-width: 100%;
-}
-
-.pdf-chat-bubble.assistant.is-loading {
+.pdf-chat-bubble.assistant.is-loading,
+.pdf-chat-bubble.assistant.is-stopped {
   color: var(--text-muted);
   font-style: italic;
 }
@@ -235,29 +349,47 @@
   color: var(--text-error);
 }
 
-.pdf-chat-bubble.assistant.is-stopped {
-  color: var(--text-muted);
-}
-
 .pdf-chat-stopped-label {
   margin: 0.5em 0 0;
   color: var(--text-muted);
   font-style: italic;
 }
 
+.pdf-chat-composer {
+  position: sticky;
+  z-index: 1;
+  bottom: 0;
+  flex: 0 0 auto;
+  display: grid;
+  gap: 4px;
+  padding-top: var(--pdf-chat-space-small);
+  border-top: var(--pdf-chat-border);
+  background: var(--background-primary);
+}
+
 .pdf-chat-input-row {
   display: flex;
-  gap: 8px;
+  gap: var(--pdf-chat-space-small);
   align-items: flex-end;
-  flex-shrink: 0;
 }
 
 .pdf-chat-input {
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 42px;
+  max-height: 150px;
+  overflow-y: auto;
   resize: none;
-  min-height: 48px;
-  max-height: 160px;
   font-size: calc(1em * var(--pdf-chat-font-scale, 1));
+  line-height: 1.4;
+  cursor: text;
+}
+
+.pdf-chat-input-row button {
+  flex: 0 0 auto;
+  min-height: 36px;
+  cursor: pointer;
+  white-space: nowrap;
 }
 
 .pdf-chat-input-row button.is-stop {
@@ -265,14 +397,96 @@
   color: var(--text-on-accent);
 }
 
-.pdf-chat-translate-btn {
-  flex-shrink: 0;
-  white-space: nowrap;
+.pdf-chat-hint {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 0.7rem;
+  line-height: 1.2;
 }
 
-.pdf-chat-hint {
-  font-size: 0.75em;
-  color: var(--text-faint);
-  margin: 0;
-  flex-shrink: 0;
+.pdf-chat-modal :is(button, select, textarea, input):focus-visible,
+.pdf-chat-settings-section :is(button, select, textarea, input):focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+
+.pdf-chat-modal :is(button, select, textarea, input):disabled {
+  cursor: not-allowed;
+}
+
+.pdf-chat-settings-section {
+  margin-block: 16px;
+  padding: 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.pdf-chat-settings-section > h3 {
+  margin-top: 0;
+}
+
+.pdf-chat-settings-section > h4 {
+  margin-top: 18px;
+  margin-bottom: 4px;
+  color: var(--text-muted);
+}
+
+@container pdf-chat-workbench (max-width: 620px) {
+  .pdf-chat-workbench-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .pdf-chat-identity {
+    max-width: 11rem;
+  }
+
+  .pdf-chat-header-controls {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .pdf-chat-control-group {
+    flex: 1 1 10rem;
+  }
+
+  .pdf-chat-select {
+    flex: 1 1 auto;
+    max-width: none;
+  }
+
+  .pdf-chat-context-toggle {
+    flex-wrap: wrap;
+  }
+
+  .pdf-chat-summary-row,
+  .pdf-chat-input-row {
+    flex-wrap: wrap;
+  }
+
+  .pdf-chat-input {
+    flex-basis: 100%;
+  }
+}
+
+@media (max-height: 560px) {
+  .pdf-chat-modal .modal-content {
+    gap: var(--pdf-chat-space-small);
+  }
+
+  .pdf-chat-workbench-header,
+  .pdf-chat-context-toggle {
+    min-height: 28px;
+  }
+
+  .pdf-chat-context-text {
+    max-height: 90px;
+  }
+
+  .pdf-chat-input {
+    min-height: 34px;
+    max-height: 90px;
+  }
 }

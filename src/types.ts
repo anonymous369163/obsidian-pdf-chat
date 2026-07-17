@@ -126,9 +126,12 @@ export interface ResearchActionContext {
   translate: () => Promise<void>;
 }
 
+export type ResearchActionSlot = "composer" | "context";
+
 export interface ResearchAction {
   id: string;
   name: string;
+  slot?: ResearchActionSlot;
   execute(context: ResearchActionContext): Promise<void> | void;
 }
 
@@ -170,6 +173,7 @@ export interface ModelOperations {
 
 export interface ResearchActionOperations {
   execute(id: string, context: ResearchActionContext): Promise<void>;
+  list?(): ResearchAction[];
 }
 
 export interface PDFChatModalServices {

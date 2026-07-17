@@ -1,4 +1,9 @@
-import type { ResearchAction, ResearchActionContext } from "./types";
+import type {
+  ResearchAction,
+  ResearchActionContext,
+  ResearchActionOperations,
+  ResearchActionSlot,
+} from "./types";
 
 export class ResearchActionRegistry {
   private readonly actions = new Map<string, ResearchAction>();
@@ -25,6 +30,13 @@ export class ResearchActionRegistry {
 
 export { ResearchActionRegistry as ActionRegistry };
 
+export function listResearchActionsForSlot(
+  actions: ResearchActionOperations,
+  slot: ResearchActionSlot
+): ResearchAction[] {
+  return actions.list ? actions.list().filter((action) => action.slot === slot) : [];
+}
+
 export function createCompatibilityActionRegistry(defaultTranslatePrompt: string): ResearchActionRegistry {
   void defaultTranslatePrompt;
   return createResearchActionRegistry();
@@ -34,6 +46,7 @@ export function createResearchActionRegistry(): ResearchActionRegistry {
   return new ResearchActionRegistry().register({
     id: "translate",
     name: "Translate selection",
+    slot: "composer",
     async execute({ translate }) {
       await translate();
     },

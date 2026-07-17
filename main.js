@@ -75,6 +75,9 @@ var ResearchActionRegistry = class {
     await action.execute(context);
   }
 };
+function listResearchActionsForSlot(actions, slot) {
+  return actions.list ? actions.list().filter((action) => action.slot === slot) : [];
+}
 function createCompatibilityActionRegistry(defaultTranslatePrompt) {
   void defaultTranslatePrompt;
   return createResearchActionRegistry();
@@ -83,6 +86,7 @@ function createResearchActionRegistry() {
   return new ResearchActionRegistry().register({
     id: "translate",
     name: "Translate selection",
+    slot: "composer",
     async execute({ translate }) {
       await translate();
     }
@@ -836,6 +840,207 @@ function createPDFChatModalServices(plugin, overrides = {}) {
 
 // src/pdf-chat-modal.ts
 var import_obsidian2 = require("obsidian");
+
+// src/modal-ui.ts
+var controlId = 0;
+function nextControlId(prefix) {
+  controlId += 1;
+  return `pdf-chat-${prefix}-${controlId}`;
+}
+function labelControl(element, label) {
+  const compatibleElement = element;
+  if (typeof compatibleElement.setAttr === "function") {
+    compatibleElement.setAttr("aria-label", label);
+    compatibleElement.setAttr("title", label);
+  } else if (typeof compatibleElement.setAttribute === "function") {
+    compatibleElement.setAttribute("aria-label", label);
+    compatibleElement.setAttribute("title", label);
+  }
+}
+function buildWorkbenchHeader(parent, options) {
+  const root = parent.createEl("header", { cls: "pdf-chat-workbench-header" });
+  const identity = root.createDiv({ cls: "pdf-chat-identity" });
+  identity.createEl("h2", { text: "PDF Chat" });
+  identity.createEl("span", {
+    text: options.filename,
+    cls: "pdf-chat-document-name",
+    attr: { title: options.filename }
+  });
+  const controls = root.createDiv({ cls: "pdf-chat-header-controls pdf-chat-interactive" });
+  const modelGroup = controls.createDiv({ cls: "pdf-chat-control-group" });
+  const modelId = nextControlId("model");
+  modelGroup.createEl("label", { text: "\u6A21\u578B", attr: { for: modelId } });
+  const modelSelect = modelGroup.createEl("select", {
+    cls: "dropdown pdf-chat-select",
+    attr: { id: modelId, "aria-label": "\u9009\u62E9\u804A\u5929\u6A21\u578B", title: "\u9009\u62E9\u804A\u5929\u6A21\u578B" }
+  });
+  for (const model of options.models) {
+    modelSelect.createEl("option", { text: model.name, value: model.id });
+  }
+  modelSelect.value = options.currentModelId;
+  const modeGroup = controls.createDiv({ cls: "pdf-chat-control-group" });
+  const modeId = nextControlId("mode");
+  modeGroup.createEl("label", { text: "\u9605\u8BFB\u6A21\u5F0F", attr: { for: modeId } });
+  const modeSelect = modeGroup.createEl("select", {
+    cls: "dropdown pdf-chat-select",
+    attr: { id: modeId, "aria-label": "\u9009\u62E9\u9605\u8BFB\u6A21\u5F0F", title: "\u9009\u62E9\u9605\u8BFB\u6A21\u5F0F" }
+  });
+  modeSelect.createEl("option", { text: "\u9ED8\u8BA4", value: "__default__" });
+  for (const preset of options.presets) {
+    modeSelect.createEl("option", { text: preset.name, value: preset.id });
+  }
+  modeSelect.value = options.currentPresetId;
+  const zoomGroup = controls.createDiv({
+    cls: "pdf-chat-zoom-group",
+    attr: { role: "group", "aria-label": "\u5B57\u4F53\u5927\u5C0F" }
+  });
+  const zoomOutButton = zoomGroup.createEl("button", {
+    text: "A\u2212",
+    cls: "pdf-chat-zoom-btn",
+    attr: { type: "button" }
+  });
+  const zoomResetButton = zoomGroup.createEl("button", {
+    text: "100%",
+    cls: "pdf-chat-zoom-label",
+    attr: { type: "button" }
+  });
+  const zoomInButton = zoomGroup.createEl("button", {
+    text: "A+",
+    cls: "pdf-chat-zoom-btn",
+    attr: { type: "button" }
+  });
+  labelControl(zoomOutButton, "\u7F29\u5C0F\u5185\u5BB9\u5B57\u4F53");
+  labelControl(zoomResetButton, "\u91CD\u7F6E\u5185\u5BB9\u5B57\u4F53\u4E3A 100%");
+  labelControl(zoomInButton, "\u653E\u5927\u5185\u5BB9\u5B57\u4F53");
+  const clearButton = controls.createEl("button", {
+    text: "\u6E05\u7A7A",
+    cls: "pdf-chat-reset-btn",
+    attr: { type: "button" }
+  });
+  labelControl(clearButton, "\u6E05\u7A7A\u5F53\u524D\u5BF9\u8BDD");
+  return {
+    root,
+    modelSelect,
+    modeSelect,
+    zoomOutButton,
+    zoomResetButton,
+    zoomInButton,
+    clearButton
+  };
+}
+function buildContextPanel(parent, options) {
+  const bodyId = nextControlId("context");
+  const root = parent.createEl("section", {
+    cls: "pdf-chat-context-panel",
+    attr: { "aria-label": "\u8BBA\u6587\u4E0A\u4E0B\u6587\u5DE5\u5177" }
+  });
+  const toggle = root.createEl("button", {
+    cls: "pdf-chat-context-toggle",
+    attr: {
+      type: "button",
+      "aria-expanded": "false",
+      "aria-controls": bodyId,
+      "aria-label": "\u5C55\u5F00\u8BBA\u6587\u4E0A\u4E0B\u6587\u5DE5\u5177",
+      title: "\u5C55\u5F00\u6216\u6536\u8D77\u8BBA\u6587\u4E0A\u4E0B\u6587\u5DE5\u5177"
+    }
+  });
+  toggle.createEl("span", { text: "\u8BBA\u6587\u4E0A\u4E0B\u6587", cls: "pdf-chat-context-title" });
+  toggle.createEl("span", {
+    text: `${options.selectionText.length} \u5B57`,
+    cls: "pdf-chat-status-chip pdf-chat-selection-count"
+  });
+  const summaryStatus = toggle.createEl("span", {
+    text: options.hasPdf ? "\u6458\u8981\uFF1A\u68C0\u67E5\u4E2D" : "\u6458\u8981\uFF1A\u4EC5 PDF",
+    cls: "pdf-chat-status-chip pdf-chat-summary-status"
+  });
+  const ragStatus = toggle.createEl("span", {
+    text: options.hasPdf ? "\u4E0A\u4E0B\u6587\uFF1A\u68C0\u67E5\u4E2D" : "\u4E0A\u4E0B\u6587\uFF1A\u9009\u533A",
+    cls: "pdf-chat-status-chip pdf-chat-rag-status"
+  });
+  toggle.createEl("span", { text: "\u2304", cls: "pdf-chat-context-chevron", attr: { "aria-hidden": "true" } });
+  const body = root.createDiv({
+    cls: "pdf-chat-context-body is-collapsed",
+    attr: { id: bodyId }
+  });
+  body.createEl("h3", { text: "\u9009\u533A\u539F\u6587", cls: "pdf-chat-context-heading" });
+  body.createDiv({ cls: "pdf-chat-context-text", text: options.selectionText });
+  const tools = body.createDiv({ cls: "pdf-chat-context-tools" });
+  const researchActions = body.createDiv({
+    cls: "pdf-chat-research-actions",
+    attr: {
+      role: "group",
+      "aria-label": "\u8BBA\u6587\u7814\u7A76\u6269\u5C55\u64CD\u4F5C",
+      "data-research-action-slot": "context"
+    }
+  });
+  toggle.addEventListener("click", () => {
+    const expanded = toggle.getAttribute("aria-expanded") !== "true";
+    toggle.setAttr("aria-expanded", String(expanded));
+    toggle.setAttr("aria-label", expanded ? "\u6536\u8D77\u8BBA\u6587\u4E0A\u4E0B\u6587\u5DE5\u5177" : "\u5C55\u5F00\u8BBA\u6587\u4E0A\u4E0B\u6587\u5DE5\u5177");
+    body.toggleClass("is-collapsed", !expanded);
+    root.toggleClass("is-expanded", expanded);
+  });
+  return { root, toggle, body, tools, summaryStatus, ragStatus, researchActions };
+}
+function buildMessageRegion(parent, restoringHistory) {
+  return parent.createEl("main", {
+    cls: "pdf-chat-history",
+    attr: {
+      role: "log",
+      "aria-label": "PDF Chat \u5BF9\u8BDD\u8BB0\u5F55",
+      "aria-live": restoringHistory ? "off" : "polite",
+      "aria-relevant": "additions",
+      "aria-atomic": "false"
+    }
+  });
+}
+function buildEmptyState(history) {
+  return history.createDiv({
+    cls: "pdf-chat-empty-state",
+    text: "\u9009\u533A\u5DF2\u5C31\u7EEA\u3002\u4F60\u53EF\u4EE5\u76F4\u63A5\u63D0\u95EE\uFF0C\u6216\u70B9\u51FB\u201C\u7FFB\u8BD1\u9009\u533A\u201D\u3002",
+    attr: { role: "status" }
+  });
+}
+function resizeComposerTextarea(textarea) {
+  textarea.style.height = "auto";
+  textarea.style.height = `${textarea.scrollHeight}px`;
+}
+function buildComposer(parent) {
+  const root = parent.createEl("footer", {
+    cls: "pdf-chat-composer",
+    attr: { "aria-label": "\u63D0\u95EE\u7F16\u8F91\u5668" }
+  });
+  const inputRow = root.createDiv({ cls: "pdf-chat-input-row" });
+  const input = inputRow.createEl("textarea", {
+    cls: "pdf-chat-input",
+    attr: {
+      rows: "1",
+      placeholder: "\u9488\u5BF9\u5F53\u524D\u9009\u533A\u63D0\u95EE\u2026",
+      "aria-label": "\u9488\u5BF9\u5F53\u524D\u9009\u533A\u63D0\u95EE",
+      title: "Enter \u53D1\u9001\uFF0CShift+Enter \u6362\u884C"
+    }
+  });
+  const translateButton = inputRow.createEl("button", {
+    text: "\u7FFB\u8BD1\u9009\u533A",
+    cls: "pdf-chat-translate-btn",
+    attr: { type: "button" }
+  });
+  labelControl(translateButton, "\u7FFB\u8BD1\u5F53\u524D\u9009\u533A");
+  const sendButton = inputRow.createEl("button", {
+    text: "\u53D1\u9001",
+    cls: "mod-cta pdf-chat-send-btn",
+    attr: { type: "button" }
+  });
+  labelControl(sendButton, "\u53D1\u9001\u95EE\u9898");
+  root.createEl("p", {
+    cls: "pdf-chat-hint",
+    text: "Enter \u53D1\u9001 \xB7 Shift+Enter \u6362\u884C \xB7 \u751F\u6210\u65F6\u53EF\u505C\u6B62"
+  });
+  input.addEventListener("input", () => resizeComposerTextarea(input));
+  return { root, input, translateButton, sendButton };
+}
+
+// src/pdf-chat-modal.ts
 function errorMessage(error) {
   if (error && typeof error === "object" && "message" in error) {
     return String(error.message);
@@ -899,6 +1104,7 @@ var PDFChatModal = class extends import_obsidian2.Modal {
     __publicField(this, "ragStatusEl");
     __publicField(this, "ragRefreshBtn");
     __publicField(this, "historyEl");
+    __publicField(this, "emptyStateEl");
     __publicField(this, "inputEl");
     __publicField(this, "translateBtn");
     __publicField(this, "sendBtn");
@@ -944,22 +1150,22 @@ ${this.contextText}`;
     const { contentEl } = this;
     contentEl.empty();
     this.modalEl.addClass("pdf-chat-modal");
-    const titleRow = contentEl.createDiv({ cls: "pdf-chat-title-row" });
-    titleRow.createEl("h3", { text: "PDF Chat" });
-    const titleActions = titleRow.createDiv({ cls: "pdf-chat-title-actions" });
-    const zoomGroup = titleActions.createDiv({ cls: "pdf-chat-zoom-group" });
-    this.zoomOutBtn = zoomGroup.createEl("button", { text: "A\u2212", cls: "pdf-chat-zoom-btn" });
-    this.zoomLabel = zoomGroup.createEl("span", { text: "100%", cls: "pdf-chat-zoom-label" });
-    this.zoomInBtn = zoomGroup.createEl("button", { text: "A+", cls: "pdf-chat-zoom-btn" });
-    this.zoomOutBtn.setAttr("title", "\u7F29\u5C0F\u5185\u5BB9\u5B57\u4F53");
-    this.zoomInBtn.setAttr("title", "\u653E\u5927\u5185\u5BB9\u5B57\u4F53");
-    this.zoomLabel.setAttr("title", "\u70B9\u51FB\u91CD\u7F6E\u4E3A 100%");
-    const resetBtn = titleActions.createEl("button", {
-      text: "\u6E05\u7A7A\u5BF9\u8BDD",
-      cls: "pdf-chat-reset-btn"
+    const header = buildWorkbenchHeader(contentEl, {
+      filename: this.getDocumentName(),
+      models: this.plugin.settings.models,
+      currentModelId: this.currentModelId,
+      presets: this.plugin.settings.promptPresets,
+      currentPresetId: this.currentPresetId
     });
-    resetBtn.addEventListener("click", () => this.resetConversation());
-    this.setupDragging(titleRow);
+    this.modelSelect = header.modelSelect;
+    this.modeSelect = header.modeSelect;
+    this.zoomOutBtn = header.zoomOutButton;
+    this.zoomLabel = header.zoomResetButton;
+    this.zoomInBtn = header.zoomInButton;
+    this.setupDragging(header.root);
+    header.clearButton.addEventListener("click", () => void this.resetConversation());
+    this.modelSelect.addEventListener("change", () => this.applyModel(this.modelSelect.value));
+    this.modeSelect.addEventListener("change", () => this.applyPreset(this.modeSelect.value));
     this.zoomOutBtn.addEventListener(
       "click",
       () => this.applyFontScale((this.plugin.settings.fontScale || 1) - 0.1)
@@ -970,125 +1176,21 @@ ${this.contextText}`;
     );
     this.zoomLabel.addEventListener("click", () => this.applyFontScale(1));
     this.applyFontScale(this.plugin.settings.fontScale || 1);
-    const modelRow = contentEl.createDiv({ cls: "pdf-chat-model-row" });
-    modelRow.createEl("span", { text: "\u6A21\u578B\uFF1A", cls: "pdf-chat-select-label" });
-    this.modelSelect = modelRow.createEl("select", { cls: "dropdown pdf-chat-select" });
-    for (const m of this.plugin.settings.models) {
-      this.modelSelect.createEl("option", { text: m.name, value: m.id });
-    }
-    this.modelSelect.value = this.currentModelId;
-    this.modelSelect.addEventListener("change", () => this.applyModel(this.modelSelect.value));
-    const modeRow = contentEl.createDiv({ cls: "pdf-chat-mode-row" });
-    modeRow.createEl("span", { text: "\u9605\u8BFB\u6A21\u5F0F\uFF1A", cls: "pdf-chat-select-label" });
-    this.modeSelect = modeRow.createEl("select", { cls: "dropdown pdf-chat-select" });
-    this.modeSelect.createEl("option", { text: "\u9ED8\u8BA4(\u8BBE\u7F6E\u91CC\u7684\u7CFB\u7EDF\u63D0\u793A\u8BCD)", value: "__default__" });
-    for (const preset of this.plugin.settings.promptPresets) {
-      this.modeSelect.createEl("option", { text: preset.name, value: preset.id });
-    }
-    this.modeSelect.value = this.currentPresetId;
-    this.modeSelect.addEventListener("change", () => this.applyPreset(this.modeSelect.value));
-    const ctxWrapper = contentEl.createDiv({ cls: "pdf-chat-context-wrapper" });
-    const toggle = ctxWrapper.createEl("p", {
-      cls: "pdf-chat-context-toggle",
-      text: `\u{1F4C4} \u5DF2\u6355\u83B7\u9009\u4E2D\u5185\u5BB9(${this.contextText.length} \u5B57) \xB7 \u70B9\u51FB\u5C55\u5F00/\u6536\u8D77`
+    const contextPanel = buildContextPanel(contentEl, {
+      selectionText: this.contextText,
+      hasPdf: !!this.pdfFile
     });
-    const ctxText = ctxWrapper.createDiv({
-      cls: "pdf-chat-context-text is-collapsed",
-      text: this.contextText
-    });
-    toggle.addEventListener("click", () => {
-      ctxText.toggleClass("is-collapsed", !ctxText.hasClass("is-collapsed"));
-    });
-    if (this.pdfFile) {
-      const summaryRow = contentEl.createDiv({ cls: "pdf-chat-summary-row" });
-      const summaryCheckbox = this.summaryCheckbox = summaryRow.createEl("input", {
-        type: "checkbox",
-        attr: { id: "pdf-chat-summary-toggle" }
-      });
-      summaryRow.createEl("label", {
-        text: "\u9644\u5E26\u5168\u6587\u6458\u8981\u4F5C\u4E3A\u80CC\u666F",
-        attr: { for: "pdf-chat-summary-toggle" }
-      });
-      this.summaryStatusEl = summaryRow.createEl("span", { cls: "pdf-chat-summary-status" });
-      const summaryRefreshBtn = this.summaryRefreshBtn = summaryRow.createEl("button", {
-        text: "\u751F\u6210/\u5237\u65B0\u6458\u8981",
-        cls: "pdf-chat-summary-btn"
-      });
-      this.refreshSummaryStatus();
-      summaryCheckbox.addEventListener("change", async () => {
-        if (summaryCheckbox.checked) {
-          await this.ensureDocSummary(false);
-          this.useDocSummary = !!(this.docSummaryEntry && this.docSummaryEntry.summary);
-          summaryCheckbox.checked = this.useDocSummary;
-        } else {
-          this.useDocSummary = false;
-        }
-        this.messages[0] = this.buildSystemMessage();
-      });
-      summaryRefreshBtn.addEventListener("click", async () => {
-        await this.ensureDocSummary(true);
-        if (summaryCheckbox.checked) {
-          this.useDocSummary = !!(this.docSummaryEntry && this.docSummaryEntry.summary);
-        }
-        this.messages[0] = this.buildSystemMessage();
-      });
-      if (this.plugin.settings.autoDocSummary) {
-        summaryCheckbox.checked = true;
-        this.useDocSummary = true;
-        this.ensureDocSummary(false).then(() => {
-          this.useDocSummary = !!(this.docSummaryEntry && this.docSummaryEntry.summary);
-          summaryCheckbox.checked = this.useDocSummary;
-          this.messages[0] = this.buildSystemMessage();
-        });
-      }
-      const ragRow = contentEl.createDiv({ cls: "pdf-chat-summary-row" });
-      const ragCheckbox = this.ragCheckbox = ragRow.createEl("input", {
-        type: "checkbox",
-        attr: { id: "pdf-chat-rag-toggle" }
-      });
-      ragRow.createEl("label", {
-        text: "\u5168\u6587/\u68C0\u7D22\u76F8\u5173\u7247\u6BB5",
-        attr: { for: "pdf-chat-rag-toggle" }
-      });
-      this.ragStatusEl = ragRow.createEl("span", { cls: "pdf-chat-summary-status" });
-      const ragRefreshBtn = this.ragRefreshBtn = ragRow.createEl("button", {
-        text: "\u5EFA\u7ACB/\u5237\u65B0\u7D22\u5F15",
-        cls: "pdf-chat-summary-btn"
-      });
-      this.refreshRagStatus();
-      ragCheckbox.addEventListener("change", async () => {
-        if (ragCheckbox.checked) {
-          await this.ensureDocChunks(false);
-          this.useRag = !!(this.docChunksEntry && this.docChunksEntry.chunks && this.docChunksEntry.chunks.length);
-          ragCheckbox.checked = this.useRag;
-        } else {
-          this.useRag = false;
-        }
-      });
-      ragRefreshBtn.addEventListener("click", async () => {
-        await this.ensureDocChunks(true);
-        if (ragCheckbox.checked) {
-          this.useRag = !!(this.docChunksEntry && this.docChunksEntry.chunks && this.docChunksEntry.chunks.length);
-        }
-      });
-      if (this.plugin.settings.autoRag) {
-        ragCheckbox.checked = true;
-        this.useRag = true;
-        this.ensureDocChunks(false).then(() => {
-          this.useRag = !!(this.docChunksEntry && this.docChunksEntry.chunks && this.docChunksEntry.chunks.length);
-          ragCheckbox.checked = this.useRag;
-        });
-      }
-    }
-    this.historyEl = contentEl.createDiv({ cls: "pdf-chat-history" });
-    const inputRow = contentEl.createDiv({ cls: "pdf-chat-input-row" });
-    this.inputEl = inputRow.createEl("textarea", {
-      cls: "pdf-chat-input",
-      attr: { placeholder: "\u9488\u5BF9\u4E0A\u9762\u9009\u4E2D\u7684\u5185\u5BB9\u63D0\u95EE,\u6309 Enter \u63D0\u4EA4,Shift+Enter \u6362\u884C\u2026" }
-    });
-    this.translateBtn = inputRow.createEl("button", { text: "\u7FFB\u8BD1", cls: "pdf-chat-translate-btn" });
-    this.translateBtn.setAttr("title", "\u76F4\u63A5\u7FFB\u8BD1\u5F53\u524D\u9009\u4E2D\u7684\u539F\u6587\u7247\u6BB5,\u65E0\u9700\u8F93\u5165\u5185\u5BB9");
-    this.sendBtn = inputRow.createEl("button", { text: "\u53D1\u9001", cls: "mod-cta" });
+    this.summaryStatusEl = contextPanel.summaryStatus;
+    this.ragStatusEl = contextPanel.ragStatus;
+    if (this.pdfFile) this.buildPaperContextControls(contextPanel.tools);
+    this.renderResearchActions(contextPanel.researchActions);
+    const restoringHistory = this.transcript.length > 0;
+    this.historyEl = buildMessageRegion(contentEl, restoringHistory);
+    if (!restoringHistory) this.showEmptyState();
+    const composer = buildComposer(contentEl);
+    this.inputEl = composer.input;
+    this.translateBtn = composer.translateButton;
+    this.sendBtn = composer.sendButton;
     const submit = () => this.handleSubmit();
     this.sendBtn.addEventListener("click", () => {
       if (this.isSending) {
@@ -1098,11 +1200,7 @@ ${this.contextText}`;
       }
     });
     this.translateBtn.addEventListener("click", () => {
-      if (this.isSending) {
-        this.stopGenerating();
-      } else {
-        this.handleTranslate();
-      }
+      if (!this.isSending) this.handleTranslate();
     });
     this.inputEl.addEventListener("keydown", (evt) => {
       if (evt.key === "Enter" && !evt.shiftKey) {
@@ -1110,18 +1208,123 @@ ${this.contextText}`;
         submit();
       }
     });
-    contentEl.createEl("p", {
-      cls: "pdf-chat-hint",
-      text: "\u591A\u8F6E\u8FFD\u95EE\u4F1A\u5E26\u7740\u5B8C\u6574\u5BF9\u8BDD\u5386\u53F2\u4E00\u8D77\u53D1\u9001\u7ED9\u6A21\u578B,\u7B54\u6848\u4F1A\u5B9E\u65F6\u6D41\u5F0F\u663E\u793A\u3002\u70B9\u300C\u7FFB\u8BD1\u300D\u53EF\u76F4\u63A5\u7FFB\u8BD1\u9009\u4E2D\u5185\u5BB9,\u4E0D\u7528\u8F93\u5165\u4EFB\u4F55\u6587\u5B57\u3002"
-    });
-    if (this.transcript.length) {
+    if (restoringHistory) {
       this.restoreConversationHistory().catch((err) => {
+        this.setHistoryLiveMode("polite");
         new import_obsidian2.Notice("\u6062\u590D\u4E0A\u6B21\u5BF9\u8BDD\u663E\u793A\u5931\u8D25: " + errorMessage(err));
       });
     } else if (this.startFresh && this.hadExistingHistory) {
       new import_obsidian2.Notice("\u5DF2\u5F00\u59CB\u65B0\u5BF9\u8BDD(\u53D1\u51FA\u7B2C\u4E00\u6761\u6D88\u606F\u540E\u4F1A\u66FF\u6362\u6389\u4E0A\u6B21\u4FDD\u5B58\u7684\u8BB0\u5F55)");
     }
     this.inputEl.focus();
+  }
+  getDocumentName() {
+    if (!this.pdfFile) return "\u9009\u533A\u5BF9\u8BDD";
+    return this.pdfFile.name || this.pdfFile.path.split(/[\\/]/).pop() || "\u9009\u533A\u5BF9\u8BDD";
+  }
+  buildPaperContextControls(container) {
+    const summaryRow = container.createDiv({ cls: "pdf-chat-summary-row" });
+    const summaryLabel = summaryRow.createEl("label", { cls: "pdf-chat-check-label" });
+    const summaryCheckbox = this.summaryCheckbox = summaryLabel.createEl("input", { type: "checkbox" });
+    summaryLabel.createEl("span", { text: "\u9644\u5E26\u5168\u6587\u6458\u8981\u4F5C\u4E3A\u80CC\u666F" });
+    labelControl(summaryCheckbox, "\u9644\u5E26\u5168\u6587\u6458\u8981\u4F5C\u4E3A\u80CC\u666F");
+    const summaryRefreshBtn = this.summaryRefreshBtn = summaryRow.createEl("button", {
+      text: "\u751F\u6210/\u5237\u65B0\u6458\u8981",
+      cls: "pdf-chat-summary-btn",
+      attr: { type: "button" }
+    });
+    labelControl(summaryRefreshBtn, "\u751F\u6210\u6216\u5237\u65B0\u5168\u6587\u6458\u8981");
+    this.refreshSummaryStatus();
+    summaryCheckbox.addEventListener("change", async () => {
+      if (summaryCheckbox.checked) {
+        await this.ensureDocSummary(false);
+        this.useDocSummary = !!(this.docSummaryEntry && this.docSummaryEntry.summary);
+        summaryCheckbox.checked = this.useDocSummary;
+      } else {
+        this.useDocSummary = false;
+      }
+      this.messages[0] = this.buildSystemMessage();
+    });
+    summaryRefreshBtn.addEventListener("click", async () => {
+      await this.ensureDocSummary(true);
+      if (summaryCheckbox.checked) {
+        this.useDocSummary = !!(this.docSummaryEntry && this.docSummaryEntry.summary);
+      }
+      this.messages[0] = this.buildSystemMessage();
+    });
+    if (this.plugin.settings.autoDocSummary) {
+      summaryCheckbox.checked = true;
+      this.useDocSummary = true;
+      void this.ensureDocSummary(false).then(() => {
+        this.useDocSummary = !!(this.docSummaryEntry && this.docSummaryEntry.summary);
+        summaryCheckbox.checked = this.useDocSummary;
+        this.messages[0] = this.buildSystemMessage();
+      });
+    }
+    const ragRow = container.createDiv({ cls: "pdf-chat-summary-row" });
+    const ragLabel = ragRow.createEl("label", { cls: "pdf-chat-check-label" });
+    const ragCheckbox = this.ragCheckbox = ragLabel.createEl("input", { type: "checkbox" });
+    ragLabel.createEl("span", { text: "\u5168\u6587\u76F4\u8BFB / RAG \u68C0\u7D22" });
+    labelControl(ragCheckbox, "\u542F\u7528\u5168\u6587\u76F4\u8BFB\u6216 RAG \u68C0\u7D22");
+    const ragRefreshBtn = this.ragRefreshBtn = ragRow.createEl("button", {
+      text: "\u5EFA\u7ACB/\u5237\u65B0\u7D22\u5F15",
+      cls: "pdf-chat-summary-btn",
+      attr: { type: "button" }
+    });
+    labelControl(ragRefreshBtn, "\u5EFA\u7ACB\u6216\u5237\u65B0\u5168\u6587\u68C0\u7D22\u7D22\u5F15");
+    this.refreshRagStatus();
+    ragCheckbox.addEventListener("change", async () => {
+      if (ragCheckbox.checked) {
+        await this.ensureDocChunks(false);
+        this.useRag = !!(this.docChunksEntry && this.docChunksEntry.chunks.length);
+        ragCheckbox.checked = this.useRag;
+      } else {
+        this.useRag = false;
+      }
+    });
+    ragRefreshBtn.addEventListener("click", async () => {
+      await this.ensureDocChunks(true);
+      if (ragCheckbox.checked) {
+        this.useRag = !!(this.docChunksEntry && this.docChunksEntry.chunks.length);
+      }
+    });
+    if (this.plugin.settings.autoRag) {
+      ragCheckbox.checked = true;
+      this.useRag = true;
+      void this.ensureDocChunks(false).then(() => {
+        this.useRag = !!(this.docChunksEntry && this.docChunksEntry.chunks.length);
+        ragCheckbox.checked = this.useRag;
+      });
+    }
+  }
+  renderResearchActions(container) {
+    for (const action of listResearchActionsForSlot(this.services.actions, "context")) {
+      const button = container.createEl("button", {
+        text: action.name,
+        cls: "pdf-chat-research-action-btn",
+        attr: { type: "button" }
+      });
+      labelControl(button, action.name);
+      button.addEventListener("click", () => {
+        void this.services.actions.execute(action.id, { translate: () => this.runTranslation() }).catch((error) => new import_obsidian2.Notice("\u7814\u7A76\u64CD\u4F5C\u5931\u8D25: " + errorMessage(error)));
+      });
+    }
+  }
+  showEmptyState() {
+    if (this.emptyStateEl) return;
+    const history = this.historyEl;
+    if (typeof history.createDiv !== "function") return;
+    this.emptyStateEl = buildEmptyState(history);
+  }
+  removeEmptyState() {
+    var _a;
+    (_a = this.emptyStateEl) == null ? void 0 : _a.remove();
+    this.emptyStateEl = void 0;
+  }
+  setHistoryLiveMode(value) {
+    const history = this.historyEl;
+    if (typeof history.setAttr === "function") history.setAttr("aria-live", value);
+    else if (typeof history.setAttribute === "function") history.setAttribute("aria-live", value);
   }
   async restoreConversationHistory() {
     const renderJobs = [];
@@ -1142,6 +1345,7 @@ ${this.contextText}`;
       );
     }
     await Promise.all(renderJobs);
+    this.setHistoryLiveMode("polite");
     this.historyEl.scrollTo({ top: this.historyEl.scrollHeight, behavior: "auto" });
     const scope = this.pdfFile ? "\u672C PDF" : "\u5F53\u524D\u9009\u533A";
     new import_obsidian2.Notice(`\u5DF2\u6062\u590D${scope}\u4E0A\u6B21\u5BF9\u8BDD(${this.transcript.length} \u6761\u6D88\u606F)`);
@@ -1173,6 +1377,8 @@ ${this.contextText}`;
     this.messages = [this.buildSystemMessage()];
     this.fullTextAttached = false;
     this.historyEl.empty();
+    this.emptyStateEl = void 0;
+    this.showEmptyState();
     try {
       await this.services.conversations.clear(this.conversationKey);
       new import_obsidian2.Notice("\u5BF9\u8BDD\u5DF2\u6E05\u7A7A,\u539F\u6587\u4E0A\u4E0B\u6587\u4FDD\u7559");
@@ -1220,13 +1426,16 @@ ${this.contextText}`;
       this.docSummaryEntry = cached;
       const date = new Date(cached.generatedAt);
       const truncatedNote = cached.truncated ? " \xB7 \u539F\u6587\u8FC7\u957F,\u4EC5\u6458\u8981\u4E86\u524D\u9762\u90E8\u5206" : "";
-      this.summaryStatusEl.setText(`(\u5DF2\u7F13\u5B58 \xB7 ${date.toLocaleString()}${truncatedNote})`);
+      this.summaryStatusEl.setText("\u6458\u8981\uFF1A\u5DF2\u7F13\u5B58");
+      this.summaryStatusEl.setAttr("title", `\u5DF2\u7F13\u5B58 \xB7 ${date.toLocaleString()}${truncatedNote}`);
     } else {
       this.docSummaryEntry = null;
-      this.summaryStatusEl.setText("(\u5C1A\u672A\u751F\u6210)");
+      this.summaryStatusEl.setText("\u6458\u8981\uFF1A\u672A\u751F\u6210");
+      this.summaryStatusEl.setAttr("title", "\u5C1A\u672A\u751F\u6210\u5168\u6587\u6458\u8981");
     }
   }
   async ensureDocSummary(forceRefresh) {
+    var _a;
     if (this.isGeneratingSummary || !this.pdfFile) return;
     const cached = this.plugin.settings.docSummaries[this.pdfFile.path];
     const currentMtime = this.pdfFile.stat && this.pdfFile.stat.mtime;
@@ -1236,6 +1445,7 @@ ${this.contextText}`;
       return;
     }
     this.isGeneratingSummary = true;
+    (_a = this.summaryStatusEl) == null ? void 0 : _a.setText("\u6458\u8981\uFF1A\u751F\u6210\u4E2D");
     if (this.summaryRefreshBtn) {
       this.summaryRefreshBtn.setText("\u751F\u6210\u4E2D\u2026");
       this.summaryRefreshBtn.disabled = true;
@@ -1270,17 +1480,24 @@ ${this.contextText}`;
       this.useFullTextMode = !!(cached.fullTextLength && cached.fullTextLength <= threshold);
       const date = new Date(cached.generatedAt);
       if (this.useFullTextMode) {
-        this.ragStatusEl.setText(`(\u5168\u6587\u7EA6${cached.fullTextLength}\u5B57,\u8F83\u77ED \xB7 \u76F4\u63A5\u8BFB\u5168\u6587\u56DE\u7B54,\u66F4\u51C6 \xB7 ${date.toLocaleString()})`);
+        this.ragStatusEl.setText("\u4E0A\u4E0B\u6587\uFF1A\u5168\u6587\u76F4\u8BFB");
+        this.ragStatusEl.setAttr(
+          "title",
+          `\u5168\u6587\u7EA6 ${cached.fullTextLength} \u5B57\uFF0C\u76F4\u63A5\u8BFB\u5168\u6587 \xB7 ${date.toLocaleString()}`
+        );
       } else {
-        this.ragStatusEl.setText(`(\u5DF2\u5EFA\u7D22\u5F15 \xB7 ${cached.chunks.length} \u5757 \xB7 ${date.toLocaleString()})`);
+        this.ragStatusEl.setText("\u4E0A\u4E0B\u6587\uFF1ARAG \u5C31\u7EEA");
+        this.ragStatusEl.setAttr("title", `\u5DF2\u5EFA\u7D22\u5F15 \xB7 ${cached.chunks.length} \u5757 \xB7 ${date.toLocaleString()}`);
       }
     } else {
       this.docChunksEntry = null;
       this.useFullTextMode = false;
-      this.ragStatusEl.setText("(\u5C1A\u672A\u5EFA\u7ACB\u7D22\u5F15)");
+      this.ragStatusEl.setText("\u4E0A\u4E0B\u6587\uFF1A\u672A\u7D22\u5F15");
+      this.ragStatusEl.setAttr("title", "\u5C1A\u672A\u5EFA\u7ACB\u5168\u6587\u68C0\u7D22\u7D22\u5F15");
     }
   }
   async ensureDocChunks(forceRefresh) {
+    var _a;
     if (this.isIndexingRag || !this.pdfFile) return;
     const cached = this.plugin.settings.docChunks[this.pdfFile.path];
     const currentMtime = this.pdfFile.stat && this.pdfFile.stat.mtime;
@@ -1290,6 +1507,7 @@ ${this.contextText}`;
       return;
     }
     this.isIndexingRag = true;
+    (_a = this.ragStatusEl) == null ? void 0 : _a.setText("\u4E0A\u4E0B\u6587\uFF1A\u5EFA\u7ACB\u4E2D");
     if (this.ragRefreshBtn) {
       this.ragRefreshBtn.setText("\u5EFA\u7ACB\u4E2D\u2026");
       this.ragRefreshBtn.disabled = true;
@@ -1314,7 +1532,9 @@ ${this.contextText}`;
   setupDragging(handleEl) {
     handleEl.addClass("pdf-chat-drag-handle");
     handleEl.addEventListener("mousedown", (evt) => {
-      if (evt.target instanceof Element && evt.target.closest("button, select, .pdf-chat-title-actions")) return;
+      if (evt.target instanceof Element && evt.target.closest("button, select, input, textarea, label, .pdf-chat-interactive")) {
+        return;
+      }
       evt.preventDefault();
       const modalEl = this.modalEl;
       const doc = modalEl.ownerDocument;
@@ -1348,6 +1568,12 @@ ${this.contextText}`;
     this.isSending = sending;
     this.sendBtn.setText(sending ? "\u505C\u6B62" : "\u53D1\u9001");
     this.sendBtn.toggleClass("is-stop", sending);
+    labelControl(this.sendBtn, sending ? "\u505C\u6B62\u751F\u6210" : "\u53D1\u9001\u95EE\u9898");
+    if (this.translateBtn) {
+      this.translateBtn.disabled = sending;
+      this.translateBtn.setAttr("aria-disabled", String(sending));
+      labelControl(this.translateBtn, sending ? "\u751F\u6210\u671F\u95F4\u65E0\u6CD5\u7FFB\u8BD1\u9009\u533A" : "\u7FFB\u8BD1\u5F53\u524D\u9009\u533A");
+    }
   }
   handleTranslate() {
     void this.services.actions.execute("translate", {
@@ -1423,7 +1649,10 @@ ${this.contextText}`;
       return;
     }
     this.addBubble("user", question);
-    if (!usingOverride) this.inputEl.value = "";
+    if (!usingOverride) {
+      this.inputEl.value = "";
+      if (this.inputEl.style) resizeComposerTextarea(this.inputEl);
+    }
     this.setSendingState(true);
     const loadingBubble = this.addBubble("assistant", "\u601D\u8003\u4E2D\u2026", { loading: true });
     let outgoingContent = question;
@@ -1509,7 +1738,16 @@ ${c.text}`).join("\n\n---\n\n");
     }
   }
   addBubble(role, text, opts = {}) {
+    this.removeEmptyState();
     const bubble = this.historyEl.createDiv({ cls: `pdf-chat-bubble ${role}` });
+    const compatibleBubble = bubble;
+    if (typeof compatibleBubble.setAttr === "function") {
+      compatibleBubble.setAttr("data-speaker", role === "user" ? "\u4F60" : "PDF Chat");
+      compatibleBubble.setAttr("aria-label", role === "user" ? "\u4F60\u7684\u6D88\u606F" : "PDF Chat \u7684\u6D88\u606F");
+    } else if (typeof compatibleBubble.setAttribute === "function") {
+      compatibleBubble.setAttribute("data-speaker", role === "user" ? "\u4F60" : "PDF Chat");
+      compatibleBubble.setAttribute("aria-label", role === "user" ? "\u4F60\u7684\u6D88\u606F" : "PDF Chat \u7684\u6D88\u606F");
+    }
     if (opts && opts.loading) bubble.addClass("is-loading");
     bubble.setText(text);
     if (!(opts && opts.skipScroll)) {
@@ -1590,6 +1828,23 @@ function enqueueSettingsSave(owner) {
 
 // src/settings-tab.ts
 var import_obsidian3 = require("obsidian");
+
+// src/settings-ui.ts
+function createSettingsSection(parent, title) {
+  const section = parent.createEl("section", {
+    cls: "pdf-chat-settings-section",
+    attr: { "aria-labelledby": `pdf-chat-settings-${title}` }
+  });
+  const compatibleSection = section;
+  if (typeof compatibleSection.createEl !== "function") return parent;
+  section.createEl("h3", {
+    text: title,
+    attr: { id: `pdf-chat-settings-${title}` }
+  });
+  return section;
+}
+
+// src/settings-tab.ts
 var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
@@ -1600,37 +1855,43 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "PDF Chat \u8BBE\u7F6E" });
-    containerEl.createEl("h3", { text: "\u6A21\u578B\u5217\u8868" });
+    this.renderModelSection(createSettingsSection(containerEl, "\u6A21\u578B"));
+    this.renderChatSection(createSettingsSection(containerEl, "\u804A\u5929"));
+    this.renderTranslationSection(createSettingsSection(containerEl, "\u7FFB\u8BD1"));
+    this.renderPaperContextSection(createSettingsSection(containerEl, "\u8BBA\u6587\u4E0A\u4E0B\u6587"));
+    this.renderAdvancedSection(createSettingsSection(containerEl, "\u9AD8\u7EA7"));
+  }
+  renderModelSection(containerEl) {
     containerEl.createEl("p", {
-      text: "\u53EF\u4EE5\u6DFB\u52A0\u591A\u5957\u6A21\u578B\u914D\u7F6E(\u4E0D\u540C\u7684 endpoint / API Key / \u6A21\u578B\u540D),\u5F39\u7A97\u91CC\u7684\u201C\u6A21\u578B\u201D\u4E0B\u62C9\u6846\u4F1A\u5217\u51FA\u8FD9\u91CC\u5168\u90E8\u6761\u76EE\u3002\u6807\u4E86\u201C\u9ED8\u8BA4\u201D\u7684\u90A3\u4E00\u6761\u662F\u65B0\u5EFA\u5BF9\u8BDD\u65F6\u9ED8\u8BA4\u4F7F\u7528\u7684\u6A21\u578B\u3002",
+      text: "\u53EF\u4EE5\u6DFB\u52A0\u591A\u5957 OpenAI \u517C\u5BB9\u6A21\u578B\u914D\u7F6E\u3002\u5F39\u7A97\u4F1A\u5217\u51FA\u5168\u90E8\u6761\u76EE\uFF0C\u6807\u4E3A\u9ED8\u8BA4\u7684\u6761\u76EE\u7528\u4E8E\u65B0\u5BF9\u8BDD\u3002",
       cls: "setting-item-description"
     });
-    this.plugin.settings.models.forEach((m, idx) => {
-      const isActive = m.id === this.plugin.settings.activeModelId;
-      const header = new import_obsidian3.Setting(containerEl).setName(`\u6A21\u578B ${idx + 1}${isActive ? " \xB7 \u9ED8\u8BA4" : ""}`);
+    this.plugin.settings.models.forEach((model, index) => {
+      const isActive = model.id === this.plugin.settings.activeModelId;
+      const header = new import_obsidian3.Setting(containerEl).setName(`\u6A21\u578B ${index + 1}${isActive ? " \xB7 \u9ED8\u8BA4" : ""}`);
       header.addText(
-        (text) => text.setPlaceholder("\u540D\u79F0").setValue(m.name).onChange(async (value) => {
-          m.name = value;
+        (text) => text.setPlaceholder("\u540D\u79F0").setValue(model.name).onChange(async (value) => {
+          model.name = value;
           await this.plugin.saveSettings();
         })
       );
       if (!isActive) {
         header.addExtraButton(
-          (btn) => btn.setIcon("star").setTooltip("\u8BBE\u4E3A\u9ED8\u8BA4").onClick(async () => {
-            this.plugin.settings.activeModelId = m.id;
+          (button) => button.setIcon("star").setTooltip("\u8BBE\u4E3A\u9ED8\u8BA4").onClick(async () => {
+            this.plugin.settings.activeModelId = model.id;
             await this.plugin.saveSettings();
             this.display();
           })
         );
       }
       header.addExtraButton(
-        (btn) => btn.setIcon("trash").setTooltip("\u5220\u9664\u8FD9\u4E2A\u6A21\u578B").onClick(async () => {
+        (button) => button.setIcon("trash").setTooltip("\u5220\u9664\u8FD9\u4E2A\u6A21\u578B").onClick(async () => {
           if (this.plugin.settings.models.length <= 1) {
             new import_obsidian3.Notice("\u81F3\u5C11\u8981\u4FDD\u7559\u4E00\u4E2A\u6A21\u578B\u914D\u7F6E");
             return;
           }
-          this.plugin.settings.models.splice(idx, 1);
-          if (this.plugin.settings.activeModelId === m.id) {
+          this.plugin.settings.models.splice(index, 1);
+          if (this.plugin.settings.activeModelId === model.id) {
             this.plugin.settings.activeModelId = this.plugin.settings.models[0].id;
           }
           await this.plugin.saveSettings();
@@ -1638,28 +1899,28 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
         })
       );
       new import_obsidian3.Setting(containerEl).setName("Endpoint").addText(
-        (text) => text.setPlaceholder("OpenAI \u517C\u5BB9\u7684 chat/completions \u63A5\u53E3\u5730\u5740").setValue(m.endpoint).onChange(async (value) => {
-          m.endpoint = value.trim();
+        (text) => text.setPlaceholder("OpenAI \u517C\u5BB9\u7684 chat/completions \u63A5\u53E3\u5730\u5740").setValue(model.endpoint).onChange(async (value) => {
+          model.endpoint = value.trim();
           await this.plugin.saveSettings();
         })
       );
       new import_obsidian3.Setting(containerEl).setName("API Key").addText((text) => {
         text.inputEl.type = "password";
-        text.setValue(m.apiKey).onChange(async (value) => {
-          m.apiKey = value.trim();
+        text.setValue(model.apiKey).onChange(async (value) => {
+          model.apiKey = value.trim();
           await this.plugin.saveSettings();
         });
       });
       new import_obsidian3.Setting(containerEl).setName("\u6A21\u578B\u540D(model \u5B57\u6BB5)").addText(
-        (text) => text.setValue(m.model).onChange(async (value) => {
-          m.model = value.trim();
+        (text) => text.setValue(model.model).onChange(async (value) => {
+          model.model = value.trim();
           await this.plugin.saveSettings();
         })
       );
       containerEl.createEl("hr");
     });
     new import_obsidian3.Setting(containerEl).addButton(
-      (btn) => btn.setButtonText("+ \u6DFB\u52A0\u6A21\u578B").setCta().onClick(async () => {
+      (button) => button.setButtonText("+ \u6DFB\u52A0\u6A21\u578B").setCta().onClick(async () => {
         this.plugin.settings.models.push({
           id: "model-" + Date.now(),
           name: "\u65B0\u6A21\u578B",
@@ -1671,7 +1932,9 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
         this.display();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("\u6D41\u5F0F\u8F93\u51FA").setDesc("\u5F00\u542F\u540E\u7B54\u6848\u4F1A\u4E00\u8FB9\u751F\u6210\u4E00\u8FB9\u663E\u793A;\u5173\u95ED\u5219\u7B49\u751F\u6210\u5B8C\u518D\u4E00\u6B21\u6027\u663E\u793A").addToggle(
+  }
+  renderChatSection(containerEl) {
+    new import_obsidian3.Setting(containerEl).setName("\u6D41\u5F0F\u8F93\u51FA").setDesc("\u5F00\u542F\u540E\u7B54\u6848\u4F1A\u4E00\u8FB9\u751F\u6210\u4E00\u8FB9\u663E\u793A\uFF1B\u5173\u95ED\u5219\u7B49\u751F\u6210\u5B8C\u518D\u4E00\u6B21\u6027\u663E\u793A").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.stream).onChange(async (value) => {
         this.plugin.settings.stream = value;
         await this.plugin.saveSettings();
@@ -1679,15 +1942,15 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
     );
     new import_obsidian3.Setting(containerEl).setName("Temperature").addText(
       (text) => text.setValue(String(this.plugin.settings.temperature)).onChange(async (value) => {
-        const n = parseFloat(value);
-        this.plugin.settings.temperature = Number.isFinite(n) ? n : DEFAULT_SETTINGS.temperature;
+        const parsed = parseFloat(value);
+        this.plugin.settings.temperature = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.temperature;
         await this.plugin.saveSettings();
       })
     );
     new import_obsidian3.Setting(containerEl).setName("Max Tokens").addText(
       (text) => text.setValue(String(this.plugin.settings.maxTokens)).onChange(async (value) => {
-        const n = parseInt(value, 10);
-        this.plugin.settings.maxTokens = Number.isFinite(n) ? n : DEFAULT_SETTINGS.maxTokens;
+        const parsed = parseInt(value, 10);
+        this.plugin.settings.maxTokens = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.maxTokens;
         await this.plugin.saveSettings();
       })
     );
@@ -1698,55 +1961,53 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian3.Setting(containerEl).setName("\u7FFB\u8BD1\u76EE\u6807\u8BED\u8A00").setDesc("\u7528\u4E8E\u5F39\u7A97\u4E2D\u7684\u9009\u533A\u7FFB\u8BD1,\u4F8B\u5982 zh-CN\u3001en \u6216 ja").addText((text) => {
-      text.setValue(this.plugin.settings.translation.targetLanguage).onChange(async (value) => {
+  }
+  renderTranslationSection(containerEl) {
+    new import_obsidian3.Setting(containerEl).setName("\u7FFB\u8BD1\u76EE\u6807\u8BED\u8A00").setDesc("\u7528\u4E8E\u5F39\u7A97\u4E2D\u7684\u9009\u533A\u7FFB\u8BD1\uFF0C\u4F8B\u5982 zh-CN\u3001en \u6216 ja").addText(
+      (text) => text.setValue(this.plugin.settings.translation.targetLanguage).onChange(async (value) => {
         this.plugin.settings.translation.targetLanguage = value.trim() || DEFAULT_SETTINGS.translation.targetLanguage;
         await this.plugin.saveSettings();
-      });
-    });
-    new import_obsidian3.Setting(containerEl).setName("\u7FFB\u8BD1\u9644\u52A0\u8981\u6C42").setDesc("\u53EF\u9009\u3002\u7528\u4E8E\u8865\u5145\u672F\u8BED\u3001\u98CE\u683C\u6216\u9886\u57DF\u7EA6\u5B9A;\u539F\u6587\u4F1A\u7531\u72EC\u7ACB\u7FFB\u8BD1\u4EFB\u52A1\u5B89\u5168\u9644\u52A0\u3002").addTextArea((text) => {
+      })
+    );
+    new import_obsidian3.Setting(containerEl).setName("\u7FFB\u8BD1\u9644\u52A0\u8981\u6C42").setDesc("\u53EF\u9009\u3002\u7528\u4E8E\u8865\u5145\u672F\u8BED\u3001\u98CE\u683C\u6216\u9886\u57DF\u7EA6\u5B9A\uFF1B\u539F\u6587\u7531\u72EC\u7ACB\u7FFB\u8BD1\u4EFB\u52A1\u5B89\u5168\u9644\u52A0\u3002").addTextArea((text) => {
       text.inputEl.rows = 4;
       text.setValue(this.plugin.settings.translation.additionalInstruction).onChange(async (value) => {
         this.plugin.settings.translation.additionalInstruction = value;
         await this.plugin.saveSettings();
       });
     });
+  }
+  renderPaperContextSection(containerEl) {
+    containerEl.createEl("h4", { text: "\u5168\u6587\u6458\u8981" });
     containerEl.createEl("p", {
-      text: "\u9ED8\u8BA4\u5FEB\u6377\u952E: Ctrl+Alt+Q \u65B0\u5F00\u4E00\u4EFD\u5BF9\u8BDD(\u4E0D\u52A0\u8F7D\u4E4B\u524D\u4FDD\u5B58\u7684\u8BB0\u5F55);Ctrl+Q \u7EE7\u7EED\u4E0A\u6B21\u5BF9\u8BDD(\u6062\u590D\u4E4B\u524D\u4FDD\u5B58\u7684\u8BB0\u5F55)\u3002\u4E24\u4E2A\u547D\u4EE4\u90FD\u53EF\u4EE5\u5728 \u8BBE\u7F6E\u2192\u5FEB\u6377\u952E\u2192\u641C\u7D22 \u201CPDF Chat\u201D \u91CC\u81EA\u884C\u4FEE\u6539\u3002\u4F7F\u7528\u65B9\u6CD5: \u5728 PDF \u6216\u4EFB\u610F\u7B14\u8BB0\u91CC\u9009\u4E2D\u4E00\u6BB5\u6587\u5B57,\u6309\u5FEB\u6377\u952E\u5373\u53EF\u5F39\u7A97\u63D0\u95EE,\u5F39\u7A97\u5185\u53EF\u8FDE\u7EED\u8FFD\u95EE,\u652F\u6301\u6D41\u5F0F\u56DE\u7B54\u3001\u505C\u6B62\u751F\u6210\u3001\u62D6\u52A8\u6807\u9898\u680F\u79FB\u52A8\u4F4D\u7F6E\u3001\u62D6\u62FD\u53F3\u4E0B\u89D2\u8C03\u6574\u5927\u5C0F\u3002",
+      text: "\u5168\u6587\u6458\u8981\u6309\u6587\u4EF6\u8DEF\u5F84\u548C\u4FEE\u6539\u65F6\u95F4\u7F13\u5B58\uFF0C\u53EF\u4F5C\u4E3A\u5F53\u524D\u9009\u533A\u4E4B\u5916\u7684\u7B80\u8981\u80CC\u666F\u3002\u4EC5\u5BF9 PDF \u751F\u6548\u3002",
       cls: "setting-item-description"
     });
-    containerEl.createEl("h3", { text: "\u5168\u6587\u6458\u8981(\u6D53\u7F29\u4E0A\u4E0B\u6587)" });
-    containerEl.createEl("p", {
-      text: "\u5728 PDF \u91CC\u5212\u8BCD\u5524\u8D77\u5F39\u7A97\u540E,\u53EF\u4EE5\u52FE\u9009\u201C\u9644\u5E26\u5168\u6587\u6458\u8981\u4F5C\u4E3A\u80CC\u666F\u201D:\u4F1A\u5148\u7528\u4E0B\u9762\u9009\u7684\u6A21\u578B\u628A\u5F53\u524D PDF \u5168\u6587\u6D53\u7F29\u6210\u4E00\u4EFD\u6458\u8981(\u6309\u6587\u4EF6\u8DEF\u5F84+\u4FEE\u6539\u65F6\u95F4\u7F13\u5B58,\u6587\u4EF6\u4E0D\u53D8\u5C31\u4E0D\u7528\u91CD\u65B0\u751F\u6210),\u518D\u8FDE\u540C\u4F60\u9009\u4E2D\u7684\u90A3\u6BB5\u539F\u6587\u4E00\u8D77\u53D1\u7ED9\u4E3B\u6A21\u578B\u56DE\u7B54\u95EE\u9898,\u65E2\u6709\u5168\u5C40\u80CC\u666F,\u53C8\u4E0D\u4F1A\u56E0\u4E3A\u76F4\u63A5\u628A\u6574\u7BC7\u8BBA\u6587\u585E\u8FDB\u4E0A\u4E0B\u6587\u800C\u8BA9\u56DE\u7B54\u8DD1\u9898\u6216\u8D85\u957F\u3002\u4EC5\u5BF9 PDF \u89C6\u56FE\u91CC\u7684\u5212\u8BCD\u751F\u6548\u3002",
-      cls: "setting-item-description"
-    });
-    new import_obsidian3.Setting(containerEl).setName("\u6253\u5F00 PDF \u5212\u8BCD\u5F39\u7A97\u65F6\u81EA\u52A8\u9644\u5E26\u5168\u6587\u6458\u8981").setDesc(
-      "\u5F00\u542F\u540E\u4E0D\u9700\u8981\u6BCF\u6B21\u624B\u52A8\u52FE\u9009/\u70B9\u51FB:\u5DF2\u7F13\u5B58\u8FC7\u6458\u8981\u7684\u8BBA\u6587\u76F4\u63A5\u81EA\u52A8\u9644\u5E26,\u6CA1\u7F13\u5B58\u8FC7\u7684\u4F1A\u81EA\u52A8\u751F\u6210\u4E00\u6B21(\u6309\u6587\u4EF6+\u4FEE\u6539\u65F6\u95F4\u7F13\u5B58,\u540C\u4E00\u7BC7\u8BBA\u6587\u4E4B\u540E\u57FA\u672C\u79D2\u5F00)\u3002\u5173\u95ED\u5219\u6539\u56DE\u624B\u52A8\u52FE\u9009\u201C\u9644\u5E26\u5168\u6587\u6458\u8981\u4F5C\u4E3A\u80CC\u666F\u201D\u3002"
-    ).addToggle(
+    new import_obsidian3.Setting(containerEl).setName("\u6253\u5F00 PDF \u5212\u8BCD\u5F39\u7A97\u65F6\u81EA\u52A8\u9644\u5E26\u5168\u6587\u6458\u8981").setDesc("\u6709\u7F13\u5B58\u65F6\u76F4\u63A5\u4F7F\u7528\uFF1B\u6CA1\u6709\u7F13\u5B58\u65F6\u81EA\u52A8\u751F\u6210\u4E00\u6B21\u3002").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.autoDocSummary).onChange(async (value) => {
         this.plugin.settings.autoDocSummary = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("\u6458\u8981\u751F\u6210\u7528\u7684\u6A21\u578B").setDesc("\u5EFA\u8BAE\u9009\u4E00\u4E2A\u901F\u5EA6\u5FEB\u3001\u6210\u672C\u4F4E\u7684\u6A21\u578B,\u4E13\u95E8\u7528\u6765\u6D53\u7F29\u5168\u6587(\u548C\u804A\u5929\u4E3B\u6A21\u578B\u53EF\u4EE5\u4E0D\u540C)").addDropdown((dropdown) => {
-      this.plugin.settings.models.forEach((m) => dropdown.addOption(m.id, m.name));
+    new import_obsidian3.Setting(containerEl).setName("\u6458\u8981\u751F\u6210\u7528\u7684\u6A21\u578B").setDesc("\u5EFA\u8BAE\u9009\u62E9\u901F\u5EA6\u5FEB\u3001\u6210\u672C\u4F4E\u7684\u6A21\u578B\uFF0C\u804A\u5929\u4E3B\u6A21\u578B\u53EF\u4EE5\u4E0D\u540C\u3002").addDropdown((dropdown) => {
+      this.plugin.settings.models.forEach((model) => dropdown.addOption(model.id, model.name));
       dropdown.setValue(this.plugin.settings.summaryModelId || this.plugin.settings.activeModelId);
       dropdown.onChange(async (value) => {
         this.plugin.settings.summaryModelId = value;
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian3.Setting(containerEl).setName("\u5168\u6587\u622A\u65AD\u5B57\u7B26\u6570\u4E0A\u9650").setDesc("\u8D85\u8FC7\u8FD9\u4E2A\u957F\u5EA6\u7684\u5168\u6587\u4F1A\u5148\u622A\u65AD\u518D\u9001\u53BB\u751F\u6210\u6458\u8981,\u907F\u514D\u8D85\u51FA\u6A21\u578B\u4E0A\u4E0B\u6587\u7A97\u53E3(\u8FD9\u4E2A\u662F\u8F93\u5165\u4FA7\u9650\u5236,\u4E0D\u5F71\u54CD\u8F93\u51FA\u6458\u8981\u7684\u957F\u77ED)").addText(
+    new import_obsidian3.Setting(containerEl).setName("\u5168\u6587\u622A\u65AD\u5B57\u7B26\u6570\u4E0A\u9650").addText(
       (text) => text.setValue(String(this.plugin.settings.summaryMaxChars)).onChange(async (value) => {
-        const n = parseInt(value, 10);
-        this.plugin.settings.summaryMaxChars = Number.isFinite(n) ? n : DEFAULT_SETTINGS.summaryMaxChars;
+        const parsed = parseInt(value, 10);
+        this.plugin.settings.summaryMaxChars = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.summaryMaxChars;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("\u6458\u8981\u6700\u5927\u8F93\u51FA token \u6570").setDesc("\u5355\u72EC\u9650\u5236\u6458\u8981\u672C\u8EAB\u7684\u8F93\u51FA\u957F\u5EA6,\u4E0D\u548C\u4E0B\u9762\u804A\u5929\u7684 Max Tokens \u5171\u7528,\u907F\u514D\u6458\u8981\u5199\u5F97\u53C8\u957F\u53C8\u788E").addText(
+    new import_obsidian3.Setting(containerEl).setName("\u6458\u8981\u6700\u5927\u8F93\u51FA token \u6570").addText(
       (text) => text.setValue(String(this.plugin.settings.summaryMaxTokens)).onChange(async (value) => {
-        const n = parseInt(value, 10);
-        this.plugin.settings.summaryMaxTokens = Number.isFinite(n) ? n : DEFAULT_SETTINGS.summaryMaxTokens;
+        const parsed = parseInt(value, 10);
+        this.plugin.settings.summaryMaxTokens = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.summaryMaxTokens;
         await this.plugin.saveSettings();
       })
     );
@@ -1759,41 +2020,31 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
       });
     });
     new import_obsidian3.Setting(containerEl).setName("\u6E05\u7A7A\u5DF2\u7F13\u5B58\u7684\u5168\u6587\u6458\u8981").setDesc(`\u5F53\u524D\u5DF2\u7F13\u5B58 ${Object.keys(this.plugin.settings.docSummaries || {}).length} \u7BC7\u6587\u6863\u7684\u6458\u8981`).addButton(
-      (btn) => btn.setButtonText("\u6E05\u7A7A\u7F13\u5B58").onClick(async () => {
+      (button) => button.setButtonText("\u6E05\u7A7A\u7F13\u5B58").onClick(async () => {
         this.plugin.settings.docSummaries = {};
         await this.plugin.saveSettings();
         this.display();
       })
     );
-    containerEl.createEl("h3", { text: "RAG \u68C0\u7D22(\u5173\u952E\u8BCD/BM25,\u65E0\u9700 embedding \u6A21\u578B)" });
+    containerEl.createEl("h4", { text: "\u5168\u6587\u76F4\u8BFB / RAG \u68C0\u7D22" });
     containerEl.createEl("p", {
-      text: "\u8DDF\u4E0A\u9762\u7684\u201C\u5168\u6587\u6458\u8981\u201D\u662F\u4E92\u8865\u5173\u7CFB:\u6458\u8981\u7ED9\u4E00\u4EFD\u5168\u5C40\u80CC\u666F,\u8FD9\u91CC\u5219\u662F\u9488\u5BF9\u4F60\u5F53\u524D\u95EE\u7684\u5177\u4F53\u95EE\u9898,\u5728\u5168\u6587\u91CC\u5B9A\u4F4D\u76F8\u5173\u5185\u5BB9\u585E\u8FDB\u4E0A\u4E0B\u6587,\u66F4\u9002\u5408\u201C\u8BBA\u6587\u91CC\u5177\u4F53\u67D0\u4E2A\u6570\u5B57/\u672F\u8BED/\u65B9\u6CD5\u662F\u4EC0\u4E48\u201D\u8FD9\u7C7B\u7EC6\u8282\u95EE\u9898\u3002\u7EAF\u672C\u5730\u8BA1\u7B97,\u4E0D\u9700\u8981\u4EFB\u4F55 embedding \u6A21\u578B\u6216\u989D\u5916\u63A5\u53E3\u3002\u4EC5\u5BF9 PDF \u89C6\u56FE\u91CC\u7684\u5212\u8BCD\u751F\u6548\u3002",
+      text: "\u8F83\u77ED PDF \u76F4\u63A5\u63D0\u4F9B\u5168\u6587\uFF1B\u8D85\u8FC7\u9608\u503C\u65F6\u9000\u56DE\u672C\u5730 BM25 \u68C0\u7D22\u3002\u68C0\u7D22\u4E0E\u6458\u8981\u4E92\u8865\uFF0C\u4E0D\u9700\u8981 embedding \u6A21\u578B\u3002",
       cls: "setting-item-description"
     });
-    containerEl.createEl("p", {
-      text: "\u5B9E\u6D4B\u53D1\u73B0\u5173\u952E\u8BCD(BM25)\u68C0\u7D22\u5BF9\u201C\u5217\u4E3E\u7C7B\u201D\u95EE\u9898(\u6BD4\u5982\u201C\u8BBA\u6587\u5BF9\u6BD4\u4E86\u54EA\u4E9B\u57FA\u7EBF\u7B97\u6CD5\u201D)\u7ECF\u5E38\u68C0\u7D22\u4E0D\u51C6\u2014\u2014\u771F\u6B63\u7B54\u6848\u6BB5\u843D\u91CC\u5168\u662F\u4E13\u6709\u540D\u8BCD,\u53CD\u800C\u4F1A\u88AB\u8BBA\u6587\u91CC\u5176\u4ED6\u5927\u91CF\u63D0\u5230\u76F8\u540C\u901A\u7528\u8BCD(\u76F8\u5173\u5DE5\u4F5C\u3001\u9644\u5F55\u8865\u5145\u5B9E\u9A8C\u7B49)\u7684\u6BB5\u843D\u6324\u6389\u3002\u800C\u5927\u90E8\u5206\u5355\u7BC7\u8BBA\u6587\u5168\u6587\u672C\u8EAB\u4E0D\u957F,\u76F4\u63A5\u8BFB\u5168\u6587\u8FDC\u6BD4\u201C\u731C\u54EA\u4E00\u5757\u201D\u66F4\u53EF\u9760\u3002\u6240\u4EE5\u4E0B\u9762\u8BBE\u4E86\u4E00\u4E2A\u5B57\u6570\u9608\u503C:\u5168\u6587\u957F\u5EA6\u5728\u9608\u503C\u4EE5\u5185\u65F6\u76F4\u63A5\u628A\u5168\u6587\u4EA4\u7ED9\u6A21\u578B\u56DE\u7B54;\u53EA\u6709\u8D85\u8FC7\u9608\u503C(\u5168\u6587\u585E\u4E0D\u4E0B)\u624D\u9000\u56DE\u5173\u952E\u8BCD\u68C0\u7D22\u3002",
-      cls: "setting-item-description"
-    });
-    new import_obsidian3.Setting(containerEl).setName("\u5168\u6587\u76F4\u8BFB\u7684\u5B57\u6570\u9608\u503C").setDesc("\u5168\u6587\u5B57\u7B26\u6570\u4E0D\u8D85\u8FC7\u8FD9\u4E2A\u503C\u65F6,\u76F4\u63A5\u628A\u5168\u6587\u4EA4\u7ED9\u6A21\u578B\u56DE\u7B54(\u66F4\u51C6);\u8D85\u8FC7\u65F6\u624D\u9000\u56DE\u4E0B\u9762\u7684\u5173\u952E\u8BCD\u68C0\u7D22").addText(
+    new import_obsidian3.Setting(containerEl).setName("\u5168\u6587\u76F4\u8BFB\u7684\u5B57\u6570\u9608\u503C").setDesc("\u5168\u6587\u4E0D\u8D85\u8FC7\u6B64\u503C\u65F6\u76F4\u63A5\u4EA4\u7ED9\u6A21\u578B\u56DE\u7B54\uFF1B\u8D85\u8FC7\u65F6\u4F7F\u7528\u5173\u952E\u8BCD\u68C0\u7D22\u3002").addText(
       (text) => text.setValue(String(this.plugin.settings.ragFullTextThreshold)).onChange(async (value) => {
-        const n = parseInt(value, 10);
-        this.plugin.settings.ragFullTextThreshold = Number.isFinite(n) ? n : DEFAULT_SETTINGS.ragFullTextThreshold;
+        const parsed = parseInt(value, 10);
+        this.plugin.settings.ragFullTextThreshold = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.ragFullTextThreshold;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("\u6253\u5F00 PDF \u5212\u8BCD\u5F39\u7A97\u65F6\u81EA\u52A8\u5EFA\u7ACB\u68C0\u7D22\u7D22\u5F15").setDesc("\u5F00\u542F\u540E\u4E0D\u9700\u8981\u624B\u52A8\u52FE\u9009/\u70B9\u51FB\u201C\u5EFA\u7ACB\u7D22\u5F15\u201D,\u7EAF\u672C\u5730\u8BA1\u7B97,\u51E0\u4E4E\u4E0D\u8017\u65F6\u95F4").addToggle(
+    new import_obsidian3.Setting(containerEl).setName("\u6253\u5F00 PDF \u5212\u8BCD\u5F39\u7A97\u65F6\u81EA\u52A8\u5EFA\u7ACB\u68C0\u7D22\u7D22\u5F15").setDesc("\u7D22\u5F15\u662F\u7EAF\u672C\u5730\u6587\u672C\u5207\u5757\uFF0C\u51E0\u4E4E\u4E0D\u8017\u65F6\u3002").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.autoRag).onChange(async (value) => {
         this.plugin.settings.autoRag = value;
         await this.plugin.saveSettings();
       })
     );
-    containerEl.createEl("p", {
-      text: "\u4EE5\u4E0B\u51E0\u9879\u53EA\u5728\u5168\u6587\u8D85\u8FC7\u4E0A\u9762\u9608\u503C\u3001\u9000\u56DE\u5173\u952E\u8BCD\u68C0\u7D22\u65F6\u624D\u4F1A\u7528\u5230:",
-      cls: "setting-item-description"
-    });
-    new import_obsidian3.Setting(containerEl).setName("\u63D0\u95EE\u524D\u5148\u8BA9\u5FEB\u6A21\u578B\u601D\u8003\u68C0\u7D22\u89D2\u5EA6").setDesc(
-      "BM25 \u662F\u7EAF\u5B57\u7B26\u5339\u914D,\u4E2D\u6587\u95EE\u9898\u548C\u82F1\u6587\u8BBA\u6587\u539F\u6587\u4E4B\u95F4\u6CA1\u6709\u5171\u540C\u5B57\u7B26,\u76F4\u63A5\u68C0\u7D22\u57FA\u672C\u4F1A\u843D\u7A7A\u3002\u5F00\u542F\u540E\u6BCF\u6B21\u63D0\u95EE\u4F1A\u5148\u7528\u201C\u6458\u8981\u751F\u6210\u7528\u7684\u6A21\u578B\u201D\u601D\u8003\u8FD9\u4E2A\u95EE\u9898\u8BE5\u4ECE\u54EA\u51E0\u4E2A\u89D2\u5EA6/\u8BF4\u6CD5\u53BB\u68C0\u7D22(\u4E0D\u53EA\u662F\u9010\u5B57\u7FFB\u8BD1),\u751F\u6210 3 \u7EC4\u4E2D\u82F1\u53CC\u8BED\u68C0\u7D22\u8BCD,\u5206\u522B\u68C0\u7D22\u540E\u518D\u878D\u5408\u6392\u5E8F,\u53D6\u6700\u7EC8\u6700\u76F8\u5173\u7684\u51E0\u5757\u2014\u2014\u6BD4\u5355\u4E00\u68C0\u7D22\u8BCD\u8986\u76D6\u66F4\u5168,\u4EE3\u4EF7\u662F\u6BCF\u6B21\u63D0\u95EE\u591A\u4E00\u6B21\u6A21\u578B\u8C03\u7528(\u901A\u5E38\u4E00\u4E24\u79D2)\u3002"
-    ).addToggle(
+    new import_obsidian3.Setting(containerEl).setName("\u63D0\u95EE\u524D\u5148\u8BA9\u5FEB\u6A21\u578B\u601D\u8003\u68C0\u7D22\u89D2\u5EA6").setDesc("\u751F\u6210\u591A\u7EC4\u4E2D\u82F1\u53CC\u8BED\u68C0\u7D22\u8BCD\u540E\u878D\u5408\u6392\u5E8F\uFF0C\u4EE3\u4EF7\u662F\u6BCF\u6B21\u63D0\u95EE\u591A\u4E00\u6B21\u6A21\u578B\u8C03\u7528\u3002").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.ragQueryTranslate).onChange(async (value) => {
         this.plugin.settings.ragQueryTranslate = value;
         await this.plugin.saveSettings();
@@ -1809,39 +2060,45 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
     });
     new import_obsidian3.Setting(containerEl).setName("\u6BCF\u6B21\u68C0\u7D22\u8FD4\u56DE\u7684\u7247\u6BB5\u6570(Top K)").addText(
       (text) => text.setValue(String(this.plugin.settings.ragTopK)).onChange(async (value) => {
-        const n = parseInt(value, 10);
-        this.plugin.settings.ragTopK = Number.isFinite(n) ? n : DEFAULT_SETTINGS.ragTopK;
+        const parsed = parseInt(value, 10);
+        this.plugin.settings.ragTopK = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.ragTopK;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("\u5355\u5757\u6700\u5927\u5B57\u7B26\u6570").setDesc("\u5168\u6587\u6309\u9875\u5207\u5757,\u8D85\u8FC7\u8FD9\u4E2A\u957F\u5EA6\u7684\u9875\u4F1A\u5728\u9875\u5185\u518D\u5207\u5F00(\u5E26\u4E00\u70B9\u91CD\u53E0),\u4E0D\u4F1A\u8DE8\u9875\u5408\u5E76").addText(
+    new import_obsidian3.Setting(containerEl).setName("\u5355\u5757\u6700\u5927\u5B57\u7B26\u6570").addText(
       (text) => text.setValue(String(this.plugin.settings.ragChunkSize)).onChange(async (value) => {
-        const n = parseInt(value, 10);
-        this.plugin.settings.ragChunkSize = Number.isFinite(n) ? n : DEFAULT_SETTINGS.ragChunkSize;
+        const parsed = parseInt(value, 10);
+        this.plugin.settings.ragChunkSize = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.ragChunkSize;
         await this.plugin.saveSettings();
       })
     );
     new import_obsidian3.Setting(containerEl).setName("\u5207\u5757\u91CD\u53E0\u5B57\u7B26\u6570").addText(
       (text) => text.setValue(String(this.plugin.settings.ragChunkOverlap)).onChange(async (value) => {
-        const n = parseInt(value, 10);
-        this.plugin.settings.ragChunkOverlap = Number.isFinite(n) ? n : DEFAULT_SETTINGS.ragChunkOverlap;
+        const parsed = parseInt(value, 10);
+        this.plugin.settings.ragChunkOverlap = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.ragChunkOverlap;
         await this.plugin.saveSettings();
       })
     );
     new import_obsidian3.Setting(containerEl).setName("\u6E05\u7A7A\u5DF2\u7F13\u5B58\u7684\u68C0\u7D22\u7D22\u5F15").setDesc(`\u5F53\u524D\u5DF2\u4E3A ${Object.keys(this.plugin.settings.docChunks || {}).length} \u7BC7\u6587\u6863\u5EFA\u7ACB\u8FC7\u7D22\u5F15`).addButton(
-      (btn) => btn.setButtonText("\u6E05\u7A7A\u7F13\u5B58").onClick(async () => {
+      (button) => button.setButtonText("\u6E05\u7A7A\u7F13\u5B58").onClick(async () => {
         this.plugin.settings.docChunks = {};
         await this.plugin.saveSettings();
         this.display();
       })
     );
-    containerEl.createEl("h3", { text: "\u9605\u8BFB\u6A21\u5F0F\u9884\u8BBE" });
+  }
+  renderAdvancedSection(containerEl) {
     containerEl.createEl("p", {
-      text: "\u5F39\u7A97\u91CC\u7684\u201C\u9605\u8BFB\u6A21\u5F0F\u201D\u4E0B\u62C9\u6846\u4F1A\u5217\u51FA\u4E0B\u9762\u8FD9\u4E9B\u9884\u8BBE,\u5207\u6362\u540E\u4F1A\u66FF\u6362\u5F53\u524D\u5BF9\u8BDD\u7684\u7CFB\u7EDF\u63D0\u793A\u8BCD(\u539F\u6587\u7247\u6BB5\u4F9D\u7136\u4F1A\u81EA\u52A8\u9644\u52A0\u5728\u540E\u9762)\u3002",
+      text: "\u9ED8\u8BA4\u5FEB\u6377\u952E\uFF1ACtrl+Alt+Q \u65B0\u5F00\u5BF9\u8BDD\uFF1BCtrl+Q \u7EE7\u7EED\u4E0A\u6B21\u5BF9\u8BDD\u3002\u53EF\u5728 \u8BBE\u7F6E\u2192\u5FEB\u6377\u952E\u2192\u641C\u7D22\u201CPDF Chat\u201D\u4E2D\u4FEE\u6539\u3002\u5F39\u7A97\u652F\u6301\u62D6\u52A8\u3001\u7F29\u653E\u3001\u8FDE\u7EED\u8FFD\u95EE\u548C\u505C\u6B62\u751F\u6210\u3002",
       cls: "setting-item-description"
     });
-    this.plugin.settings.promptPresets.forEach((preset, idx) => {
-      const nameSetting = new import_obsidian3.Setting(containerEl).setName(`\u9884\u8BBE ${idx + 1}`);
+    containerEl.createEl("h4", { text: "\u9605\u8BFB\u6A21\u5F0F\u9884\u8BBE" });
+    containerEl.createEl("p", {
+      text: "\u5F39\u7A97\u7684\u9605\u8BFB\u6A21\u5F0F\u4F1A\u5217\u51FA\u8FD9\u4E9B\u9884\u8BBE\uFF1B\u5207\u6362\u540E\u66FF\u6362\u7CFB\u7EDF\u63D0\u793A\u8BCD\uFF0C\u9009\u533A\u539F\u6587\u4ECD\u4F1A\u81EA\u52A8\u9644\u52A0\u3002",
+      cls: "setting-item-description"
+    });
+    this.plugin.settings.promptPresets.forEach((preset, index) => {
+      const nameSetting = new import_obsidian3.Setting(containerEl).setName(`\u9884\u8BBE ${index + 1}`);
       nameSetting.addText(
         (text) => text.setPlaceholder("\u540D\u79F0").setValue(preset.name).onChange(async (value) => {
           preset.name = value;
@@ -1849,8 +2106,8 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
         })
       );
       nameSetting.addExtraButton(
-        (btn) => btn.setIcon("trash").setTooltip("\u5220\u9664\u8FD9\u4E2A\u9884\u8BBE").onClick(async () => {
-          this.plugin.settings.promptPresets.splice(idx, 1);
+        (button) => button.setIcon("trash").setTooltip("\u5220\u9664\u8FD9\u4E2A\u9884\u8BBE").onClick(async () => {
+          this.plugin.settings.promptPresets.splice(index, 1);
           await this.plugin.saveSettings();
           this.display();
         })
@@ -1865,7 +2122,7 @@ var PDFChatSettingTab = class extends import_obsidian3.PluginSettingTab {
       });
     });
     new import_obsidian3.Setting(containerEl).addButton(
-      (btn) => btn.setButtonText("+ \u6DFB\u52A0\u9884\u8BBE").setCta().onClick(async () => {
+      (button) => button.setButtonText("+ \u6DFB\u52A0\u9884\u8BBE").setCta().onClick(async () => {
         this.plugin.settings.promptPresets.push({
           id: "preset-" + Date.now(),
           name: "\u65B0\u9884\u8BBE",
