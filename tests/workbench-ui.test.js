@@ -635,10 +635,10 @@ test("assistant completion shows follow-up suggestions without auto-sending", as
   const buttons = byTag(suggestions[0], "button");
   assert.deepEqual(
     buttons.map((button) => button.textContent),
-    ["解释这段内容", "总结核心贡献", "分析实验结果", "与相关工作对比"]
+    ["举一个例子", "请进一步通俗易懂地讲解清楚", "请进一步给出详细的推导步骤", "进一步分析为什么是这样的"]
   );
   buttons[0].dispatch("click");
-  assert.equal(modal.inputEl.value, "解释这段内容");
+  assert.equal(modal.inputEl.value, "举一个例子");
   assert.equal(modal.inputEl.focused, true);
   assert.equal(requests.length, 1);
   modal.inputEl.dispatch("input");

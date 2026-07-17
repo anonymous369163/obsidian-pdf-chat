@@ -484,8 +484,12 @@ export class PDFChatModal extends Modal {
   }
 
   private followupSuggestions(): string[] {
-    if (!this.pdfFile) return ["解释这段内容", "总结要点", "列出关键术语", "提出后续问题"];
-    return ["解释这段内容", "总结核心贡献", "分析实验结果", "与相关工作对比"];
+    return [
+      "举一个例子",
+      "请进一步通俗易懂地讲解清楚",
+      "请进一步给出详细的推导步骤",
+      "进一步分析为什么是这样的",
+    ];
   }
 
   showFollowupSuggestions(): void {
