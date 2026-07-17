@@ -54,6 +54,14 @@ function assertReleaseSnapshot(targetDir, snapshot) {
   }
 }
 
+function assertNoReplacementTemps(targetDir) {
+  assert.deepEqual(
+    fs.readdirSync(targetDir).filter((filename) => filename.endsWith(".tmp")),
+    [],
+    "exclusive replacement temporary files must be cleaned"
+  );
+}
+
 function captureError(operation) {
   try {
     operation();
@@ -205,6 +213,57 @@ test("package-lock dependency exemptions are bound to the exact JSON field locat
 
   assert.deepEqual(findings.map((finding) => finding.ruleId), ["secret.api-key-literal"]);
   assert.equal(findings[0].line > 1, true);
+});
+
+test("package-lock exemptions reject compact credential-like dependency field names", () => {
+  const { scanText } = require("../scripts/secret-scan");
+  const value = ["1", "2", "3"].join(".");
+  const fieldNames = [
+    "clientsecret",
+    "authtoken",
+    "dbpassword",
+    "servicecredential",
+    "apikeyvalue",
+  ];
+  const packageLock = {
+    lockfileVersion: 3,
+    packages: {
+      "": {
+        dependencies: Object.fromEntries(fieldNames.map((field) => [field, value])),
+      },
+    },
+  };
+
+  assert.deepEqual(
+    scanText(JSON.stringify(packageLock, null, 2), "package-lock.json").map(
+      (finding) => finding.ruleId
+    ),
+    Array(fieldNames.length).fill("secret.api-key-literal")
+  );
+});
+
+test("package-lock exemptions retain ordinary dependency names containing scanner substrings", () => {
+  const { scanText } = require("../scripts/secret-scan");
+  const value = ["1", "2", "3"].join(".");
+  const packageLock = {
+    lockfileVersion: 3,
+    packages: {
+      "": {
+        dependencies: {
+          apikeyboard: value,
+          authtokenizer: value,
+          clientsecretary: value,
+          jsonwebtoken: value,
+          keytar: value,
+          monkey: value,
+          secretary: value,
+          "w3c-keyname": value,
+        },
+      },
+    },
+  };
+
+  assert.deepEqual(scanText(JSON.stringify(packageLock, null, 2), "package-lock.json"), []);
 });
 
 test("secret scanner detects a legal Bearer value ending in a hyphen", () => {
@@ -589,7 +648,7 @@ test("local deployment rejects hard-linked staging files before target mutation"
   assertReleaseSnapshot(targetDir, before);
 });
 
-test("local deployment rejects a hard link introduced while copying to the target", (t) => {
+test("local deployment rejects an exclusive temporary file that gains another hard link", (t) => {
   const { deployRelease } = require("../scripts/deploy-local");
   const root = makeTempDirectory(t);
   const sourceRoot = path.join(root, "source");
@@ -598,6 +657,7 @@ test("local deployment rejects a hard link introduced while copying to the targe
   writeReleaseFiles(sourceRoot, "new-release");
   writeReleaseFiles(targetDir, "old-release");
   const before = snapshotReleaseFiles(targetDir);
+  const extraLink = path.join(root, "unexpected-temp-hardlink");
   let injected = false;
 
   const error = captureError(() =>
@@ -606,22 +666,244 @@ test("local deployment rejects a hard link introduced while copying to the targe
       targetDir,
       backupRoot,
       fileOps: {
-        copyFile(source, destination) {
-          if (!injected && path.resolve(destination) === path.resolve(targetDir, "main.js")) {
+        beforeReplaceWrite({ purpose, temporaryPath }) {
+          if (!injected && purpose === "deploy main.js") {
             injected = true;
-            fs.rmSync(destination);
-            fs.linkSync(source, destination);
-            return;
+            fs.linkSync(temporaryPath, extraLink);
           }
-          fs.copyFileSync(source, destination);
         },
       },
     })
   );
 
-  assert.match(error.message, /deployed target main\.js must be a regular single-link file/);
+  assert.equal(injected, true);
+  assert.match(error.message, /deploy main\.js temporary file must be a regular single-link file/);
   assert.match(error.message, /backup:/i);
   assertReleaseSnapshot(targetDir, before);
+});
+
+test("deployment replacement never writes through a target hardlink swapped inside the copy window", (t) => {
+  const { deployRelease } = require("../scripts/deploy-local");
+  const root = makeTempDirectory(t);
+  const sourceRoot = path.join(root, "source");
+  const targetDir = path.join(root, "target");
+  const backupRoot = path.join(root, "backups");
+  const externalPath = path.join(root, "external-main.js");
+  writeReleaseFiles(sourceRoot, "new-release");
+  writeReleaseFiles(targetDir, "old-release");
+  fs.writeFileSync(externalPath, "external deployment sentinel\n");
+  const externalBefore = fs.readFileSync(externalPath);
+  let raceInjected = false;
+
+  function swapTargetWithHardlink(destination) {
+    if (raceInjected || path.resolve(destination) !== path.resolve(targetDir, "main.js")) return;
+    raceInjected = true;
+    fs.rmSync(destination);
+    fs.linkSync(externalPath, destination);
+  }
+
+  let result;
+  let error;
+  try {
+    result = deployRelease({
+      sourceRoot,
+      targetDir,
+      backupRoot,
+      fileOps: {
+        beforeReplaceWrite({ destinationPath, purpose }) {
+          if (purpose === "deploy main.js") swapTargetWithHardlink(destinationPath);
+        },
+        copyFile(source, destination) {
+          swapTargetWithHardlink(destination);
+          fs.copyFileSync(source, destination);
+        },
+      },
+    });
+  } catch (caught) {
+    error = caught;
+  }
+
+  assert.equal(raceInjected, true);
+  assert.deepEqual(fs.readFileSync(externalPath), externalBefore);
+  if (result) {
+    assert.deepEqual(
+      fs.readFileSync(path.join(targetDir, "main.js")),
+      fs.readFileSync(path.join(sourceRoot, "main.js"))
+    );
+  } else {
+    assert.match(error.message, /backup:/i);
+    assert.ok(fs.existsSync(error.backupDir));
+  }
+  assertNoReplacementTemps(targetDir);
+});
+
+test("rollback replacement never writes through a target hardlink swapped inside the copy window", (t) => {
+  const { deployRelease, sha256File } = require("../scripts/deploy-local");
+  const root = makeTempDirectory(t);
+  const sourceRoot = path.join(root, "source");
+  const targetDir = path.join(root, "target");
+  const backupRoot = path.join(root, "backups");
+  const externalPath = path.join(root, "external-rollback.js");
+  writeReleaseFiles(sourceRoot, "new-release");
+  writeReleaseFiles(targetDir, "old-release");
+  fs.writeFileSync(externalPath, "external rollback sentinel\n");
+  const externalBefore = fs.readFileSync(externalPath);
+  const before = snapshotReleaseFiles(targetDir);
+  let raceInjected = false;
+  let targetStylesHashCalls = 0;
+
+  function swapTargetWithHardlink(destination) {
+    if (raceInjected || path.resolve(destination) !== path.resolve(targetDir, "main.js")) return;
+    raceInjected = true;
+    fs.rmSync(destination);
+    fs.linkSync(externalPath, destination);
+  }
+
+  const error = captureError(() =>
+    deployRelease({
+      sourceRoot,
+      targetDir,
+      backupRoot,
+      fileOps: {
+        beforeReplaceWrite({ destinationPath, purpose }) {
+          if (purpose === "rollback main.js") swapTargetWithHardlink(destinationPath);
+        },
+        copyFile(source, destination) {
+          const sourceParent = path.basename(path.dirname(source));
+          if (
+            sourceParent.startsWith("pdf-chat-") &&
+            !sourceParent.startsWith(".pdf-chat-stage-")
+          ) {
+            swapTargetWithHardlink(destination);
+          }
+          fs.copyFileSync(source, destination);
+        },
+        hashFile(filePath) {
+          if (path.resolve(filePath) === path.resolve(targetDir, "styles.css")) {
+            targetStylesHashCalls += 1;
+            if (targetStylesHashCalls === 1) return "0".repeat(64);
+          }
+          return sha256File(filePath);
+        },
+      },
+    })
+  );
+
+  assert.equal(raceInjected, true);
+  assert.match(error.message, /hash verification failed for styles\.css/);
+  assert.match(error.message, /backup:/i);
+  assert.ok(fs.existsSync(error.backupDir));
+  assert.deepEqual(fs.readFileSync(externalPath), externalBefore);
+  assertReleaseSnapshot(targetDir, before);
+  assertNoReplacementTemps(targetDir);
+});
+
+test("deployment replacement safely handles a target changed to a directory junction", (t) => {
+  const { deployRelease } = require("../scripts/deploy-local");
+  const root = makeTempDirectory(t);
+  const sourceRoot = path.join(root, "source");
+  const targetDir = path.join(root, "target");
+  const backupRoot = path.join(root, "backups");
+  const externalDirectory = path.join(root, "external-directory");
+  const sentinelPath = path.join(externalDirectory, "sentinel.txt");
+  writeReleaseFiles(sourceRoot, "new-release");
+  writeReleaseFiles(targetDir, "old-release");
+  fs.mkdirSync(externalDirectory);
+  fs.writeFileSync(sentinelPath, "external junction sentinel\n");
+  const sentinelBefore = fs.readFileSync(sentinelPath);
+  let raceInjected = false;
+
+  function swapTargetWithJunction(destination) {
+    if (raceInjected || path.resolve(destination) !== path.resolve(targetDir, "main.js")) return;
+    fs.rmSync(destination);
+    if (!createDirectoryLink(t, externalDirectory, destination)) return;
+    raceInjected = true;
+  }
+
+  let result;
+  let error;
+  try {
+    result = deployRelease({
+      sourceRoot,
+      targetDir,
+      backupRoot,
+      fileOps: {
+        beforeReplaceWrite({ destinationPath, purpose }) {
+          if (purpose === "deploy main.js") swapTargetWithJunction(destinationPath);
+        },
+        copyFile(source, destination) {
+          swapTargetWithJunction(destination);
+          fs.copyFileSync(source, destination);
+        },
+      },
+    });
+  } catch (caught) {
+    error = caught;
+  }
+
+  if (!raceInjected) return;
+  assert.deepEqual(fs.readFileSync(sentinelPath), sentinelBefore);
+  if (result) {
+    assert.deepEqual(
+      fs.readFileSync(path.join(targetDir, "main.js")),
+      fs.readFileSync(path.join(sourceRoot, "main.js"))
+    );
+  } else {
+    assert.match(error.message, /backup:/i);
+    assert.ok(fs.existsSync(error.backupDir));
+  }
+  assertNoReplacementTemps(targetDir);
+});
+
+test("rollback replacement safely handles a target changed to a directory junction", (t) => {
+  const { deployRelease, sha256File } = require("../scripts/deploy-local");
+  const root = makeTempDirectory(t);
+  const sourceRoot = path.join(root, "source");
+  const targetDir = path.join(root, "target");
+  const backupRoot = path.join(root, "backups");
+  const externalDirectory = path.join(root, "external-rollback-directory");
+  const sentinelPath = path.join(externalDirectory, "sentinel.txt");
+  writeReleaseFiles(sourceRoot, "new-release");
+  writeReleaseFiles(targetDir, "old-release");
+  fs.mkdirSync(externalDirectory);
+  fs.writeFileSync(sentinelPath, "external rollback junction sentinel\n");
+  const sentinelBefore = fs.readFileSync(sentinelPath);
+  const before = snapshotReleaseFiles(targetDir);
+  let raceInjected = false;
+  let targetStylesHashCalls = 0;
+
+  const error = captureError(() =>
+    deployRelease({
+      sourceRoot,
+      targetDir,
+      backupRoot,
+      fileOps: {
+        beforeReplaceWrite({ destinationPath, purpose }) {
+          if (raceInjected || purpose !== "rollback main.js") return;
+          fs.rmSync(destinationPath);
+          if (!createDirectoryLink(t, externalDirectory, destinationPath)) return;
+          raceInjected = true;
+        },
+        hashFile(filePath) {
+          if (path.resolve(filePath) === path.resolve(targetDir, "styles.css")) {
+            targetStylesHashCalls += 1;
+            if (targetStylesHashCalls === 1) return "0".repeat(64);
+          }
+          return sha256File(filePath);
+        },
+      },
+    })
+  );
+
+  if (!raceInjected) return;
+  assert.match(error.message, /hash verification failed for styles\.css/);
+  assert.match(error.message, /backup:/i);
+  assert.ok(fs.existsSync(error.backupDir));
+  assert.deepEqual(fs.readFileSync(sentinelPath), sentinelBefore);
+  const mainStats = fs.lstatSync(path.join(targetDir, "main.js"));
+  if (mainStats.isFile() && !mainStats.isSymbolicLink()) assertReleaseSnapshot(targetDir, before);
+  else assert.match(error.message, /rollback errors:/);
+  assertNoReplacementTemps(targetDir);
 });
 
 test("local deployment rejects hard-linked backup snapshots before staging", (t) => {
@@ -675,8 +957,8 @@ test("rollback refuses a newly hard-linked backup file without modifying its ext
       targetDir,
       backupRoot,
       fileOps: {
-        copyFile(source, destination) {
-          if (!injected && path.resolve(destination) === path.resolve(targetDir, "styles.css")) {
+        beforeReplaceWrite({ purpose }) {
+          if (!injected && purpose === "deploy styles.css") {
             injected = true;
             const backupDir = fs
               .readdirSync(backupRoot, { withFileTypes: true })
@@ -686,7 +968,6 @@ test("rollback refuses a newly hard-linked backup file without modifying its ext
             fs.linkSync(externalPath, backupMain);
             throw new Error("injected target failure after backup substitution");
           }
-          fs.copyFileSync(source, destination);
         },
       },
     })
@@ -750,12 +1031,11 @@ test("local deployment rolls back every release file after a target copy failure
       targetDir,
       backupRoot,
       fileOps: {
-        copyFile(source, destination) {
-          if (!injected && path.resolve(destination) === path.resolve(targetDir, "styles.css")) {
+        beforeReplaceWrite({ purpose }) {
+          if (!injected && purpose === "deploy styles.css") {
             injected = true;
             throw new Error("injected target copy failure");
           }
-          fs.copyFileSync(source, destination);
         },
       },
     })
@@ -921,12 +1201,11 @@ test("staging cleanup failure does not replace the primary deployment error", (t
       targetDir,
       backupRoot,
       fileOps: {
-        copyFile(source, destination) {
-          if (!injected && path.resolve(destination) === path.resolve(targetDir, "styles.css")) {
+        beforeReplaceWrite({ purpose }) {
+          if (!injected && purpose === "deploy styles.css") {
             injected = true;
             throw new Error("injected primary copy failure");
           }
-          fs.copyFileSync(source, destination);
         },
         removeTree() {
           throw new Error("injected secondary cleanup failure");

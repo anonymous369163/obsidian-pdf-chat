@@ -56,9 +56,14 @@ function isExplicitCredentialField(fieldName) {
   if (words.some((word) => ["key", "token", "secret", "password", "credential"].includes(word))) {
     return true;
   }
-  return ["apikey", "accesskey", "authkey", "clientkey", "privatekey", "publickey", "signingkey"].includes(
-    fieldName.replace(/[-_$]/g, "").toLowerCase()
-  );
+  const compact = fieldName.replace(/[^a-z0-9]/gi, "").toLowerCase();
+  return [
+    /^(?:api|access|auth|client|private|public|signing)key(?:id|value)?$/,
+    /^(?:api|auth|client|service)secret(?:id|value)?$/,
+    /^(?:api|auth|access|refresh|session|service|client)token(?:id|value)?$/,
+    /^(?:db|database|service|user|admin)password(?:hash|value)?$/,
+    /^(?:api|auth|client|service|cloud)credential(?:id|value)?$/,
+  ].some((credentialShape) => credentialShape.test(compact));
 }
 
 function packageLockDependencyVersions(text, file) {

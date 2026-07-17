@@ -11,6 +11,10 @@ function sha256File(filePath) {
   return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
 }
 
+function sha256Bytes(bytes) {
+  return crypto.createHash("sha256").update(bytes).digest("hex");
+}
+
 function lstatIfExists(filePath) {
   try {
     return fs.lstatSync(filePath);
@@ -130,6 +134,7 @@ function nextBackupDirectory(backupRoot, now) {
 
 function createFileOps(overrides = {}) {
   return {
+    beforeReplaceWrite: overrides.beforeReplaceWrite || (() => {}),
     copyFile: overrides.copyFile || ((source, destination) => fs.copyFileSync(source, destination)),
     copyTree:
       overrides.copyTree ||
@@ -140,6 +145,100 @@ function createFileOps(overrides = {}) {
       overrides.removeTree ||
       ((directory) => fs.rmSync(directory, { force: true, recursive: true })),
   };
+}
+
+function openExclusiveTemporaryFile(destinationPath) {
+  const directory = path.dirname(destinationPath);
+  const basename = path.basename(destinationPath);
+  for (let attempt = 0; attempt < 16; attempt += 1) {
+    const nonce = crypto.randomBytes(16).toString("hex");
+    const temporaryPath = path.join(directory, `.${basename}.pdf-chat-${process.pid}-${nonce}.tmp`);
+    try {
+      const descriptor = fs.openSync(
+        temporaryPath,
+        fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY,
+        0o600
+      );
+      return { descriptor, temporaryPath };
+    } catch (error) {
+      if (!error || error.code !== "EEXIST") throw error;
+    }
+  }
+  throw new Error(`unable to create an exclusive temporary file for ${basename}`);
+}
+
+function safelyUnlinkTemporary(temporaryPath) {
+  try {
+    fs.unlinkSync(temporaryPath);
+  } catch (error) {
+    if (!error || error.code !== "ENOENT") throw error;
+  }
+}
+
+function replaceFileFromSource(sourcePath, destinationPath, fileOps, options) {
+  const sourceBytes = fs.readFileSync(sourcePath);
+  const sourceHash = sha256Bytes(sourceBytes);
+  if (options.expectedHash && options.expectedHash !== sourceHash) {
+    throw new Error(`${options.purpose} source changed before replacement`);
+  }
+
+  let descriptor = null;
+  let temporaryPath = null;
+  let replacementComplete = false;
+  try {
+    const temporary = openExclusiveTemporaryFile(destinationPath);
+    descriptor = temporary.descriptor;
+    temporaryPath = temporary.temporaryPath;
+    fileOps.beforeReplaceWrite({
+      destinationPath,
+      purpose: options.purpose,
+      sourcePath,
+      temporaryPath,
+    });
+    fs.writeFileSync(descriptor, sourceBytes);
+    fs.fsyncSync(descriptor);
+    const temporaryStats = fs.fstatSync(descriptor);
+    if (!temporaryStats.isFile() || temporaryStats.nlink !== 1) {
+      throw new Error(`${options.purpose} temporary file must be a regular single-link file`);
+    }
+    fs.closeSync(descriptor);
+    descriptor = null;
+
+    assertRegularUnlinked(temporaryPath, `${options.purpose} temporary file`);
+    if (fileOps.hashFile(temporaryPath) !== sourceHash) {
+      throw new Error(`${options.purpose} temporary hash verification failed`);
+    }
+
+    fs.renameSync(temporaryPath, destinationPath);
+    replacementComplete = true;
+    temporaryPath = null;
+    assertRegularUnlinked(destinationPath, options.destinationLabel);
+    const destinationHash = fileOps.hashFile(destinationPath);
+    if (destinationHash !== sourceHash) throw new Error(options.hashFailureMessage);
+    return destinationHash;
+  } catch (error) {
+    let cleanupError = null;
+    if (descriptor !== null) {
+      try {
+        fs.closeSync(descriptor);
+      } catch (caught) {
+        cleanupError = caught;
+      }
+    }
+    if (!replacementComplete && temporaryPath) {
+      try {
+        safelyUnlinkTemporary(temporaryPath);
+      } catch (caught) {
+        cleanupError = cleanupError || caught;
+      }
+    }
+    if (cleanupError) {
+      const reason = error instanceof Error ? error.message : `${options.purpose} failed`;
+      const cleanupReason = cleanupError instanceof Error ? cleanupError.message : "temporary cleanup failed";
+      throw new Error(`${reason}; temporary cleanup also failed: ${cleanupReason}`);
+    }
+    throw error;
+  }
 }
 
 function validateReleaseSnapshot(directory, label) {
@@ -166,8 +265,11 @@ function rollbackReleaseFiles(targetDir, backupDir, fileOps) {
       );
       assertRegularUnlinked(targetPath, `rollback target ${filename}`, true);
       if (backupExists) {
-        fileOps.copyFile(backupPath, targetPath);
-        assertRegularUnlinked(targetPath, `restored target ${filename}`);
+        replaceFileFromSource(backupPath, targetPath, fileOps, {
+          destinationLabel: `restored target ${filename}`,
+          hashFailureMessage: `rollback hash verification failed for ${filename}`,
+          purpose: `rollback ${filename}`,
+        });
       } else {
         fileOps.removeFile(targetPath);
       }
@@ -240,12 +342,12 @@ function deployRelease(options) {
     const files = [];
     for (const staged of stagedFiles) {
       const targetPath = path.join(targetDir, staged.filename);
-      fileOps.copyFile(staged.stagePath, targetPath);
-      assertRegularUnlinked(targetPath, `deployed target ${staged.filename}`);
-      const targetHash = fileOps.hashFile(targetPath);
-      if (staged.sourceHash !== targetHash) {
-        throw new Error(`hash verification failed for ${staged.filename}`);
-      }
+      const targetHash = replaceFileFromSource(staged.stagePath, targetPath, fileOps, {
+        destinationLabel: `deployed target ${staged.filename}`,
+        expectedHash: staged.sourceHash,
+        hashFailureMessage: `hash verification failed for ${staged.filename}`,
+        purpose: `deploy ${staged.filename}`,
+      });
       files.push({
         filename: staged.filename,
         sourceHash: staged.sourceHash,

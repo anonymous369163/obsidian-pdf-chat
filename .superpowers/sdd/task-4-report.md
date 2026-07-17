@@ -175,3 +175,36 @@ Whitespace verification converts `git diff --check` output into redacted `file:l
 - `scripts/deploy-local.js` SHA-256: `c4ff38797b36048b77f4133e7a3da5310e152d9eb3f5142ec4539a57a7f49f88`
 - `scripts/secret-scan.js` SHA-256: `17b8fc7564e2cf3eb24befb4183cb9ea6e616fb6011d1899a56d18422a48143c`
 - `scripts/verify.js` SHA-256: `b9f30d092f48ff470149bfa860ed91ea2d31402e22cd09fd2b9fa919b45dfbf7`
+
+## Third review-fix follow-up
+
+### Third-round RED evidence
+
+- The focused race/scanner run started with 2 passes and 3 failures. Compact credential-like dependency names produced 0 findings instead of 5. The deployment race overwrote the external hardlink inode with new release bytes, while the rollback race overwrote it with backup bytes.
+- An additional false-positive guard initially failed with three findings for ordinary dependency names containing longer keyboard/tokenizer/secretary substrings. This drove anchored compact-shape matching instead of unrestricted substring matching.
+- Tests use synthetic sentinel bytes only. No credential or private plugin data appears in fixtures or diagnostics.
+
+### Exclusive replacement primitive
+
+Deployment and rollback no longer copy onto a target path. Both use one replacement primitive that reads the source, creates an unpredictable temporary file in the destination directory with `O_CREAT | O_EXCL | O_WRONLY`, writes through the retained file descriptor, flushes it, and verifies the descriptor is a regular file with exactly one link. After closing, it revalidates the temporary path and SHA-256, then uses `renameSync` to replace only the destination directory entry. The resulting target type, link count, and hash are verified again.
+
+If replacement fails, the exclusive temporary path is unlinked and the original error remains primary. There is no Windows fallback that opens or copies onto the existing destination inode. Thus a target changed to a hardlink can be atomically replaced without modifying the linked external inode; a target changed to a directory junction may instead fail safely, retaining and surfacing the backup.
+
+Deterministic Windows tests inject target swaps after the exclusive temporary descriptor is opened but before it is written. Compatibility hooks also reproduce the legacy vulnerable path by swapping first and then continuing a real path-based copy. Deployment and rollback hardlink races now preserve the external inode bytes, restore the target or surface a safe failure with the backup path, and leave no replacement temporary files. Deployment and rollback junction races likewise preserve external sentinel bytes and surface the backup on the Windows safe-failure path.
+
+### Package-lock field normalization
+
+Dependency-version exemptions now remove non-alphanumeric separators and recognize narrowly anchored compact credential forms for key, secret, token, password, and credential fields, including `clientsecret`, `authtoken`, `dbpassword`, `servicecredential`, and `apikeyvalue`. Guard tests retain exemptions for ordinary dependency names such as `jsonwebtoken`, `keytar`, `monkey`, `secretary`, `apikeyboard`, `authtokenizer`, `clientsecretary`, and `w3c-keyname`.
+
+### Third-round verification evidence
+
+- Focused release/security and verifier tooling: 54 passed, 0 failed, 0 skipped.
+- Direct Windows `node scripts/verify.js` with npm environment injection removed: exit 0; 102 tests passed, 0 failed, 0 skipped, followed by a passing secret scan and release verification.
+- Fresh staged `npm run verify`: exit 0; 102 tests passed, 0 failed, 0 skipped. Strict typecheck, production bundle freshness/build, secret scan, release metadata, syntax, and working/staged/commit-range whitespace checks passed.
+- No real deployment, installed plugin, private settings, credentials, remote branch, or GitHub setting was accessed or mutated.
+
+### Third-round SHAs
+
+- Base Git commit: `fd88f914612a17e3360ae9d841ea3571ce91ca06`
+- `scripts/deploy-local.js` SHA-256: `116c2173574e356ec4e5f58fdf01eda5e2d1170752c202fe4901335fe5890dbd`
+- `scripts/secret-scan.js` SHA-256: `6c232cde9a68d2c763d4cef14162a9bbb5f46221a1a8591816ab61a3cf0660d5`
