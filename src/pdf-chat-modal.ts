@@ -325,6 +325,7 @@ export class PDFChatModal extends Modal {
     this.ragStatusEl = contextPanel.ragStatus;
     if (this.pdfFile) this.buildPaperContextControls(contextPanel.tools);
     this.renderResearchActions(contextPanel.researchActions);
+    this.buildMultiPaperActionBar(contentEl);
 
     const restoringHistory = this.transcript.length > 0;
     this.historyEl = buildMessageRegion(contentEl, restoringHistory);
@@ -469,9 +470,9 @@ export class PDFChatModal extends Modal {
 
   private buildMultiPaperControls(container: HTMLElement): void {
     const section = container.createDiv({ cls: "pdf-chat-multi-paper" });
-    section.createEl("h4", { text: "多论文对比", cls: "pdf-chat-context-heading" });
+    section.createEl("h4", { text: "添加对比论文", cls: "pdf-chat-context-heading" });
     section.createDiv({
-      text: "引用 vault 内其他 PDF 后，可用普通 API 快速对比，或手动触发 Codex 深度阅读。",
+      text: "这里提供展开后的详细搜索入口；更快的方式是在底部输入框直接输入 @。",
       cls: "pdf-chat-context-help",
     });
 
@@ -485,12 +486,27 @@ export class PDFChatModal extends Modal {
       },
     });
     this.pdfSearchResultsEl = section.createDiv({ cls: "pdf-chat-pdf-search-results" });
-    this.pdfReferenceChipsEl = section.createDiv({
+
+    this.pdfSearchInputEl.addEventListener("input", () => {
+      this.renderPdfSearchResults(this.pdfSearchInputEl?.value || "");
+    });
+    this.pdfSearchInputEl.addEventListener("focus", () => {
+      this.renderPdfSearchResults(this.pdfSearchInputEl?.value || "");
+    });
+  }
+
+  private buildMultiPaperActionBar(parent: HTMLElement): void {
+    const bar = parent.createEl("section", {
+      cls: "pdf-chat-multi-paper-bar",
+      attr: { "aria-label": "多论文对比操作" },
+    });
+    const info = bar.createDiv({ cls: "pdf-chat-multi-paper-bar-info" });
+    info.createEl("span", { text: "多论文", cls: "pdf-chat-multi-paper-bar-title" });
+    this.pdfReferenceChipsEl = info.createDiv({
       cls: "pdf-chat-pdf-reference-chips",
       attr: { "aria-label": "已引用 PDF" },
     });
-
-    const actions = section.createDiv({ cls: "pdf-chat-multi-paper-actions" });
+    const actions = bar.createDiv({ cls: "pdf-chat-multi-paper-actions" });
     this.ordinaryCompareBtn = actions.createEl("button", {
       text: "普通对比",
       cls: "pdf-chat-research-action-btn pdf-chat-ordinary-compare-btn",
@@ -503,18 +519,11 @@ export class PDFChatModal extends Modal {
       attr: { type: "button" },
     });
     labelControl(this.codexDeepAnalyzeBtn, "使用 Codex CLI 深度分析当前论文和已引用论文");
-    this.multiPaperStatusEl = section.createDiv({
+    this.multiPaperStatusEl = bar.createDiv({
       text: this.plugin.settings.codexDeepAnalysis.enabled
-        ? "Codex CLI 已启用，分析时只会读取临时论文包。"
-        : "Codex 深度分析需要先在设置中启用。",
+        ? "Codex CLI 已启用"
+        : "Codex 默认关闭",
       cls: "pdf-chat-multi-paper-status",
-    });
-
-    this.pdfSearchInputEl.addEventListener("input", () => {
-      this.renderPdfSearchResults(this.pdfSearchInputEl?.value || "");
-    });
-    this.pdfSearchInputEl.addEventListener("focus", () => {
-      this.renderPdfSearchResults(this.pdfSearchInputEl?.value || "");
     });
     this.ordinaryCompareBtn.addEventListener("click", () => {
       void this.runOrdinaryMultiPaperCompare();

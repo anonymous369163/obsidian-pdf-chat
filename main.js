@@ -1771,6 +1771,7 @@ ${this.contextText}`;
     this.ragStatusEl = contextPanel.ragStatus;
     if (this.pdfFile) this.buildPaperContextControls(contextPanel.tools);
     this.renderResearchActions(contextPanel.researchActions);
+    this.buildMultiPaperActionBar(contentEl);
     const restoringHistory = this.transcript.length > 0;
     this.historyEl = buildMessageRegion(contentEl, restoringHistory);
     if (!restoringHistory) this.showEmptyState();
@@ -1904,9 +1905,9 @@ ${this.contextText}`;
   }
   buildMultiPaperControls(container) {
     const section = container.createDiv({ cls: "pdf-chat-multi-paper" });
-    section.createEl("h4", { text: "\u591A\u8BBA\u6587\u5BF9\u6BD4", cls: "pdf-chat-context-heading" });
+    section.createEl("h4", { text: "\u6DFB\u52A0\u5BF9\u6BD4\u8BBA\u6587", cls: "pdf-chat-context-heading" });
     section.createDiv({
-      text: "\u5F15\u7528 vault \u5185\u5176\u4ED6 PDF \u540E\uFF0C\u53EF\u7528\u666E\u901A API \u5FEB\u901F\u5BF9\u6BD4\uFF0C\u6216\u624B\u52A8\u89E6\u53D1 Codex \u6DF1\u5EA6\u9605\u8BFB\u3002",
+      text: "\u8FD9\u91CC\u63D0\u4F9B\u5C55\u5F00\u540E\u7684\u8BE6\u7EC6\u641C\u7D22\u5165\u53E3\uFF1B\u66F4\u5FEB\u7684\u65B9\u5F0F\u662F\u5728\u5E95\u90E8\u8F93\u5165\u6846\u76F4\u63A5\u8F93\u5165 @\u3002",
       cls: "pdf-chat-context-help"
     });
     const searchRow = section.createDiv({ cls: "pdf-chat-pdf-search-row" });
@@ -1919,11 +1920,27 @@ ${this.contextText}`;
       }
     });
     this.pdfSearchResultsEl = section.createDiv({ cls: "pdf-chat-pdf-search-results" });
-    this.pdfReferenceChipsEl = section.createDiv({
+    this.pdfSearchInputEl.addEventListener("input", () => {
+      var _a;
+      this.renderPdfSearchResults(((_a = this.pdfSearchInputEl) == null ? void 0 : _a.value) || "");
+    });
+    this.pdfSearchInputEl.addEventListener("focus", () => {
+      var _a;
+      this.renderPdfSearchResults(((_a = this.pdfSearchInputEl) == null ? void 0 : _a.value) || "");
+    });
+  }
+  buildMultiPaperActionBar(parent) {
+    const bar = parent.createEl("section", {
+      cls: "pdf-chat-multi-paper-bar",
+      attr: { "aria-label": "\u591A\u8BBA\u6587\u5BF9\u6BD4\u64CD\u4F5C" }
+    });
+    const info = bar.createDiv({ cls: "pdf-chat-multi-paper-bar-info" });
+    info.createEl("span", { text: "\u591A\u8BBA\u6587", cls: "pdf-chat-multi-paper-bar-title" });
+    this.pdfReferenceChipsEl = info.createDiv({
       cls: "pdf-chat-pdf-reference-chips",
       attr: { "aria-label": "\u5DF2\u5F15\u7528 PDF" }
     });
-    const actions = section.createDiv({ cls: "pdf-chat-multi-paper-actions" });
+    const actions = bar.createDiv({ cls: "pdf-chat-multi-paper-actions" });
     this.ordinaryCompareBtn = actions.createEl("button", {
       text: "\u666E\u901A\u5BF9\u6BD4",
       cls: "pdf-chat-research-action-btn pdf-chat-ordinary-compare-btn",
@@ -1936,17 +1953,9 @@ ${this.contextText}`;
       attr: { type: "button" }
     });
     labelControl(this.codexDeepAnalyzeBtn, "\u4F7F\u7528 Codex CLI \u6DF1\u5EA6\u5206\u6790\u5F53\u524D\u8BBA\u6587\u548C\u5DF2\u5F15\u7528\u8BBA\u6587");
-    this.multiPaperStatusEl = section.createDiv({
-      text: this.plugin.settings.codexDeepAnalysis.enabled ? "Codex CLI \u5DF2\u542F\u7528\uFF0C\u5206\u6790\u65F6\u53EA\u4F1A\u8BFB\u53D6\u4E34\u65F6\u8BBA\u6587\u5305\u3002" : "Codex \u6DF1\u5EA6\u5206\u6790\u9700\u8981\u5148\u5728\u8BBE\u7F6E\u4E2D\u542F\u7528\u3002",
+    this.multiPaperStatusEl = bar.createDiv({
+      text: this.plugin.settings.codexDeepAnalysis.enabled ? "Codex CLI \u5DF2\u542F\u7528" : "Codex \u9ED8\u8BA4\u5173\u95ED",
       cls: "pdf-chat-multi-paper-status"
-    });
-    this.pdfSearchInputEl.addEventListener("input", () => {
-      var _a;
-      this.renderPdfSearchResults(((_a = this.pdfSearchInputEl) == null ? void 0 : _a.value) || "");
-    });
-    this.pdfSearchInputEl.addEventListener("focus", () => {
-      var _a;
-      this.renderPdfSearchResults(((_a = this.pdfSearchInputEl) == null ? void 0 : _a.value) || "");
     });
     this.ordinaryCompareBtn.addEventListener("click", () => {
       void this.runOrdinaryMultiPaperCompare();

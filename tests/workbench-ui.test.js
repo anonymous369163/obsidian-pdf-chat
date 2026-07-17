@@ -451,6 +451,7 @@ test("modal builds the accessible research-workbench regions and interactions", 
   assert.deepEqual(regionClasses, [
     "pdf-chat-workbench-header pdf-chat-drag-handle",
     "pdf-chat-context-panel",
+    "pdf-chat-multi-paper-bar",
     "pdf-chat-history",
     "pdf-chat-composer",
   ]);
@@ -603,6 +604,18 @@ test("multi-paper panel searches PDFs, renders reference chips, and caps externa
   assert.equal(byClass(modal.contentEl, "pdf-chat-reference-chip").length, 3);
   byClass(modal.contentEl, "pdf-chat-reference-remove")[0].dispatch("click");
   assert.equal(modal.referencedPdfFiles.length, 2);
+});
+
+test("multi-paper compare actions stay outside the collapsible context body", () => {
+  const { modal } = createModalHarness();
+  const externalBar = byClass(modal.contentEl, "pdf-chat-multi-paper-bar")[0];
+  assert.ok(externalBar, "missing always-visible multi-paper action bar");
+  assert.equal(byClass(externalBar, "pdf-chat-ordinary-compare-btn").length, 1);
+  assert.equal(byClass(externalBar, "pdf-chat-codex-analysis-btn").length, 1);
+  const contextBody = byClass(modal.contentEl, "pdf-chat-context-body")[0];
+  assert.equal(byClass(contextBody, "pdf-chat-ordinary-compare-btn").length, 0);
+  assert.equal(byClass(contextBody, "pdf-chat-codex-analysis-btn").length, 0);
+  assert.equal(modal.contentEl.children[2], externalBar);
 });
 
 test("typing @ in the composer opens PDF mention suggestions and selecting one references it", () => {
