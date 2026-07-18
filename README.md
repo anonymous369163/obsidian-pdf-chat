@@ -1,6 +1,6 @@
 ﻿# Obsidian PDF Chat
 
-Version 0.8.0 makes CODEX MODE use native Codex CLI threads. The first Codex turn creates a thread, follow-up turns use `codex exec resume`, and background results are saved back to the same PDF Chat session even if the modal is temporarily closed.
+Version 0.8.1 strengthens the native Codex thread workflow introduced in 0.8.0. Every turn is journaled to its exact PDF Chat session, background completion is visible after the modal closes, failed final saves can be retried safely, and history/task pickers are searchable.
 
 PDF Chat turns an Obsidian PDF view into a compact research workbench. Select paper text, open the workbench, and ask questions without leaving the document. User and assistant messages are selectable and copyable, and the most recent conversation is restored per-PDF.
 
@@ -11,11 +11,13 @@ PDF Chat turns an Obsidian PDF view into a compact research workbench. Select pa
 - Use the PDF-only quick-translate marker beside a non-empty selection to open a fresh modal and translate immediately.
 - Generate or reuse a paper summary for compact global context.
 - Read shorter papers in full or use local BM25 RAG for long-paper retrieval.
-- Type `@` in the composer to search vault PDFs and attach up to three referenced papers to the current question.
+- Type `@` in the composer to search vault PDFs and attach up to three referenced papers to the current question. The candidate list supports ArrowUp/ArrowDown, Enter, Tab, and Escape.
 - Type `/codex` to enter CODEX MODE. The current PDF is attached by default, referenced PDFs can be added with `@`, and each chip can be removed before the next turn.
 - Use `/refs`, `/unref <name-or-number>`, or `/clearrefs` to remove PDFs referenced by the current discussion.
 - Use the selected-context composer toggle or `/context on|off` to decide whether the currently selected passage is included in the next Codex prompt.
-- Use `/model`, `/status`, `/help`, `/stop`, `/new`, `/resume`, and `/exit` in the composer; `ArrowUp`/`ArrowDown` restores recent prompts like a terminal.
+- Use `/model`, `/status`, `/help`, `/stop`, `/new`, `/resume`, `/tasks`, and `/exit` in the composer. `/resume` and `/tasks` open searchable Obsidian pickers.
+- `ArrowUp`/`ArrowDown` restores recent prompts like a terminal while preserving the unfinished draft and respecting multiline caret position.
+- Use `/doctor` for a free local Codex command/version check. `/doctor real` asks for confirmation before making two real model calls that verify a fresh native thread and `resume`.
 - Switch model profiles and research prompts from the workbench.
 - Choose an independent translation model and continue model. Empty choices automatically prefer DeepSeek and GLM profiles, respectively, before falling back to the active model.
 - Stop an in-progress response, clear the current conversation, and resize or move the modal.
@@ -30,6 +32,8 @@ There are two reading paths:
 
 - **Normal API chat** uses the plugin's configured chat model and API key. When referenced PDFs are present, it prepares summaries and local BM25 evidence snippets as shared reading context; it does not force a comparison unless your question asks for one.
 - **CODEX MODE** is entered with `/codex`. The plugin shows a persistent `CODEX MODE / model / effort / thread` badge. The first turn runs `codex exec` from the current PDF's folder and stores the native Codex thread ID. Later turns in the same session run `codex exec resume <threadId>` so Codex keeps the conversation context.
+
+Only the explicit `/codex` command switches into CODEX MODE. Words such as “深度分析” in a normal question do not silently change models or start Codex CLI.
 
 Codex defaults to `gpt-5.5` with `model_reasoning_effort="medium"` and `model_verbosity="medium"` for a faster first pass. Use `/model gpt-5.5 high` or `/model gpt-5.6-sol xhigh` when a task needs deeper reasoning and you can tolerate longer runtime.
 
@@ -48,6 +52,8 @@ The prompt explicitly tells Codex to read PDFs only when the question needs pape
 Codex runs from the current PDF's local folder with a read-only sandbox. The plugin does not copy plugin source, `.env`, `data.json`, API keys, model endpoints, or local model profiles into Codex prompts. If Codex is not installed, cannot start, or its native thread exists only on another device, the modal reports that failure explicitly and does not silently replace the answer with an API model.
 
 Esc closes only the PDF Chat modal; a running Codex turn continues in the background and can be reattached with `Ctrl/Cmd + Q`, even when no text is selected in the PDF. `/stop` stops only the current turn and keeps the native thread usable. The Obsidian modal close button stops the running turn and marks that Codex session closed, but its transcript and native thread ID remain visible through `/resume`.
+
+Before a Codex child process starts, PDF Chat stores a small pending-turn journal containing the plugin session ID, relative PDF paths, thread ID when available, timestamps, and progress state. It does not store selected text or absolute paths in that journal. After a restart, abandoned work is shown as interrupted through `/tasks`. Background completion notifications name the original discussion, and `/retry-save` safely writes an already-generated answer again without duplicating the visible turn.
 
 ## Manual installation
 

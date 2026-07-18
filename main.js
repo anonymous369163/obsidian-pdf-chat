@@ -1,4 +1,4 @@
-// PDF Chat 0.8.0
+// PDF Chat 0.8.1
 var global = globalThis;
 "use strict";
 var __defProp = Object.defineProperty;
@@ -76,7 +76,9 @@ __export(main_exports, {
   resolveContinueModelId: () => resolveContinueModelId,
   resolveTranslateModelId: () => resolveTranslateModelId,
   runCodexExec: () => runCodexExec,
+  runCodexThreadDoctor: () => runCodexThreadDoctor,
   runCodexThreadTurn: () => runCodexThreadTurn,
+  runCodexVersionCheck: () => runCodexVersionCheck,
   searchPdfFiles: () => searchPdfFiles,
   splitTranslationChunks: () => splitTranslationChunks,
   stableConversationHash: () => stableConversationHash,
@@ -994,6 +996,91 @@ function terminateCodexChild(child) {
     void error;
   }
 }
+function runCodexVersionCheck(command, options) {
+  const childProcess = options.spawn ? { spawn: options.spawn } : loadNodeModule2("node:child_process");
+  const resolved = resolveCodexExecArgs({ command: command || "codex", args: ["--version"] });
+  const timeoutMs = Math.max(1, options.timeoutMs || 1e4);
+  return new Promise((resolve, reject) => {
+    var _a, _b, _c;
+    let settled = false;
+    let stdout = "";
+    let stderr = "";
+    let timer;
+    const child = childProcess.spawn(resolved.command, resolved.args, {
+      cwd: options.workingDirectory,
+      windowsHide: true,
+      shell: false
+    });
+    const finish = (callback) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback();
+    };
+    (_a = child.stdout) == null ? void 0 : _a.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    (_b = child.stderr) == null ? void 0 : _b.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on("error", (error) => finish(() => reject(error)));
+    child.on("close", (code) => {
+      const version = redactProcessText2(stdout).trim();
+      if (code === 0 && version) finish(() => resolve(version));
+      else finish(() => reject(new Error(redactProcessText2(stderr) || `Codex exited with code ${String(code)}`)));
+    });
+    try {
+      (_c = child.stdin) == null ? void 0 : _c.end();
+    } catch (error) {
+      void error;
+    }
+    timer = setTimeout(() => {
+      terminateCodexChild(child);
+      finish(() => reject(new Error(`Codex version check timed out after ${timeoutMs}ms`)));
+    }, timeoutMs);
+  });
+}
+async function runCodexThreadDoctor(request, runner = runCodexThreadTurn) {
+  const base = {
+    command: request.command,
+    workingDirectory: request.workingDirectory,
+    profile: request.profile,
+    model: request.model,
+    reasoningEffort: request.reasoningEffort,
+    verbosity: request.verbosity
+  };
+  const firstStartedAt = Date.now();
+  const first = await runner(
+    buildCodexThreadExecArgs({ ...base, prompt: "Reply exactly PDF_CHAT_DOCTOR_1" }),
+    { workingDirectory: request.workingDirectory, timeoutMs: request.timeoutMs }
+  );
+  const firstTurnMs = Date.now() - firstStartedAt;
+  if (!first.markdown.includes("PDF_CHAT_DOCTOR_1")) {
+    throw new Error("Codex fresh-thread diagnostic returned an unexpected reply");
+  }
+  const resumeStartedAt = Date.now();
+  const resumed = await runner(
+    buildCodexThreadExecArgs({
+      ...base,
+      threadId: first.threadId,
+      prompt: "Reply exactly PDF_CHAT_DOCTOR_2"
+    }),
+    { workingDirectory: request.workingDirectory, timeoutMs: request.timeoutMs }
+  );
+  if (resumed.threadId !== first.threadId) {
+    throw new Error("Codex resume returned a different thread id");
+  }
+  if (!resumed.markdown.includes("PDF_CHAT_DOCTOR_2")) {
+    throw new Error("Codex resume diagnostic returned an unexpected reply");
+  }
+  return {
+    threadId: first.threadId,
+    firstReply: first.markdown,
+    resumeReply: resumed.markdown,
+    firstTurnMs,
+    resumeTurnMs: Date.now() - resumeStartedAt
+  };
+}
 function runCodexThreadTurn(execArgs, options) {
   const childProcess = options.spawn ? { spawn: options.spawn } : loadNodeModule2("node:child_process");
   const resolved = resolveCodexExecArgs(execArgs);
@@ -1111,20 +1198,27 @@ var CodexSessionManager = class {
     this.persistence = persistence;
     this.runner = runner;
     __publicField(this, "turns", /* @__PURE__ */ new Map());
+    __publicField(this, "globalListeners", /* @__PURE__ */ new Set());
     __publicField(this, "nextRunToken", 1);
   }
   managed(sessionId) {
-    var _a, _b;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i;
     let managed = this.turns.get(sessionId);
     if (managed) return managed;
     const session = this.persistence.getSession(sessionId);
     managed = {
       snapshot: {
         sessionId,
-        threadId: (_a = session == null ? void 0 : session.codex) == null ? void 0 : _a.threadId,
-        status: ((_b = session == null ? void 0 : session.codex) == null ? void 0 : _b.lifecycle) === "closed" ? "closed" : "idle",
-        attachedPdfPaths: [...(session == null ? void 0 : session.referencedPdfPaths) || []],
-        selectionChars: 0
+        turnId: (_a = session == null ? void 0 : session.pendingTurn) == null ? void 0 : _a.turnId,
+        threadId: (_b = session == null ? void 0 : session.codex) == null ? void 0 : _b.threadId,
+        status: ((_c = session == null ? void 0 : session.codex) == null ? void 0 : _c.lifecycle) === "closed" ? "closed" : ((_d = session == null ? void 0 : session.pendingTurn) == null ? void 0 : _d.status) === "failed" ? "failed" : (session == null ? void 0 : session.pendingTurn) ? "stopped" : "idle",
+        question: (_e = session == null ? void 0 : session.pendingTurn) == null ? void 0 : _e.question,
+        progress: (_f = session == null ? void 0 : session.pendingTurn) == null ? void 0 : _f.progress,
+        startedAt: (_g = session == null ? void 0 : session.pendingTurn) == null ? void 0 : _g.startedAt,
+        attachedPdfPaths: [
+          ...((_h = session == null ? void 0 : session.pendingTurn) == null ? void 0 : _h.attachedPdfPaths) || (session == null ? void 0 : session.referencedPdfPaths) || []
+        ],
+        selectionChars: ((_i = session == null ? void 0 : session.pendingTurn) == null ? void 0 : _i.selectionChars) || 0
       },
       listeners: /* @__PURE__ */ new Set(),
       runToken: 0
@@ -1135,6 +1229,8 @@ var CodexSessionManager = class {
   notify(managed) {
     const snapshot = cloneSnapshot(managed.snapshot);
     for (const listener of managed.listeners) listener(snapshot);
+    const event = { snapshot, hasSessionSubscribers: managed.listeners.size > 0 };
+    for (const listener of this.globalListeners) listener(event);
   }
   getSnapshot(sessionId) {
     return cloneSnapshot(this.managed(sessionId).snapshot);
@@ -1145,8 +1241,20 @@ var CodexSessionManager = class {
     listener(cloneSnapshot(managed.snapshot));
     return () => managed.listeners.delete(listener);
   }
+  subscribeAll(listener) {
+    this.globalListeners.add(listener);
+    return () => this.globalListeners.delete(listener);
+  }
+  listSnapshots() {
+    var _a, _b;
+    const sessionIds = new Set(this.turns.keys());
+    for (const session of ((_b = (_a = this.persistence).listSessions) == null ? void 0 : _b.call(_a, "")) || []) {
+      if (session.pendingTurn) sessionIds.add(session.id);
+    }
+    return Array.from(sessionIds).map((sessionId) => this.getSnapshot(sessionId)).filter((snapshot) => snapshot.status !== "idle" && snapshot.status !== "closed").sort((left, right) => (right.startedAt || 0) - (left.startedAt || 0));
+  }
   async startTurn(request) {
-    var _a, _b, _c;
+    var _a, _b, _c, _d;
     const session = this.persistence.getSession(request.sessionId);
     if (!session) throw new Error(`Conversation session not found: ${request.sessionId}`);
     if (((_a = session.codex) == null ? void 0 : _a.lifecycle) === "closed") {
@@ -1157,11 +1265,13 @@ var CodexSessionManager = class {
       throw new Error("This Codex session already has a running turn");
     }
     const runToken = this.nextRunToken++;
+    const turnId = `turn-${Date.now()}-${runToken}`;
     const controller = new AbortController();
     managed.runToken = runToken;
     managed.controller = controller;
     managed.snapshot = {
       sessionId: request.sessionId,
+      turnId,
       threadId: (_b = session.codex) == null ? void 0 : _b.threadId,
       status: "running",
       question: request.question,
@@ -1171,22 +1281,43 @@ var CodexSessionManager = class {
       attachedPdfPaths: [...request.attachedPdfPaths],
       selectionChars: request.selectionChars
     };
+    try {
+      await this.persistence.beginCodexTurn(request.sessionId, {
+        turnId,
+        question: request.question,
+        status: "running",
+        startedAt: managed.snapshot.startedAt || Date.now(),
+        threadId: (_c = session.codex) == null ? void 0 : _c.threadId,
+        attachedPdfPaths: [...request.attachedPdfPaths],
+        selectionChars: request.selectionChars,
+        progress: managed.snapshot.progress
+      });
+    } catch (error) {
+      managed.controller = void 0;
+      managed.snapshot.status = "failed";
+      managed.snapshot.error = `Codex \u672A\u542F\u52A8\uFF0C\u4EFB\u52A1\u65E5\u5FD7\u4FDD\u5B58\u5931\u8D25\uFF1A${errorMessage(error)}`;
+      managed.snapshot.progress = managed.snapshot.error;
+      this.notify(managed);
+      return cloneSnapshot(managed.snapshot);
+    }
     this.notify(managed);
     const codexMetadata = () => {
-      var _a2, _b2, _c2, _d, _e;
+      var _a2, _b2, _c2, _d2, _e;
       return {
         model: request.model || ((_a2 = session.codex) == null ? void 0 : _a2.model) || "",
         reasoningEffort: request.reasoningEffort || ((_b2 = session.codex) == null ? void 0 : _b2.reasoningEffort) || "medium",
-        profile: (_e = (_d = request.profile) != null ? _d : (_c2 = session.codex) == null ? void 0 : _c2.profile) != null ? _e : "",
+        profile: (_e = (_d2 = request.profile) != null ? _d2 : (_c2 = session.codex) == null ? void 0 : _c2.profile) != null ? _e : "",
         threadId: managed.snapshot.threadId,
         lifecycle: "active"
       };
     };
     let threadSave = Promise.resolve();
+    let progressSave = Promise.resolve();
+    let lastProgressPersistedAt = 0;
     const args = buildCodexThreadExecArgs({
       command: request.command,
       workingDirectory: request.workingDirectory,
-      threadId: (_c = session.codex) == null ? void 0 : _c.threadId,
+      threadId: (_d = session.codex) == null ? void 0 : _d.threadId,
       prompt: request.prompt,
       profile: request.profile,
       model: request.model,
@@ -1194,6 +1325,11 @@ var CodexSessionManager = class {
       verbosity: request.verbosity
     });
     try {
+      if (controller.signal.aborted) {
+        const error = new Error("Codex turn was stopped before the process started");
+        error.name = "AbortError";
+        throw error;
+      }
       const result = await this.runner(args, {
         workingDirectory: request.workingDirectory,
         timeoutMs: request.timeoutMs,
@@ -1201,30 +1337,53 @@ var CodexSessionManager = class {
         onThreadId: (threadId) => {
           if (managed.runToken !== runToken || managed.snapshot.status === "closed") return;
           managed.snapshot.threadId = threadId;
-          threadSave = this.persistence.updateSessionMetadata(request.sessionId, {
-            codex: codexMetadata()
-          });
+          threadSave = this.persistence.updateCodexTurn(
+            request.sessionId,
+            turnId,
+            { threadId },
+            codexMetadata()
+          );
           this.notify(managed);
         },
         onProgress: (progress) => {
           if (managed.runToken !== runToken || managed.snapshot.status !== "running") return;
           managed.snapshot.progress = progress.message;
+          const now = Date.now();
+          if (now - lastProgressPersistedAt >= 2e3) {
+            lastProgressPersistedAt = now;
+            progressSave = progressSave.catch(() => void 0).then(
+              () => this.persistence.updateCodexTurn(request.sessionId, turnId, {
+                progress: progress.message
+              })
+            );
+          }
           this.notify(managed);
         }
       });
-      await threadSave;
       if (managed.runToken !== runToken || managed.snapshot.status === "closed") {
         return cloneSnapshot(managed.snapshot);
       }
       managed.snapshot.threadId = result.threadId;
-      await this.persistence.updateSessionMetadata(request.sessionId, {
+      managed.snapshot.finalMarkdown = result.markdown;
+      managed.pendingResult = {
+        turnId,
+        userContent: request.userContent,
+        assistantContent: result.markdown,
         codex: codexMetadata()
-      });
+      };
+      await threadSave;
+      await progressSave;
+      await this.persistence.completeCodexTurn(
+        request.sessionId,
+        turnId,
+        request.userContent,
+        result.markdown,
+        codexMetadata()
+      );
       if (managed.runToken !== runToken) return cloneSnapshot(managed.snapshot);
-      await this.persistence.appendSessionTurn(request.sessionId, request.userContent, result.markdown);
+      managed.pendingResult = void 0;
       managed.snapshot.status = "idle";
       managed.snapshot.progress = "Codex \u5DF2\u5B8C\u6210\u672C\u8F6E\u56DE\u7B54";
-      managed.snapshot.finalMarkdown = result.markdown;
       managed.snapshot.error = void 0;
       this.notify(managed);
     } catch (error) {
@@ -1234,16 +1393,44 @@ var CodexSessionManager = class {
       if (isAbortError(error)) {
         managed.snapshot.status = "stopped";
         managed.snapshot.progress = "Codex \u672C\u8F6E\u5DF2\u505C\u6B62\uFF0C\u53EF\u7EE7\u7EED\u4F7F\u7528\u540C\u4E00 thread \u63D0\u95EE";
+        void this.persistence.updateCodexTurn(request.sessionId, turnId, {
+          status: "interrupted",
+          progress: managed.snapshot.progress,
+          threadId: managed.snapshot.threadId
+        }).catch(() => void 0);
       } else {
         managed.snapshot.status = "failed";
-        managed.snapshot.error = isCodexThreadUnavailableError(error) ? "Codex \u4F1A\u8BDD\u53EF\u80FD\u6765\u81EA\u53E6\u4E00\u53F0\u8BBE\u5907\uFF0C\u6216\u672C\u673A Codex thread \u8BB0\u5F55\u5DF2\u88AB\u5220\u9664\u3002\u8BF7\u7528 /new \u521B\u5EFA\u65B0\u4F1A\u8BDD\u3002" : errorMessage(error);
+        managed.snapshot.error = managed.snapshot.finalMarkdown ? `Codex \u56DE\u7B54\u5DF2\u751F\u6210\uFF0C\u4F46\u4FDD\u5B58\u5931\u8D25\uFF1A${errorMessage(error)}` : isCodexThreadUnavailableError(error) ? "Codex \u4F1A\u8BDD\u53EF\u80FD\u6765\u81EA\u53E6\u4E00\u53F0\u8BBE\u5907\uFF0C\u6216\u672C\u673A Codex thread \u8BB0\u5F55\u5DF2\u88AB\u5220\u9664\u3002\u8BF7\u7528 /new \u521B\u5EFA\u65B0\u4F1A\u8BDD\u3002" : errorMessage(error);
         managed.snapshot.progress = managed.snapshot.error;
+        void this.persistence.updateCodexTurn(request.sessionId, turnId, {
+          status: "failed",
+          progress: managed.snapshot.progress,
+          threadId: managed.snapshot.threadId
+        }).catch(() => void 0);
       }
       this.notify(managed);
     } finally {
       if (managed.runToken === runToken) managed.controller = void 0;
     }
     return cloneSnapshot(managed.snapshot);
+  }
+  async retryPersistResult(sessionId) {
+    const managed = this.turns.get(sessionId);
+    const pending = managed == null ? void 0 : managed.pendingResult;
+    if (!managed || !pending) return false;
+    await this.persistence.completeCodexTurn(
+      sessionId,
+      pending.turnId,
+      pending.userContent,
+      pending.assistantContent,
+      pending.codex
+    );
+    managed.pendingResult = void 0;
+    managed.snapshot.status = "idle";
+    managed.snapshot.progress = "Codex \u56DE\u7B54\u5DF2\u91CD\u65B0\u4FDD\u5B58";
+    managed.snapshot.error = void 0;
+    this.notify(managed);
+    return true;
   }
   stopTurn(sessionId) {
     const managed = this.turns.get(sessionId);
@@ -1265,15 +1452,19 @@ var CodexSessionManager = class {
     this.notify(managed);
   }
   reactivateSession(sessionId) {
-    var _a;
+    var _a, _b, _c, _d, _e, _f, _g, _h;
     const managed = this.managed(sessionId);
     const session = this.persistence.getSession(sessionId);
     managed.snapshot = {
       sessionId,
-      threadId: (_a = session == null ? void 0 : session.codex) == null ? void 0 : _a.threadId,
-      status: "idle",
-      attachedPdfPaths: [...(session == null ? void 0 : session.referencedPdfPaths) || []],
-      selectionChars: 0
+      turnId: (_a = session == null ? void 0 : session.pendingTurn) == null ? void 0 : _a.turnId,
+      threadId: (_b = session == null ? void 0 : session.codex) == null ? void 0 : _b.threadId,
+      status: ((_c = session == null ? void 0 : session.pendingTurn) == null ? void 0 : _c.status) === "failed" ? "failed" : (session == null ? void 0 : session.pendingTurn) ? "stopped" : "idle",
+      question: (_d = session == null ? void 0 : session.pendingTurn) == null ? void 0 : _d.question,
+      progress: (_e = session == null ? void 0 : session.pendingTurn) == null ? void 0 : _e.progress,
+      startedAt: (_f = session == null ? void 0 : session.pendingTurn) == null ? void 0 : _f.startedAt,
+      attachedPdfPaths: [...((_g = session == null ? void 0 : session.pendingTurn) == null ? void 0 : _g.attachedPdfPaths) || (session == null ? void 0 : session.referencedPdfPaths) || []],
+      selectionChars: ((_h = session == null ? void 0 : session.pendingTurn) == null ? void 0 : _h.selectionChars) || 0
     };
     this.notify(managed);
   }
@@ -1285,6 +1476,7 @@ var CodexSessionManager = class {
       managed.controller = void 0;
       managed.listeners.clear();
     }
+    this.globalListeners.clear();
   }
 };
 
@@ -1338,13 +1530,44 @@ function normalizeSessionMode(value) {
 function normalizeReasoningEffort(value) {
   return value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" ? value : "xhigh";
 }
-function normalizeStringArray(value) {
+function normalizeStringArray(value, limit = 3) {
   if (!Array.isArray(value)) return [];
   return Array.from(
     new Set(
       value.filter((item) => typeof item === "string").map((item) => item.trim()).filter(Boolean)
     )
-  ).slice(0, 3);
+  ).slice(0, limit);
+}
+function isAbsolutePath(value) {
+  return /^(?:[A-Za-z]:[\\/]|[\\/]{1,2})/.test(value);
+}
+function normalizePendingCodexTurn(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return void 0;
+  const candidate = value;
+  const turnId = typeof candidate.turnId === "string" ? candidate.turnId.trim() : "";
+  const question = typeof candidate.question === "string" ? candidate.question.trim() : "";
+  const status = candidate.status === "running" || candidate.status === "interrupted" || candidate.status === "failed" ? candidate.status : null;
+  if (!turnId || !question || !status) return void 0;
+  const attachedPdfPaths = normalizeStringArray(candidate.attachedPdfPaths, 4).filter(
+    (path) => !isAbsolutePath(path)
+  );
+  return {
+    turnId,
+    question,
+    status,
+    startedAt: typeof candidate.startedAt === "number" && Number.isFinite(candidate.startedAt) ? candidate.startedAt : 0,
+    threadId: typeof candidate.threadId === "string" ? candidate.threadId.trim() || void 0 : void 0,
+    attachedPdfPaths,
+    selectionChars: typeof candidate.selectionChars === "number" && Number.isFinite(candidate.selectionChars) ? Math.max(0, Math.floor(candidate.selectionChars)) : 0,
+    progress: typeof candidate.progress === "string" ? candidate.progress.trim().slice(0, 500) || void 0 : void 0
+  };
+}
+function normalizeApiSessionMetadata(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return void 0;
+  const candidate = value;
+  const modelId = typeof candidate.modelId === "string" ? candidate.modelId.trim() : "";
+  const presetId = typeof candidate.presetId === "string" ? candidate.presetId.trim() : "";
+  return modelId || presetId ? { modelId: modelId || void 0, presetId: presetId || void 0 } : void 0;
 }
 function normalizeSessionId(value, fallbackSeed) {
   const raw = typeof value === "string" ? value.trim() : "";
@@ -1355,7 +1578,9 @@ function cloneSession(session) {
     ...session,
     messages: normalizeConversationMessages(session.messages),
     referencedPdfPaths: [...session.referencedPdfPaths],
-    codex: session.codex ? { ...session.codex } : void 0
+    api: session.api ? { ...session.api } : void 0,
+    codex: session.codex ? { ...session.codex } : void 0,
+    pendingTurn: session.pendingTurn ? { ...session.pendingTurn, attachedPdfPaths: [...session.pendingTurn.attachedPdfPaths] } : void 0
   };
 }
 function normalizeConversationSessions(saved) {
@@ -1379,7 +1604,7 @@ function normalizeConversationSessions(saved) {
     } : void 0;
     if (!conversationKey) continue;
     normalized[id] = {
-      version: 1,
+      version: 2,
       id,
       conversationKey,
       title: typeof entry.title === "string" && entry.title.trim() ? entry.title.trim() : conversationKey.replace(/^pdf:/, ""),
@@ -1387,7 +1612,9 @@ function normalizeConversationSessions(saved) {
       messages,
       referencedPdfPaths: normalizeStringArray(entry.referencedPdfPaths),
       includeCurrentPdfInCodex: entry.includeCurrentPdfInCodex !== false,
+      api: normalizeApiSessionMetadata(entry.api),
       codex,
+      pendingTurn: normalizePendingCodexTurn(entry.pendingTurn),
       createdAt,
       updatedAt
     };
@@ -1431,7 +1658,7 @@ var ConversationStore = class {
     if (existing) return cloneSession(existing);
     const timestamp = (legacy == null ? void 0 : legacy.updatedAt) || this.now();
     const session = {
-      version: 1,
+      version: 2,
       id,
       conversationKey: key,
       title: metadata.title || key.replace(/^pdf:/, ""),
@@ -1439,6 +1666,7 @@ var ConversationStore = class {
       messages,
       referencedPdfPaths: normalizeStringArray(metadata.referencedPdfPaths),
       includeCurrentPdfInCodex: metadata.includeCurrentPdfInCodex !== false,
+      api: normalizeApiSessionMetadata(metadata.api),
       codex: metadata.codex ? { ...metadata.codex, lifecycle: metadata.codex.lifecycle || "active" } : void 0,
       createdAt: timestamp,
       updatedAt: timestamp
@@ -1457,6 +1685,7 @@ var ConversationStore = class {
     if (typeof metadata.includeCurrentPdfInCodex === "boolean") {
       session.includeCurrentPdfInCodex = metadata.includeCurrentPdfInCodex;
     }
+    if (metadata.api) session.api = normalizeApiSessionMetadata(metadata.api);
     if (metadata.codex) {
       session.codex = {
         ...session.codex || {},
@@ -1516,7 +1745,7 @@ var ConversationStore = class {
     const timestamp = this.now();
     const id = `session-${stableConversationHash(`${key}:${timestamp}:${Object.keys(settings.conversationSessions || {}).length}`)}`;
     const session = {
-      version: 1,
+      version: 2,
       id,
       conversationKey: key,
       title: metadata.title || key.replace(/^pdf:/, ""),
@@ -1524,6 +1753,7 @@ var ConversationStore = class {
       messages: [],
       referencedPdfPaths: normalizeStringArray(metadata.referencedPdfPaths),
       includeCurrentPdfInCodex: metadata.includeCurrentPdfInCodex !== false,
+      api: normalizeApiSessionMetadata(metadata.api),
       codex: metadata.codex ? { ...metadata.codex, lifecycle: metadata.codex.lifecycle || "active" } : void 0,
       createdAt: timestamp,
       updatedAt: timestamp
@@ -1591,28 +1821,106 @@ var ConversationStore = class {
   async appendSessionTurn(id, userContent, assistantContent) {
     const session = this.getSession(id);
     if (!session) throw new Error(`Conversation session not found: ${id}`);
+    const firstUserTurn = !session.messages.some((message) => message.role === "user");
+    const derivedTitle = userContent.replace(/\s+/g, " ").trim().slice(0, 80);
     const messages = [
       ...session.messages,
       { role: "user", content: userContent, status: "complete" },
       { role: "assistant", content: assistantContent, status: "complete" }
     ];
-    await this.saveSessionById(id, messages);
+    await this.saveSessionById(id, messages, firstUserTurn && derivedTitle ? { title: derivedTitle } : {});
   }
   async updateSessionMetadata(id, metadata) {
     const session = this.getSession(id);
     if (!session) throw new Error(`Conversation session not found: ${id}`);
     await this.saveSessionById(id, session.messages, metadata);
   }
-  async closeSession(id) {
+  async beginCodexTurn(id, pendingTurn) {
+    const settings = this.ensureContainers();
+    const session = this.getSession(id);
+    if (!session) throw new Error(`Conversation session not found: ${id}`);
+    const normalized = normalizePendingCodexTurn(pendingTurn);
+    if (!normalized) throw new Error("Invalid pending Codex turn");
+    session.mode = "codex";
+    session.pendingTurn = normalized;
+    session.updatedAt = this.now();
+    settings.conversationSessions[id] = cloneSession(session);
+    await this.persistSettings();
+  }
+  async updateCodexTurn(id, turnId, patch, codex) {
+    const settings = this.ensureContainers();
+    const session = this.getSession(id);
+    if (!(session == null ? void 0 : session.pendingTurn) || session.pendingTurn.turnId !== turnId) return;
+    const pendingTurn = normalizePendingCodexTurn({ ...session.pendingTurn, ...patch });
+    if (!pendingTurn) throw new Error("Invalid pending Codex turn update");
+    session.pendingTurn = pendingTurn;
+    if (codex) session.codex = { ...session.codex || {}, ...codex };
+    session.updatedAt = this.now();
+    settings.conversationSessions[id] = cloneSession(session);
+    await this.persistSettings();
+  }
+  async completeCodexTurn(id, turnId, userContent, assistantContent, codex) {
     var _a;
+    const settings = this.ensureContainers();
+    const session = this.getSession(id);
+    if (!session) throw new Error(`Conversation session not found: ${id}`);
+    if (!session.pendingTurn || session.pendingTurn.turnId !== turnId) {
+      const tail = session.messages.slice(-2);
+      const alreadyApplied = !session.pendingTurn && tail.length === 2 && tail[0].role === "user" && tail[0].content === userContent && tail[1].role === "assistant" && tail[1].content === assistantContent;
+      if (alreadyApplied) {
+        session.codex = { ...session.codex || {}, ...codex };
+        settings.conversationSessions[id] = cloneSession(session);
+        await this.persistSettings();
+        return;
+      }
+      throw new Error("Codex turn no longer matches the persisted pending task");
+    }
+    const firstUserTurn = !session.messages.some((message) => message.role === "user");
+    const derivedTitle = userContent.replace(/\s+/g, " ").trim().slice(0, 80);
+    session.messages = normalizeConversationMessages([
+      ...session.messages,
+      { role: "user", content: userContent, status: "complete" },
+      { role: "assistant", content: assistantContent, status: "complete" }
+    ]);
+    if (firstUserTurn && derivedTitle) session.title = derivedTitle;
+    session.codex = { ...session.codex || {}, ...codex };
+    session.pendingTurn = void 0;
+    session.updatedAt = this.now();
+    settings.conversationSessions[id] = cloneSession(session);
+    if (((_a = settings.activeConversationSessionIds) == null ? void 0 : _a[session.conversationKey]) === id) {
+      settings.conversationHistories[session.conversationKey] = {
+        version: 1,
+        updatedAt: session.updatedAt,
+        messages: normalizeConversationMessages(session.messages)
+      };
+    }
+    await this.persistSettings();
+  }
+  async closeSession(id) {
+    var _a, _b;
     const settings = this.ensureContainers();
     const session = this.getSession(id);
     if (!session) return;
     if (session.codex) session.codex = { ...session.codex, lifecycle: "closed" };
+    if (((_a = session.pendingTurn) == null ? void 0 : _a.status) === "running") {
+      session.pendingTurn = { ...session.pendingTurn, status: "interrupted", progress: "\u4F1A\u8BDD\u5DF2\u5173\u95ED" };
+    }
     session.updatedAt = this.now();
     settings.conversationSessions[id] = cloneSession(session);
+    if (((_b = settings.activeConversationSessionIds) == null ? void 0 : _b[session.conversationKey]) === id) {
+      delete settings.activeConversationSessionIds[session.conversationKey];
+    }
+    await this.persistSettings();
+  }
+  async clearSession(id) {
+    var _a;
+    const settings = this.ensureContainers();
+    const session = this.getSession(id);
+    if (!session) return;
+    delete settings.conversationSessions[id];
     if (((_a = settings.activeConversationSessionIds) == null ? void 0 : _a[session.conversationKey]) === id) {
       delete settings.activeConversationSessionIds[session.conversationKey];
+      delete settings.conversationHistories[session.conversationKey];
     }
     await this.persistSettings();
   }
@@ -2851,6 +3159,7 @@ var PDFChatModal = class _PDFChatModal extends import_obsidian3.Modal {
     __publicField(this, "codexProgressTimer");
     __publicField(this, "lastCodexSnapshot");
     __publicField(this, "promptHistoryCursor", null);
+    __publicField(this, "promptHistoryDraft", "");
     __publicField(this, "zoomOutBtn");
     __publicField(this, "zoomLabel");
     __publicField(this, "zoomInBtn");
@@ -2876,6 +3185,8 @@ var PDFChatModal = class _PDFChatModal extends import_obsidian3.Modal {
     __publicField(this, "codexContextToggleBtn");
     __publicField(this, "composerMentionSuggestionsEl");
     __publicField(this, "composerMentionRange");
+    __publicField(this, "composerMentionCandidates", []);
+    __publicField(this, "composerMentionActiveIndex", 0);
     __publicField(this, "commandMenuEl");
     __publicField(this, "inputEl");
     __publicField(this, "sendBtn");
@@ -2917,6 +3228,14 @@ var PDFChatModal = class _PDFChatModal extends import_obsidian3.Modal {
         if (activeSession.codex.profile !== void 0) {
           this.plugin.settings.codexDeepAnalysis.profile = activeSession.codex.profile || "";
         }
+      }
+    }
+    if (activeSession == null ? void 0 : activeSession.api) {
+      if (activeSession.api.modelId && this.plugin.settings.models.some((model) => model.id === activeSession.api.modelId)) {
+        this.currentModelId = activeSession.api.modelId;
+      }
+      if (activeSession.api.presetId && (activeSession.api.presetId === "__default__" || this.plugin.settings.promptPresets.some((preset) => preset.id === activeSession.api.presetId))) {
+        this.currentPresetId = activeSession.api.presetId;
       }
     }
     if ((_c = activeSession == null ? void 0 : activeSession.referencedPdfPaths) == null ? void 0 : _c.length) {
@@ -3007,6 +3326,7 @@ ${this.contextText}`;
       }
     });
     this.inputEl.addEventListener("keydown", (evt) => {
+      if (this.handleComposerMentionKey(evt)) return;
       if (this.handlePromptHistoryKey(evt)) return;
       if (evt.key === "Enter" && !evt.shiftKey) {
         evt.preventDefault();
@@ -3014,15 +3334,12 @@ ${this.contextText}`;
       }
     });
     this.inputEl.addEventListener("input", () => {
+      if (this.promptHistoryCursor !== null) {
+        this.promptHistoryCursor = null;
+        this.promptHistoryDraft = "";
+      }
       this.hideFollowupSuggestions();
       this.updateComposerMentionSuggestions();
-    });
-    this.inputEl.addEventListener("keydown", (evt) => {
-      if (evt.key === "Escape" && this.composerMentionSuggestionsEl) {
-        evt.preventDefault();
-        evt.stopPropagation();
-        this.hideComposerMentionSuggestions();
-      }
     });
     this.setupCloseIntentHandling();
     if (restoringHistory) {
@@ -3200,26 +3517,28 @@ ${this.contextText}`;
     if (history[history.length - 1] !== text) history.push(text);
     this.plugin.settings.promptHistory = history.slice(-100);
     this.promptHistoryCursor = null;
+    this.promptHistoryDraft = "";
     this.saveSettingsInBackground();
   }
   saveSettingsInBackground() {
     Promise.resolve(this.plugin.saveSettings()).catch(() => void 0);
   }
   saveSessionMetadataInBackground() {
-    if (this.transcript.length && this.services.conversations.saveActiveSession) {
+    const session = this.ensureCurrentSessionForWrite();
+    if (session && this.services.conversations.saveSessionById) {
       Promise.resolve(
-        this.services.conversations.saveActiveSession(
-          this.conversationKey,
+        this.services.conversations.saveSessionById(
+          session.id,
           this.transcript,
           this.sessionMetadata()
         )
       ).catch(() => void 0);
       return;
     }
-    if (this.services.conversations.ensureSession) {
+    if (!session && this.services.conversations.ensureSession) {
       try {
-        const session = this.services.conversations.ensureSession(this.conversationKey, this.sessionMetadata());
-        this.currentSessionId = (session == null ? void 0 : session.id) || this.currentSessionId;
+        const session2 = this.services.conversations.ensureSession(this.conversationKey, this.sessionMetadata());
+        this.currentSessionId = (session2 == null ? void 0 : session2.id) || this.currentSessionId;
         this.saveSettingsInBackground();
       } catch (error) {
         void error;
@@ -3231,8 +3550,15 @@ ${this.contextText}`;
     if (this.composerMentionSuggestionsEl) return false;
     const history = this.plugin.settings.promptHistory || [];
     if (!history.length) return false;
+    const value = this.inputEl.value || "";
+    const selectionStart = typeof this.inputEl.selectionStart === "number" ? this.inputEl.selectionStart : value.length;
+    const selectionEnd = typeof this.inputEl.selectionEnd === "number" ? this.inputEl.selectionEnd : selectionStart;
+    if (selectionStart !== selectionEnd) return false;
+    if (event.key === "ArrowUp" && value.slice(0, selectionStart).includes("\n")) return false;
+    if (event.key === "ArrowDown" && value.slice(selectionEnd).includes("\n")) return false;
     event.preventDefault();
     if (event.key === "ArrowUp") {
+      if (this.promptHistoryCursor === null) this.promptHistoryDraft = value;
       const next = this.promptHistoryCursor === null ? history.length - 1 : Math.max(0, this.promptHistoryCursor - 1);
       this.promptHistoryCursor = next;
       this.inputEl.value = history[next] || "";
@@ -3241,11 +3567,19 @@ ${this.contextText}`;
       const next = this.promptHistoryCursor + 1;
       if (next >= history.length) {
         this.promptHistoryCursor = null;
-        this.inputEl.value = "";
+        this.inputEl.value = this.promptHistoryDraft;
+        this.promptHistoryDraft = "";
       } else {
         this.promptHistoryCursor = next;
         this.inputEl.value = history[next] || "";
       }
+    }
+    const caret = this.inputEl.value.length;
+    if (typeof this.inputEl.setSelectionRange === "function") {
+      this.inputEl.setSelectionRange(caret, caret);
+    } else {
+      this.inputEl.selectionStart = caret;
+      this.inputEl.selectionEnd = caret;
     }
     return true;
   }
@@ -3359,6 +3693,7 @@ ${this.contextText}`;
       mode: this.runtimeMode === "codex" ? "codex" : "chat",
       referencedPdfPaths: this.referencedPdfFiles.map((file) => file.path).filter(Boolean),
       includeCurrentPdfInCodex: this.includeCurrentPdfInCodex,
+      api: { modelId: this.currentModelId, presetId: this.currentPresetId },
       codex: this.runtimeMode === "codex" ? {
         model: this.getCodexModel(),
         reasoningEffort: this.getCodexReasoningEffort(),
@@ -3367,6 +3702,18 @@ ${this.contextText}`;
         lifecycle: (existingCodex == null ? void 0 : existingCodex.lifecycle) || "active"
       } : void 0
     };
+  }
+  ensureCurrentSessionForWrite() {
+    var _a, _b, _c, _d, _e, _f;
+    if (this.currentSessionId) {
+      return ((_b = (_a = this.services.conversations).getSession) == null ? void 0 : _b.call(_a, this.currentSessionId)) || {
+        id: this.currentSessionId
+      };
+    }
+    const metadata = this.sessionMetadata();
+    const session = this.startFresh ? (_d = (_c = this.services.conversations).startSession) == null ? void 0 : _d.call(_c, this.conversationKey, metadata) : (_f = (_e = this.services.conversations).ensureSession) == null ? void 0 : _f.call(_e, this.conversationKey, metadata);
+    this.currentSessionId = session == null ? void 0 : session.id;
+    return session || null;
   }
   async startNewSession() {
     var _a, _b, _c;
@@ -3401,7 +3748,7 @@ ${this.contextText}`;
     new import_obsidian3.Notice("\u5DF2\u65B0\u5EFA\u8BA8\u8BBA\uFF0C\u65E7\u8BA8\u8BBA\u53EF\u7528 /resume \u627E\u56DE\u3002");
   }
   async resumeConversationSession(sessionId) {
-    var _a, _b, _c;
+    var _a, _b, _c, _d, _e;
     const session = (_b = (_a = this.services.conversations).resumeSession) == null ? void 0 : _b.call(_a, sessionId);
     if (!session) {
       new import_obsidian3.Notice("\u6CA1\u6709\u627E\u5230\u8FD9\u6BB5\u5386\u53F2\u8BA8\u8BBA\u3002");
@@ -3434,6 +3781,12 @@ ${this.contextText}`;
       this.plugin.settings.codexDeepAnalysis.reasoningEffort = session.codex.reasoningEffort;
       this.plugin.settings.codexDeepAnalysis.profile = session.codex.profile || "";
     }
+    if (((_d = session.api) == null ? void 0 : _d.modelId) && this.plugin.settings.models.some((model) => model.id === session.api.modelId)) {
+      this.currentModelId = session.api.modelId;
+    }
+    if (((_e = session.api) == null ? void 0 : _e.presetId) && (session.api.presetId === "__default__" || this.plugin.settings.promptPresets.some((preset) => preset.id === session.api.presetId))) {
+      this.currentPresetId = session.api.presetId;
+    }
     this.referencedPdfFiles = (session.referencedPdfPaths || []).map((path) => this.findPdfFileByPath(path)).filter((file) => !!file);
     this.includeCurrentPdfInCodex = session.includeCurrentPdfInCodex !== false;
     this.transcript = session.messages || [];
@@ -3456,14 +3809,144 @@ ${this.contextText}`;
       const rightCurrent = right.conversationKey === this.conversationKey ? 1 : 0;
       return rightCurrent - leftCurrent || right.updatedAt - left.updatedAt;
     });
-    this.showCommandMenu(
-      "\u6062\u590D\u5386\u53F2\u8BA8\u8BBA",
-      currentFirst.map((session) => ({
-        label: session.title || session.conversationKey,
-        detail: `${session.mode === "codex" ? "Codex" : "API"} \xB7 ${session.conversationKey}`,
-        run: () => this.resumeConversationSession(session.id)
-      }))
-    );
+    const owner = this;
+    class ResumeSessionSuggestModal extends import_obsidian3.FuzzySuggestModal {
+      getItems() {
+        return currentFirst;
+      }
+      getItemText(session) {
+        const path = session.conversationKey.replace(/^pdf:/, "");
+        const mode = session.mode === "codex" ? "Codex" : "API";
+        return `${session.title || path} \xB7 ${path} \xB7 ${mode}`;
+      }
+      onChooseItem(session) {
+        void owner.resumeConversationSession(session.id);
+      }
+    }
+    const picker = new ResumeSessionSuggestModal(this.app);
+    picker.setPlaceholder("\u641C\u7D22\u6807\u9898\u3001PDF \u8DEF\u5F84\u6216 Codex/API \u6A21\u5F0F\u2026");
+    picker.open();
+  }
+  showTasksMenu() {
+    var _a;
+    const tasks = ((_a = this.services.codex) == null ? void 0 : _a.listSnapshots()) || [];
+    const items = tasks.map((task) => {
+      var _a2, _b;
+      return {
+        task,
+        session: ((_b = (_a2 = this.services.conversations).getSession) == null ? void 0 : _b.call(_a2, task.sessionId)) || null
+      };
+    });
+    const owner = this;
+    class CodexTaskSuggestModal extends import_obsidian3.FuzzySuggestModal {
+      getItems() {
+        return items;
+      }
+      getItemText(item) {
+        const { task, session } = item;
+        const state = task.status === "running" ? "\u8FD0\u884C\u4E2D" : task.status === "failed" ? "\u5931\u8D25" : "\u5DF2\u4E2D\u65AD";
+        return `${(session == null ? void 0 : session.title) || task.question || task.sessionId} \xB7 ${state}${task.progress ? ` \xB7 ${task.progress}` : ""}`;
+      }
+      onChooseItem(item) {
+        void owner.resumeConversationSession(item.task.sessionId);
+      }
+    }
+    const picker = new CodexTaskSuggestModal(this.app);
+    picker.setPlaceholder("\u641C\u7D22 Codex \u540E\u53F0\u4EFB\u52A1\u2026");
+    picker.open();
+  }
+  async retryCurrentCodexSave() {
+    if (!this.currentSessionId || !this.services.codex) {
+      new import_obsidian3.Notice("\u5F53\u524D\u6CA1\u6709\u53EF\u91CD\u65B0\u4FDD\u5B58\u7684 Codex \u56DE\u7B54\u3002");
+      return;
+    }
+    try {
+      const saved = await this.services.codex.retryPersistResult(this.currentSessionId);
+      new import_obsidian3.Notice(saved ? "Codex \u56DE\u7B54\u5DF2\u91CD\u65B0\u4FDD\u5B58\u3002" : "\u5F53\u524D\u6CA1\u6709\u5F85\u91CD\u65B0\u4FDD\u5B58\u7684 Codex \u56DE\u7B54\u3002");
+    } catch (error) {
+      new import_obsidian3.Notice(`\u91CD\u65B0\u4FDD\u5B58\u5931\u8D25\uFF1A${errorMessage2(error)}`);
+    }
+  }
+  async runCodexDoctor(runRealCheck) {
+    var _a, _b;
+    if (!this.pdfFile) {
+      new import_obsidian3.Notice("\u8BF7\u5148\u4ECE\u4E00\u4E2A PDF \u89C6\u56FE\u6253\u5F00 PDF Chat\uFF0C\u518D\u8FD0\u884C /doctor\u3002");
+      return;
+    }
+    let workingDirectory;
+    try {
+      workingDirectory = resolveCodexPdfLocation(this.app, this.pdfFile.path).workingDirectory;
+    } catch (error) {
+      new import_obsidian3.Notice(`Codex \u672C\u5730\u8DEF\u5F84\u68C0\u67E5\u5931\u8D25\uFF1A${errorMessage2(error)}`);
+      return;
+    }
+    if (runRealCheck) {
+      const candidateWindow = (_a = this.contentEl.ownerDocument) == null ? void 0 : _a.defaultView;
+      const confirmFn = (_b = candidateWindow == null ? void 0 : candidateWindow.confirm) == null ? void 0 : _b.bind(candidateWindow);
+      if (!(confirmFn == null ? void 0 : confirmFn(
+        "\u771F\u5B9E Codex \u8BCA\u65AD\u4F1A\u6267\u884C\u4E24\u6B21\u6A21\u578B\u8C03\u7528\uFF1A\u5148\u521B\u5EFA thread\uFF0C\u518D resume \u540C\u4E00\u4E2A thread\u3002\u662F\u5426\u7EE7\u7EED\uFF1F"
+      ))) {
+        new import_obsidian3.Notice("\u5DF2\u53D6\u6D88\u771F\u5B9E Codex \u8BCA\u65AD\u3002");
+        return;
+      }
+    }
+    this.hideFollowupSuggestions();
+    this.setSendingState(true);
+    const bubble = this.addBubble("assistant", "\u6B63\u5728\u68C0\u67E5 Codex CLI\u2026", {
+      loading: true,
+      assistantAuthor: "Codex Doctor",
+      assistantContext: runRealCheck ? "\u771F\u5B9E thread/resume \u8BCA\u65AD" : "\u514D\u8D39\u672C\u5730\u8BCA\u65AD"
+    });
+    const settings = this.plugin.settings.codexDeepAnalysis;
+    try {
+      const version = await runCodexVersionCheck(settings.command, {
+        workingDirectory,
+        timeoutMs: 1e4
+      });
+      if (!runRealCheck) {
+        bubble.removeClass("is-loading");
+        setBubbleText(
+          bubble,
+          `Codex CLI \u672C\u5730\u68C0\u67E5\u901A\u8FC7\u3002
+
+- \u7248\u672C\uFF1A${version}
+- \u547D\u4EE4\uFF1A${settings.command}
+- \u5DE5\u4F5C\u76EE\u5F55\uFF1A${workingDirectory}
+- \u672A\u8C03\u7528\u6A21\u578B\uFF0C\u672A\u4EA7\u751F Codex token \u6D88\u8017\u3002`
+        );
+        return;
+      }
+      setBubbleText(bubble, "Codex CLI \u53EF\u7528\uFF1B\u6B63\u5728\u9A8C\u8BC1\u65B0 thread \u4E0E\u539F\u751F resume\u2026");
+      const result = await runCodexThreadDoctor({
+        command: settings.command,
+        workingDirectory,
+        profile: settings.profile,
+        model: settings.model,
+        reasoningEffort: settings.reasoningEffort,
+        verbosity: settings.verbosity,
+        timeoutMs: Math.min(settings.timeoutMs, 18e4)
+      });
+      bubble.removeClass("is-loading");
+      setBubbleText(
+        bubble,
+        [
+          "Codex CLI \u771F\u5B9E\u8BCA\u65AD\u901A\u8FC7\u3002",
+          "",
+          `- \u7248\u672C\uFF1A${version}`,
+          `- \u6A21\u578B\uFF1A${settings.model} \xB7 ${settings.reasoningEffort}`,
+          `- Thread\uFF1A${result.threadId}`,
+          `- \u9996\u8F6E\uFF1A${result.firstTurnMs} ms \xB7 ${result.firstReply}`,
+          `- Resume\uFF1A${result.resumeTurnMs} ms \xB7 ${result.resumeReply}`
+        ].join("\n")
+      );
+    } catch (error) {
+      bubble.removeClass("is-loading");
+      bubble.addClass("is-error");
+      setBubbleText(bubble, `Codex \u8BCA\u65AD\u5931\u8D25\uFF1A${errorMessage2(error)}`);
+    } finally {
+      this.setSendingState(false);
+      this.inputEl.focus();
+    }
   }
   showStatusMessage() {
     var _a, _b, _c, _d, _e;
@@ -3500,6 +3983,9 @@ ${this.contextText}`;
         "- /model <model> <effort>\uFF1A\u5207\u6362 Codex \u6A21\u578B\u548C\u63A8\u7406\u5F3A\u5EA6",
         "- /new\uFF1A\u65B0\u5EFA\u8BA8\u8BBA\uFF0C\u4E0D\u5220\u9664\u65E7\u8BA8\u8BBA",
         "- /resume\uFF1A\u6062\u590D\u5386\u53F2\u8BA8\u8BBA",
+        "- /tasks\uFF1A\u67E5\u770B\u8FD0\u884C\u4E2D\u3001\u5931\u8D25\u6216\u4E2D\u65AD\u7684 Codex \u540E\u53F0\u4EFB\u52A1",
+        "- /retry-save\uFF1A\u91CD\u65B0\u4FDD\u5B58\u5DF2\u7ECF\u751F\u6210\u4F46\u5199\u5165\u5931\u8D25\u7684 Codex \u56DE\u7B54",
+        "- /doctor\uFF1A\u514D\u8D39\u68C0\u67E5 Codex \u547D\u4EE4\u4E0E\u7248\u672C\uFF1B/doctor real \u660E\u786E\u6267\u884C thread/resume \u771F\u5B9E\u8BCA\u65AD",
         "- /refs\uFF1A\u67E5\u770B\u5E76\u79FB\u9664\u5F53\u524D\u5F15\u7528\u7684 PDF",
         "- /unref <\u5E8F\u53F7\u6216\u540D\u79F0>\uFF1A\u79FB\u9664\u67D0\u7BC7\u5F15\u7528 PDF",
         "- /clearrefs\uFF1A\u6E05\u7A7A\u5F53\u524D\u8BA8\u8BBA\u5F15\u7528\u7684 PDF",
@@ -3558,6 +4044,18 @@ ${this.contextText}`;
       case "resume":
         this.clearComposerInput();
         this.showResumeMenu();
+        return true;
+      case "tasks":
+        this.clearComposerInput();
+        this.showTasksMenu();
+        return true;
+      case "retry-save":
+        this.clearComposerInput();
+        await this.retryCurrentCodexSave();
+        return true;
+      case "doctor":
+        this.clearComposerInput();
+        await this.runCodexDoctor(args.toLowerCase() === "real");
         return true;
       case "refs":
         this.clearComposerInput();
@@ -3687,7 +4185,7 @@ ${this.contextText}`;
   addReferencedPdf(file) {
     if (!file || !this.isPdfLikeFile(file)) return;
     if (this.pdfFile && file.path === this.pdfFile.path) {
-      new import_obsidian3.Notice("\u5F53\u524D PDF \u5DF2\u81EA\u52A8\u4F5C\u4E3A\u5BF9\u6BD4\u4E3B\u4F53\uFF0C\u65E0\u9700\u91CD\u590D\u5F15\u7528\u3002");
+      new import_obsidian3.Notice("\u5F53\u524D PDF \u5DF2\u7ECF\u4F5C\u4E3A Codex \u9644\u4EF6\uFF0C\u65E0\u9700\u91CD\u590D\u6DFB\u52A0\u3002");
       return;
     }
     if (this.referencedPdfFiles.find((existing) => existing.path === file.path)) return;
@@ -3841,6 +4339,8 @@ ${this.contextText}`;
       this.hideComposerMentionSuggestions();
       return;
     }
+    this.composerMentionCandidates = results;
+    this.composerMentionActiveIndex = 0;
     const parent = this.composerCardEl || this.contentEl;
     if (!this.composerMentionSuggestionsEl) {
       this.composerMentionSuggestionsEl = parent.createDiv({
@@ -3849,11 +4349,16 @@ ${this.contextText}`;
       });
     }
     this.composerMentionSuggestionsEl.empty();
-    for (const candidate of results) {
+    for (const [index, candidate] of results.entries()) {
       const button = this.composerMentionSuggestionsEl.createEl("button", {
         cls: "pdf-chat-composer-mention-option",
-        attr: { type: "button", role: "option" }
+        attr: {
+          type: "button",
+          role: "option",
+          "aria-selected": index === this.composerMentionActiveIndex ? "true" : "false"
+        }
       });
+      button.toggleClass("is-active", index === this.composerMentionActiveIndex);
       button.createEl("span", { text: candidate.name, cls: "pdf-chat-pdf-search-name" });
       button.createEl("span", {
         text: `${candidate.path}${candidate.cached ? " \xB7 \u5DF2\u6709\u7F13\u5B58" : ""}`,
@@ -3862,6 +4367,44 @@ ${this.contextText}`;
       labelControl(button, `\u5F15\u7528 ${candidate.name}`);
       button.addEventListener("click", () => this.chooseComposerMention(candidate.path));
     }
+  }
+  updateComposerMentionActiveOption() {
+    if (!this.composerMentionSuggestionsEl) return;
+    const options = Array.from(this.composerMentionSuggestionsEl.children).filter(
+      (element) => element.hasClass("pdf-chat-composer-mention-option")
+    );
+    for (const [index, option] of options.entries()) {
+      const active = index === this.composerMentionActiveIndex;
+      option.toggleClass("is-active", active);
+      option.setAttr("aria-selected", active ? "true" : "false");
+      if (active && typeof option.scrollIntoView === "function") {
+        option.scrollIntoView({ block: "nearest" });
+      }
+    }
+  }
+  handleComposerMentionKey(event) {
+    if (!this.composerMentionSuggestionsEl || !this.composerMentionCandidates.length) return false;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      this.hideComposerMentionSuggestions();
+      return true;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const delta = event.key === "ArrowDown" ? 1 : -1;
+      const count = this.composerMentionCandidates.length;
+      this.composerMentionActiveIndex = (this.composerMentionActiveIndex + delta + count) % count;
+      this.updateComposerMentionActiveOption();
+      return true;
+    }
+    if (event.key === "Enter" || event.key === "Tab") {
+      event.preventDefault();
+      const candidate = this.composerMentionCandidates[this.composerMentionActiveIndex];
+      if (candidate) this.chooseComposerMention(candidate.path);
+      return true;
+    }
+    return false;
   }
   hideComposerMentionSuggestions() {
     var _a;
@@ -3873,6 +4416,8 @@ ${this.contextText}`;
     }
     this.composerMentionSuggestionsEl = void 0;
     this.composerMentionRange = void 0;
+    this.composerMentionCandidates = [];
+    this.composerMentionActiveIndex = 0;
   }
   chooseComposerMention(path) {
     const file = this.findPdfFileByPath(path);
@@ -4021,9 +4566,10 @@ ${this.contextText}`;
   }
   async persistConversation() {
     try {
-      if (this.services.conversations.saveActiveSession) {
-        await this.services.conversations.saveActiveSession(
-          this.conversationKey,
+      const session = this.ensureCurrentSessionForWrite();
+      if (session && this.services.conversations.saveSessionById) {
+        await this.services.conversations.saveSessionById(
+          session.id,
           this.transcript,
           this.sessionMetadata()
         );
@@ -4080,7 +4626,11 @@ ${this.contextText}`;
     this.emptyStateEl = void 0;
     this.showEmptyState();
     try {
-      await this.services.conversations.clear(this.conversationKey);
+      if (this.currentSessionId && this.services.conversations.clearSession) {
+        await this.services.conversations.clearSession(this.currentSessionId);
+      } else {
+        await this.services.conversations.clear(this.conversationKey);
+      }
       new import_obsidian3.Notice("\u5BF9\u8BDD\u5DF2\u6E05\u7A7A,\u539F\u6587\u4E0A\u4E0B\u6587\u4FDD\u7559");
     } catch (err) {
       new import_obsidian3.Notice("\u754C\u9762\u5DF2\u6E05\u7A7A,\u4F46\u5220\u9664\u5DF2\u4FDD\u5B58\u5BF9\u8BDD\u5931\u8D25: " + errorMessage2(err));
@@ -4261,27 +4811,6 @@ ${this.contextText}`;
 
 \u5F15\u7528\u8BBA\u6587\uFF1A${refs}` : `\u591A\u8BBA\u6587\u95EE\u9898\uFF1A${question}`;
   }
-  codexSlashQuestion(question) {
-    const trimmed = question.trim();
-    if (!/^\/codex\b/i.test(trimmed)) return null;
-    const stripped = trimmed.replace(/^\/codex\b[:：]?\s*/i, "").trim();
-    return stripped || "\u8BF7\u57FA\u4E8E\u5F53\u524D\u8BBA\u6587\u548C\u5DF2\u5F15\u7528\u8BBA\u6587\u8FDB\u884C\u6DF1\u5EA6\u9605\u8BFB\uFF0C\u63D0\u70BC\u5173\u952E\u95EE\u9898\u3001\u6838\u5FC3\u65B9\u6CD5\u3001\u8BC1\u636E\u3001\u5C40\u9650\u548C\u540E\u7EED\u503C\u5F97\u8FFD\u95EE\u7684\u65B9\u5411\u3002";
-  }
-  shouldOfferCodexDeepAnalysis(question) {
-    if (!this.pdfFile || !this.referencedPdfFiles.length) return false;
-    return /(深度分析|深度阅读|深入分析|深入阅读|Codex|codex|CLI|cli)/.test(question);
-  }
-  confirmCodexDeepAnalysis() {
-    var _a;
-    const message = "\u68C0\u6D4B\u5230\u4F60\u60F3\u505A\u591A\u8BBA\u6587\u6DF1\u5EA6\u5206\u6790\u3002\u662F\u5426\u4F7F\u7528 Codex CLI \u8BFB\u53D6\u5F53\u524D\u8BBA\u6587\u548C @ \u5F15\u7528\u8BBA\u6587\uFF1F\n\n\u9009\u62E9\u201C\u53D6\u6D88\u201D\u4F1A\u7EE7\u7EED\u4F7F\u7528\u5F53\u524D\u6A21\u578B\u57FA\u4E8E\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u56DE\u7B54\u3002";
-    const candidateWindow = ((_a = this.contentEl) == null ? void 0 : _a.ownerDocument) ? this.contentEl.ownerDocument.defaultView : null;
-    const confirmFn = candidateWindow && typeof candidateWindow.confirm === "function" && candidateWindow.confirm.bind(candidateWindow) || typeof window !== "undefined" && typeof window.confirm === "function" && window.confirm.bind(window) || typeof confirm === "function" && confirm;
-    if (!confirmFn) {
-      new import_obsidian3.Notice("\u68C0\u6D4B\u5230\u6DF1\u5EA6\u5206\u6790\u610F\u56FE\uFF0C\u4F46\u5F53\u524D\u73AF\u5883\u65E0\u6CD5\u5F39\u51FA\u786E\u8BA4\u6846\uFF0C\u5DF2\u6539\u7528\u5F53\u524D\u6A21\u578B\u57FA\u4E8E\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u56DE\u7B54\u3002");
-      return false;
-    }
-    return confirmFn(message);
-  }
   async buildApiMultiPaperContext(question, progress) {
     const papers = this.selectedPaperFiles();
     const parts = [];
@@ -4402,7 +4931,7 @@ ${chunk.text}`;
     return prepared;
   }
   async runCodexDeepAnalysis(questionOverride) {
-    var _a, _b, _c, _d;
+    var _a, _b;
     if (!this.plugin.settings.codexDeepAnalysis.enabled) {
       new import_obsidian3.Notice("\u9700\u8981\u5148\u5728 PDF Chat \u8BBE\u7F6E\u4E2D\u542F\u7528 Codex CLI\u3002");
       return;
@@ -4419,11 +4948,7 @@ ${chunk.text}`;
     }
     const question = questionOverride && questionOverride.trim() || this.getMultiPaperQuestion();
     this.enterCodexMode();
-    const session = (_b = (_a = this.services.conversations).ensureSession) == null ? void 0 : _b.call(
-      _a,
-      this.conversationKey,
-      this.sessionMetadata(this.getDocumentName())
-    );
+    const session = this.ensureCurrentSessionForWrite();
     this.currentSessionId = (session == null ? void 0 : session.id) || this.currentSessionId;
     if (!this.currentSessionId) {
       new import_obsidian3.Notice("\u65E0\u6CD5\u521B\u5EFA Codex \u4F1A\u8BDD\uFF0C\u8BF7\u91CD\u65B0\u6253\u5F00 PDF Chat\u3002");
@@ -4438,8 +4963,8 @@ ${chunk.text}`;
       };
     });
     const currentLocation = this.pdfFile ? resolveCodexPdfLocation(this.app, this.pdfFile.path) : null;
-    const adapter = (_c = this.app.vault) == null ? void 0 : _c.adapter;
-    const workingDirectory = (currentLocation == null ? void 0 : currentLocation.workingDirectory) || ((_d = adapter == null ? void 0 : adapter.getBasePath) == null ? void 0 : _d.call(adapter)) || ".";
+    const adapter = (_a = this.app.vault) == null ? void 0 : _a.adapter;
+    const workingDirectory = (currentLocation == null ? void 0 : currentLocation.workingDirectory) || ((_b = adapter == null ? void 0 : adapter.getBasePath) == null ? void 0 : _b.call(adapter)) || ".";
     const selectedContext = this.shouldAttachSelectionContext() ? this.contextText : "";
     const prompt = buildCodexTurnPrompt({ question, papers, selectedContext });
     this.activeComposerKind = "chat";
@@ -4932,10 +5457,6 @@ ${snapshot.progress || "\u6B63\u5728\u7B49\u5F85 Codex CLI \u4E8B\u4EF6\u2026"}`
       await this.handleTranslateFollowup(question, usingOverride);
       return;
     }
-    if (!usingOverride && !opts.outgoingContentOverride && !opts.skipContextAugmentation && this.shouldOfferCodexDeepAnalysis(question) && this.confirmCodexDeepAnalysis()) {
-      await this.runCodexDeepAnalysis(question);
-      return;
-    }
     this.activeComposerKind = "chat";
     this.hideFollowupSuggestions();
     this.addBubble("user", question);
@@ -5165,16 +5686,26 @@ var QuickTranslateMarker = class {
     this.cancelPendingUpdate();
     if (this.markerEl) this.markerEl.hidden = true;
   }
+  detach(doc) {
+    var _a;
+    const listeners = this.attached.get(doc);
+    if (!listeners) return;
+    doc.removeEventListener("selectionchange", listeners.selectionChange);
+    doc.removeEventListener("mousedown", listeners.mouseDown, true);
+    doc.removeEventListener("scroll", listeners.scroll, true);
+    doc.removeEventListener("keydown", listeners.keyDown);
+    this.attached.delete(doc);
+    if (this.markerDocument === doc) {
+      this.cancelPendingUpdate();
+      (_a = this.markerEl) == null ? void 0 : _a.remove();
+      this.markerEl = null;
+      this.markerDocument = null;
+    }
+  }
   destroy() {
     var _a;
     this.cancelPendingUpdate();
-    for (const [doc, listeners] of this.attached) {
-      doc.removeEventListener("selectionchange", listeners.selectionChange);
-      doc.removeEventListener("mousedown", listeners.mouseDown, true);
-      doc.removeEventListener("scroll", listeners.scroll, true);
-      doc.removeEventListener("keydown", listeners.keyDown);
-    }
-    this.attached.clear();
+    for (const doc of Array.from(this.attached.keys())) this.detach(doc);
     (_a = this.markerEl) == null ? void 0 : _a.remove();
     this.markerEl = null;
     this.markerDocument = null;
@@ -5301,7 +5832,7 @@ function legacySessionFromHistory(key, history) {
   const id = `legacy-${stableConversationHash(key)}`;
   const timestamp = typeof history.updatedAt === "number" && Number.isFinite(history.updatedAt) ? history.updatedAt : 0;
   return {
-    version: 1,
+    version: 2,
     id,
     conversationKey: key,
     title: key.replace(/^pdf:/, ""),
@@ -5324,7 +5855,7 @@ function normalizeRagChunkSettings(chunkSize, chunkOverlap) {
   };
 }
 function migrateSettings(savedValue, now = Date.now) {
-  var _a, _b;
+  var _a, _b, _c;
   const saved = savedValue && typeof savedValue === "object" && !Array.isArray(savedValue) ? savedValue : null;
   const settings = Object.assign({}, DEFAULT_SETTINGS, saved);
   let needsSave = false;
@@ -5336,6 +5867,15 @@ function migrateSettings(savedValue, now = Date.now) {
   settings.conversationSessions = normalizeConversationSessions(saved && saved.conversationSessions);
   settings.activeConversationSessionIds = normalizeActiveSessionIds(saved && saved.activeConversationSessionIds);
   settings.promptHistory = normalizePromptHistory(saved && saved.promptHistory);
+  for (const session of Object.values(settings.conversationSessions)) {
+    if (((_a = session.pendingTurn) == null ? void 0 : _a.status) !== "running") continue;
+    session.pendingTurn = {
+      ...session.pendingTurn,
+      status: "interrupted",
+      progress: session.pendingTurn.progress || "Obsidian \u6216 PDF Chat \u5728\u4EFB\u52A1\u5B8C\u6210\u524D\u9000\u51FA"
+    };
+    needsSave = true;
+  }
   for (const [key, history] of Object.entries(settings.conversationHistories)) {
     const hasSession = Object.values(settings.conversationSessions).some((session2) => session2.conversationKey === key);
     if (hasSession) continue;
@@ -5352,7 +5892,7 @@ function migrateSettings(savedValue, now = Date.now) {
   const hasTranslationObject = Boolean(
     saved && saved.translation && typeof saved.translation === "object" && !Array.isArray(saved.translation)
   );
-  const nestedChunkChars = (_a = saved == null ? void 0 : saved.translation) == null ? void 0 : _a.chunkChars;
+  const nestedChunkChars = (_b = saved == null ? void 0 : saved.translation) == null ? void 0 : _b.chunkChars;
   const validNestedChunkChars = typeof nestedChunkChars === "number" && Number.isInteger(nestedChunkChars) && nestedChunkChars > 0 ? nestedChunkChars : null;
   const legacyChunkChars = saved == null ? void 0 : saved.translateChunkMaxChars;
   const validLegacyChunkChars = typeof legacyChunkChars === "number" && Number.isInteger(legacyChunkChars) && legacyChunkChars > 0 ? legacyChunkChars : null;
@@ -5361,7 +5901,7 @@ function migrateSettings(savedValue, now = Date.now) {
     settings.translation = {
       ...DEFAULT_SETTINGS.translation,
       ...saved.translation,
-      chunkChars: (_b = validNestedChunkChars != null ? validNestedChunkChars : validLegacyChunkChars) != null ? _b : DEFAULT_SETTINGS.translation.chunkChars
+      chunkChars: (_c = validNestedChunkChars != null ? validNestedChunkChars : validLegacyChunkChars) != null ? _c : DEFAULT_SETTINGS.translation.chunkChars
     };
   } else {
     const legacyInstruction = typeof (saved == null ? void 0 : saved.translatePrompt) === "string" ? saved.translatePrompt : "";
@@ -5767,9 +6307,9 @@ var PDFChatSettingTab = class extends import_obsidian4.PluginSettingTab {
       text: "\u9ED8\u8BA4\u5FEB\u6377\u952E\uFF1ACtrl+Alt+Q \u65B0\u5F00\u5BF9\u8BDD\uFF1BCtrl+Q \u7EE7\u7EED\u4E0A\u6B21\u5BF9\u8BDD\u3002\u53EF\u5728 \u8BBE\u7F6E\u2192\u5FEB\u6377\u952E\u2192\u641C\u7D22\u201CPDF Chat\u201D\u4E2D\u4FEE\u6539\u3002\u5F39\u7A97\u652F\u6301\u62D6\u52A8\u3001\u7F29\u653E\u3001\u8FDE\u7EED\u8FFD\u95EE\u548C\u505C\u6B62\u751F\u6210\u3002",
       cls: "setting-item-description"
     });
-    containerEl.createEl("h4", { text: "Codex \u6DF1\u5EA6\u591A\u8BBA\u6587\u5206\u6790" });
+    containerEl.createEl("h4", { text: "Codex \u8BBA\u6587\u7EC8\u7AEF" });
     containerEl.createEl("p", {
-      text: "\u542F\u7528\u540E\uFF0C\u8BBA\u6587\u4E0A\u4E0B\u6587\u533A\u4F1A\u5141\u8BB8\u624B\u52A8\u89E6\u53D1 Codex CLI\u3002\u63D2\u4EF6\u53EA\u4F1A\u628A\u8BBA\u6587\u6587\u672C\u548C\u5F53\u524D\u95EE\u9898\u5199\u5165\u4E34\u65F6\u5206\u6790\u5305\uFF0C\u4E0D\u4F1A\u590D\u5236 data.json\u3001API key \u6216\u6A21\u578B endpoint\u3002",
+      text: "\u542F\u7528\u540E\uFF0C\u53EF\u5728\u804A\u5929\u6846\u8F93\u5165 /codex \u8FDB\u5165 Codex CLI \u591A\u8F6E\u4F1A\u8BDD\u3002\u666E\u901A\u6A21\u5F0F\u4E0D\u4F1A\u6839\u636E\u5173\u952E\u8BCD\u81EA\u52A8\u5207\u6362\u3002\u9ED8\u8BA4\u53EA\u5411 Codex \u63D0\u4F9B\u7528\u6237\u95EE\u9898\u3001\u6240\u9009 PDF \u7684\u672C\u5730\u8DEF\u5F84\u548C\u53EF\u9009\u7684\u5F53\u524D\u9009\u533A\uFF0C\u4E0D\u4F1A\u4F20\u9012 data.json\u3001API key \u6216\u6A21\u578B endpoint\u3002",
       cls: "setting-item-description"
     });
     new import_obsidian4.Setting(containerEl).setName("\u542F\u7528 Codex CLI \u6DF1\u5EA6\u5206\u6790").setDesc("\u4EC5\u684C\u9762\u7AEF\u53EF\u7528\u3002Codex \u4F7F\u7528\u5B83\u81EA\u5DF1\u7684\u767B\u5F55/\u914D\u7F6E\uFF0C\u4E0D\u4F7F\u7528 PDF Chat \u7684 API key\u3002").addToggle(
@@ -5812,7 +6352,7 @@ var PDFChatSettingTab = class extends import_obsidian4.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian4.Setting(containerEl).setName("Codex input mode").setDesc("\u9ED8\u8BA4 PDF-only\uFF1A\u53EA\u628A\u6240\u9009 PDF \u548C\u95EE\u9898\u653E\u8FDB\u4E34\u65F6\u76EE\u5F55\uFF1BDebug full \u4EC5\u7528\u4E8E\u6392\u67E5 PDF \u8BFB\u53D6\u95EE\u9898\u3002").addDropdown((dropdown) => {
+    new import_obsidian4.Setting(containerEl).setName("Codex input mode").setDesc("\u9ED8\u8BA4 PDF-only\uFF1ACodex \u5728\u5F53\u524D PDF \u6587\u4EF6\u5939\u4E2D\u76F4\u63A5\u8BFB\u53D6\u6240\u9009 PDF \u8DEF\u5F84\uFF1BDebug full \u4EC5\u4FDD\u7559\u7ED9\u65E7\u7684\u4E00\u6B21\u6027\u8BCA\u65AD\u6D41\u7A0B\u3002").addDropdown((dropdown) => {
       dropdown.addOption("pdf-only", "PDF-only");
       dropdown.addOption("debug-full", "Debug full");
       dropdown.setValue(this.plugin.settings.codexDeepAnalysis.inputMode || DEFAULT_SETTINGS.codexDeepAnalysis.inputMode);
@@ -5830,7 +6370,7 @@ var PDFChatSettingTab = class extends import_obsidian4.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian4.Setting(containerEl).setName("Codex \u9ED8\u8BA4\u9644\u5E26\u9009\u533A\u4E0A\u4E0B\u6587").setDesc("\u5F00\u542F\u540E\uFF0CPDF Chat \u4F1A\u628A\u5F53\u524D\u5212\u9009\u6BB5\u843D\u5199\u5165 selected-context.md\uFF1B\u5F39\u7A97\u5185\u4E5F\u53EF\u7528\u201C\u9644\u9009\u533A\u201D\u6309\u94AE\u6216 /context \u4E34\u65F6\u5207\u6362\u3002").addToggle(
+    new import_obsidian4.Setting(containerEl).setName("Codex \u9ED8\u8BA4\u9644\u5E26\u9009\u533A\u4E0A\u4E0B\u6587").setDesc("\u5F00\u542F\u540E\uFF0CPDF Chat \u4F1A\u628A\u5F53\u524D\u5212\u9009\u6BB5\u843D\u76F4\u63A5\u9644\u5728\u4E0B\u4E00\u8F6E Codex prompt \u4E2D\uFF1B\u5F39\u7A97\u5185\u4E5F\u53EF\u7528\u201C\u9644\u9009\u533A\u201D\u6309\u94AE\u6216 /context \u4E34\u65F6\u5207\u6362\u3002").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.codexDeepAnalysis.includeSelectionContext).onChange(async (value) => {
         this.plugin.settings.codexDeepAnalysis.includeSelectionContext = value;
         await this.plugin.saveSettings();
@@ -5843,7 +6383,7 @@ var PDFChatSettingTab = class extends import_obsidian4.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian4.Setting(containerEl).setName("\u4FDD\u7559 Codex \u4E34\u65F6\u5206\u6790\u5305").setDesc("\u4EC5\u7528\u4E8E\u8C03\u8BD5\u3002\u5173\u95ED\u65F6\u4EFB\u52A1\u7ED3\u675F\u4F1A\u5220\u9664\u4E34\u65F6\u5305\u3002").addToggle(
+    new import_obsidian4.Setting(containerEl).setName("\u4FDD\u7559 Codex \u4E34\u65F6\u5206\u6790\u5305").setDesc("\u4EC5\u5F71\u54CD\u65E7\u7684 Debug full \u4E00\u6B21\u6027\u8BCA\u65AD\u6D41\u7A0B\uFF1B\u5E38\u89C4 /codex \u591A\u8F6E\u4F1A\u8BDD\u4E0D\u4F1A\u521B\u5EFA\u4E34\u65F6\u5206\u6790\u5305\u3002").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.codexDeepAnalysis.keepTempFiles).onChange(async (value) => {
         this.plugin.settings.codexDeepAnalysis.keepTempFiles = value;
         await this.plugin.saveSettings();
@@ -5933,6 +6473,8 @@ var PDFChatPlugin = class extends import_obsidian5.Plugin {
     __publicField(this, "modalServices");
     __publicField(this, "quickTranslateMarker");
     __publicField(this, "codexSessionManager");
+    __publicField(this, "codexGlobalUnsubscribe");
+    __publicField(this, "codexRunningSessionIds", /* @__PURE__ */ new Set());
   }
   async onload() {
     var _a;
@@ -5943,6 +6485,26 @@ var PDFChatPlugin = class extends import_obsidian5.Plugin {
       () => this.saveSettings()
     );
     this.codexSessionManager = new CodexSessionManager(this.conversationStore);
+    this.codexGlobalUnsubscribe = this.codexSessionManager.subscribeAll(
+      ({ snapshot, hasSessionSubscribers }) => {
+        var _a2;
+        if (snapshot.status === "running") {
+          this.codexRunningSessionIds.add(snapshot.sessionId);
+          return;
+        }
+        if (!this.codexRunningSessionIds.delete(snapshot.sessionId)) return;
+        if (hasSessionSubscribers || !["idle", "failed", "stopped"].includes(snapshot.status)) return;
+        const session = (_a2 = this.conversationStore) == null ? void 0 : _a2.getSession(snapshot.sessionId);
+        const title = (session == null ? void 0 : session.title) || snapshot.question || "Codex \u4EFB\u52A1";
+        if (snapshot.status === "idle") {
+          new import_obsidian5.Notice(`Codex \u5DF2\u5B8C\u6210\uFF1A${title}`);
+        } else if (snapshot.status === "stopped") {
+          new import_obsidian5.Notice(`Codex \u5DF2\u505C\u6B62\uFF1A${title}`);
+        } else {
+          new import_obsidian5.Notice(`Codex \u4EFB\u52A1\u5931\u8D25\uFF1A${title}`);
+        }
+      }
+    );
     this.llmTransport = new OpenAICompatibleTransport(
       () => this.settings,
       (id) => this.getModelProfile(id)
@@ -5970,6 +6532,16 @@ var PDFChatPlugin = class extends import_obsidian5.Plugin {
         saveSessionById: (id, messages, metadata) => this.conversationStore.saveSessionById(id, messages, metadata),
         appendSessionTurn: (id, userContent, assistantContent) => this.conversationStore.appendSessionTurn(id, userContent, assistantContent),
         updateSessionMetadata: (id, metadata) => this.conversationStore.updateSessionMetadata(id, metadata),
+        beginCodexTurn: (id, pendingTurn) => this.conversationStore.beginCodexTurn(id, pendingTurn),
+        updateCodexTurn: (id, turnId, patch, codex) => this.conversationStore.updateCodexTurn(id, turnId, patch, codex),
+        completeCodexTurn: (id, turnId, userContent, assistantContent, codex) => this.conversationStore.completeCodexTurn(
+          id,
+          turnId,
+          userContent,
+          assistantContent,
+          codex
+        ),
+        clearSession: (id) => this.conversationStore.clearSession(id),
         closeSession: (id) => this.conversationStore.closeSession(id),
         resumeSession: (id) => this.conversationStore.resumeSession(id),
         listSessions: (query) => this.conversationStore.listSessions(query)
@@ -6014,18 +6586,31 @@ var PDFChatPlugin = class extends import_obsidian5.Plugin {
     if (typeof document !== "undefined") this.quickTranslateMarker.attach(document);
     const workspace = (_a = this.app) == null ? void 0 : _a.workspace;
     workspace == null ? void 0 : workspace.onLayoutReady(() => {
-      const eventRef = workspace.on("window-open", (workspaceWindow) => {
+      const windowOpenRef = workspace.on("window-open", (workspaceWindow) => {
         var _a2;
         if (workspaceWindow == null ? void 0 : workspaceWindow.doc) (_a2 = this.quickTranslateMarker) == null ? void 0 : _a2.attach(workspaceWindow.doc);
       });
-      this.registerEvent(eventRef);
+      const windowCloseRef = workspace.on("window-close", (workspaceWindow) => {
+        var _a2;
+        if (workspaceWindow == null ? void 0 : workspaceWindow.doc) (_a2 = this.quickTranslateMarker) == null ? void 0 : _a2.detach(workspaceWindow.doc);
+      });
+      const activeLeafRef = workspace.on("active-leaf-change", () => {
+        var _a2;
+        (_a2 = this.quickTranslateMarker) == null ? void 0 : _a2.hide();
+      });
+      this.registerEvent(windowOpenRef);
+      this.registerEvent(windowCloseRef);
+      this.registerEvent(activeLeafRef);
     });
   }
   onunload() {
-    var _a, _b;
-    (_a = this.codexSessionManager) == null ? void 0 : _a.dispose();
+    var _a, _b, _c;
+    (_a = this.codexGlobalUnsubscribe) == null ? void 0 : _a.call(this);
+    this.codexGlobalUnsubscribe = void 0;
+    this.codexRunningSessionIds.clear();
+    (_b = this.codexSessionManager) == null ? void 0 : _b.dispose();
     this.codexSessionManager = void 0;
-    (_b = this.quickTranslateMarker) == null ? void 0 : _b.destroy();
+    (_c = this.quickTranslateMarker) == null ? void 0 : _c.destroy();
     this.quickTranslateMarker = void 0;
   }
   // startFresh=true: 新开一份对话,不加载这个 PDF(或选区)之前保存的记录;

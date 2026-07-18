@@ -57,7 +57,9 @@ export {
   buildCodexTurnPrompt,
   isCodexThreadUnavailableError,
   resolveCodexPdfLocation,
+  runCodexThreadDoctor,
   runCodexThreadTurn,
+  runCodexVersionCheck,
 } from "./codex-cli";
 export { CodexSessionManager } from "./codex-session-manager";
 export { DEFAULT_SETTINGS, LEGACY_0_4_0_TRANSLATE_PROMPT } from "./default-settings";
@@ -152,6 +154,8 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
   modalServices?: PDFChatModalServices;
   quickTranslateMarker?: QuickTranslateMarker;
   codexSessionManager?: CodexSessionManager;
+  private codexGlobalUnsubscribe?: () => void;
+  private readonly codexRunningSessionIds = new Set<string>();
 
   async onload(): Promise<void> {
     this._saveQueue = Promise.resolve();
@@ -161,6 +165,25 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
       () => this.saveSettings()
     );
     this.codexSessionManager = new CodexSessionManager(this.conversationStore);
+    this.codexGlobalUnsubscribe = this.codexSessionManager.subscribeAll(
+      ({ snapshot, hasSessionSubscribers }) => {
+        if (snapshot.status === "running") {
+          this.codexRunningSessionIds.add(snapshot.sessionId);
+          return;
+        }
+        if (!this.codexRunningSessionIds.delete(snapshot.sessionId)) return;
+        if (hasSessionSubscribers || !["idle", "failed", "stopped"].includes(snapshot.status)) return;
+        const session = this.conversationStore?.getSession(snapshot.sessionId);
+        const title = session?.title || snapshot.question || "Codex 任务";
+        if (snapshot.status === "idle") {
+          new Notice(`Codex 已完成：${title}`);
+        } else if (snapshot.status === "stopped") {
+          new Notice(`Codex 已停止：${title}`);
+        } else {
+          new Notice(`Codex 任务失败：${title}`);
+        }
+      }
+    );
     this.llmTransport = new OpenAICompatibleTransport(
       () => this.settings,
       (id) => this.getModelProfile(id)
@@ -192,6 +215,18 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
           this.conversationStore!.appendSessionTurn(id, userContent, assistantContent),
         updateSessionMetadata: (id, metadata) =>
           this.conversationStore!.updateSessionMetadata(id, metadata),
+        beginCodexTurn: (id, pendingTurn) => this.conversationStore!.beginCodexTurn(id, pendingTurn),
+        updateCodexTurn: (id, turnId, patch, codex) =>
+          this.conversationStore!.updateCodexTurn(id, turnId, patch, codex),
+        completeCodexTurn: (id, turnId, userContent, assistantContent, codex) =>
+          this.conversationStore!.completeCodexTurn(
+            id,
+            turnId,
+            userContent,
+            assistantContent,
+            codex
+          ),
+        clearSession: (id) => this.conversationStore!.clearSession(id),
         closeSession: (id) => this.conversationStore!.closeSession(id),
         resumeSession: (id) => this.conversationStore!.resumeSession(id),
         listSessions: (query) => this.conversationStore!.listSessions(query),
@@ -243,14 +278,25 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
     if (typeof document !== "undefined") this.quickTranslateMarker.attach(document);
     const workspace = this.app?.workspace;
     workspace?.onLayoutReady(() => {
-      const eventRef = workspace.on("window-open", (workspaceWindow) => {
+      const windowOpenRef = workspace.on("window-open", (workspaceWindow) => {
         if (workspaceWindow?.doc) this.quickTranslateMarker?.attach(workspaceWindow.doc);
       });
-      this.registerEvent(eventRef);
+      const windowCloseRef = workspace.on("window-close", (workspaceWindow) => {
+        if (workspaceWindow?.doc) this.quickTranslateMarker?.detach(workspaceWindow.doc);
+      });
+      const activeLeafRef = workspace.on("active-leaf-change", () => {
+        this.quickTranslateMarker?.hide();
+      });
+      this.registerEvent(windowOpenRef);
+      this.registerEvent(windowCloseRef);
+      this.registerEvent(activeLeafRef);
     });
   }
 
   onunload(): void {
+    this.codexGlobalUnsubscribe?.();
+    this.codexGlobalUnsubscribe = undefined;
+    this.codexRunningSessionIds.clear();
     this.codexSessionManager?.dispose();
     this.codexSessionManager = undefined;
     this.quickTranslateMarker?.destroy();

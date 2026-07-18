@@ -5,6 +5,7 @@ import type {
   ConversationMessage,
   ConversationSession,
   ConversationSessionMode,
+  PendingCodexTurn,
 } from "./types";
 
 export function cleanSelectionText(raw: string): string {
@@ -68,7 +69,7 @@ function normalizeReasoningEffort(value: unknown): CodexReasoningEffort {
     : "xhigh";
 }
 
-function normalizeStringArray(value: unknown): string[] {
+function normalizeStringArray(value: unknown, limit = 3): string[] {
   if (!Array.isArray(value)) return [];
   return Array.from(
     new Set(
@@ -77,7 +78,54 @@ function normalizeStringArray(value: unknown): string[] {
         .map((item) => item.trim())
         .filter(Boolean)
     )
-  ).slice(0, 3);
+  ).slice(0, limit);
+}
+
+function isAbsolutePath(value: string): boolean {
+  return /^(?:[A-Za-z]:[\\/]|[\\/]{1,2})/.test(value);
+}
+
+function normalizePendingCodexTurn(value: unknown): PendingCodexTurn | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const candidate = value as Record<string, unknown>;
+  const turnId = typeof candidate.turnId === "string" ? candidate.turnId.trim() : "";
+  const question = typeof candidate.question === "string" ? candidate.question.trim() : "";
+  const status =
+    candidate.status === "running" || candidate.status === "interrupted" || candidate.status === "failed"
+      ? candidate.status
+      : null;
+  if (!turnId || !question || !status) return undefined;
+  const attachedPdfPaths = normalizeStringArray(candidate.attachedPdfPaths, 4).filter(
+    (path) => !isAbsolutePath(path)
+  );
+  return {
+    turnId,
+    question,
+    status,
+    startedAt:
+      typeof candidate.startedAt === "number" && Number.isFinite(candidate.startedAt)
+        ? candidate.startedAt
+        : 0,
+    threadId:
+      typeof candidate.threadId === "string" ? candidate.threadId.trim() || undefined : undefined,
+    attachedPdfPaths,
+    selectionChars:
+      typeof candidate.selectionChars === "number" && Number.isFinite(candidate.selectionChars)
+        ? Math.max(0, Math.floor(candidate.selectionChars))
+        : 0,
+    progress:
+      typeof candidate.progress === "string" ? candidate.progress.trim().slice(0, 500) || undefined : undefined,
+  };
+}
+
+function normalizeApiSessionMetadata(value: unknown): ConversationSession["api"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const candidate = value as Record<string, unknown>;
+  const modelId = typeof candidate.modelId === "string" ? candidate.modelId.trim() : "";
+  const presetId = typeof candidate.presetId === "string" ? candidate.presetId.trim() : "";
+  return modelId || presetId
+    ? { modelId: modelId || undefined, presetId: presetId || undefined }
+    : undefined;
 }
 
 function normalizeSessionId(value: unknown, fallbackSeed: string): string {
@@ -90,7 +138,11 @@ function cloneSession(session: ConversationSession): ConversationSession {
     ...session,
     messages: normalizeConversationMessages(session.messages),
     referencedPdfPaths: [...session.referencedPdfPaths],
+    api: session.api ? { ...session.api } : undefined,
     codex: session.codex ? { ...session.codex } : undefined,
+    pendingTurn: session.pendingTurn
+      ? { ...session.pendingTurn, attachedPdfPaths: [...session.pendingTurn.attachedPdfPaths] }
+      : undefined,
   };
 }
 
@@ -123,7 +175,7 @@ export function normalizeConversationSessions(saved: unknown): Record<string, Co
         : undefined;
     if (!conversationKey) continue;
     normalized[id] = {
-      version: 1,
+      version: 2,
       id,
       conversationKey,
       title:
@@ -134,7 +186,9 @@ export function normalizeConversationSessions(saved: unknown): Record<string, Co
       messages,
       referencedPdfPaths: normalizeStringArray(entry.referencedPdfPaths),
       includeCurrentPdfInCodex: entry.includeCurrentPdfInCodex !== false,
+      api: normalizeApiSessionMetadata(entry.api),
       codex,
+      pendingTurn: normalizePendingCodexTurn(entry.pendingTurn),
       createdAt,
       updatedAt,
     };
@@ -165,6 +219,7 @@ export interface ConversationSessionMetadata {
   mode?: ConversationSessionMode;
   referencedPdfPaths?: string[];
   includeCurrentPdfInCodex?: boolean;
+  api?: ConversationSession["api"];
   codex?: ConversationSession["codex"];
 }
 
@@ -206,7 +261,7 @@ export class ConversationStore {
     if (existing) return cloneSession(existing);
     const timestamp = legacy?.updatedAt || this.now();
     const session: ConversationSession = {
-      version: 1,
+      version: 2,
       id,
       conversationKey: key,
       title: metadata.title || key.replace(/^pdf:/, ""),
@@ -214,6 +269,7 @@ export class ConversationStore {
       messages,
       referencedPdfPaths: normalizeStringArray(metadata.referencedPdfPaths),
       includeCurrentPdfInCodex: metadata.includeCurrentPdfInCodex !== false,
+      api: normalizeApiSessionMetadata(metadata.api),
       codex: metadata.codex ? { ...metadata.codex, lifecycle: metadata.codex.lifecycle || "active" } : undefined,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -235,6 +291,7 @@ export class ConversationStore {
     if (typeof metadata.includeCurrentPdfInCodex === "boolean") {
       session.includeCurrentPdfInCodex = metadata.includeCurrentPdfInCodex;
     }
+    if (metadata.api) session.api = normalizeApiSessionMetadata(metadata.api);
     if (metadata.codex) {
       session.codex = {
         ...(session.codex || {}),
@@ -298,7 +355,7 @@ export class ConversationStore {
     const timestamp = this.now();
     const id = `session-${stableConversationHash(`${key}:${timestamp}:${Object.keys(settings.conversationSessions || {}).length}`)}`;
     const session: ConversationSession = {
-      version: 1,
+      version: 2,
       id,
       conversationKey: key,
       title: metadata.title || key.replace(/^pdf:/, ""),
@@ -306,6 +363,7 @@ export class ConversationStore {
       messages: [],
       referencedPdfPaths: normalizeStringArray(metadata.referencedPdfPaths),
       includeCurrentPdfInCodex: metadata.includeCurrentPdfInCodex !== false,
+      api: normalizeApiSessionMetadata(metadata.api),
       codex: metadata.codex ? { ...metadata.codex, lifecycle: metadata.codex.lifecycle || "active" } : undefined,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -383,12 +441,14 @@ export class ConversationStore {
   async appendSessionTurn(id: string, userContent: string, assistantContent: string): Promise<void> {
     const session = this.getSession(id);
     if (!session) throw new Error(`Conversation session not found: ${id}`);
+    const firstUserTurn = !session.messages.some((message) => message.role === "user");
+    const derivedTitle = userContent.replace(/\s+/g, " ").trim().slice(0, 80);
     const messages = [
       ...session.messages,
       { role: "user" as const, content: userContent, status: "complete" as const },
       { role: "assistant" as const, content: assistantContent, status: "complete" as const },
     ];
-    await this.saveSessionById(id, messages);
+    await this.saveSessionById(id, messages, firstUserTurn && derivedTitle ? { title: derivedTitle } : {});
   }
 
   async updateSessionMetadata(id: string, metadata: ConversationSessionMetadata): Promise<void> {
@@ -397,15 +457,110 @@ export class ConversationStore {
     await this.saveSessionById(id, session.messages, metadata);
   }
 
+  async beginCodexTurn(id: string, pendingTurn: PendingCodexTurn): Promise<void> {
+    const settings = this.ensureContainers();
+    const session = this.getSession(id);
+    if (!session) throw new Error(`Conversation session not found: ${id}`);
+    const normalized = normalizePendingCodexTurn(pendingTurn);
+    if (!normalized) throw new Error("Invalid pending Codex turn");
+    session.mode = "codex";
+    session.pendingTurn = normalized;
+    session.updatedAt = this.now();
+    settings.conversationSessions![id] = cloneSession(session);
+    await this.persistSettings();
+  }
+
+  async updateCodexTurn(
+    id: string,
+    turnId: string,
+    patch: Partial<Pick<PendingCodexTurn, "status" | "threadId" | "progress">>,
+    codex?: ConversationSession["codex"]
+  ): Promise<void> {
+    const settings = this.ensureContainers();
+    const session = this.getSession(id);
+    if (!session?.pendingTurn || session.pendingTurn.turnId !== turnId) return;
+    const pendingTurn = normalizePendingCodexTurn({ ...session.pendingTurn, ...patch });
+    if (!pendingTurn) throw new Error("Invalid pending Codex turn update");
+    session.pendingTurn = pendingTurn;
+    if (codex) session.codex = { ...(session.codex || {}), ...codex } as ConversationSession["codex"];
+    session.updatedAt = this.now();
+    settings.conversationSessions![id] = cloneSession(session);
+    await this.persistSettings();
+  }
+
+  async completeCodexTurn(
+    id: string,
+    turnId: string,
+    userContent: string,
+    assistantContent: string,
+    codex: ConversationSession["codex"]
+  ): Promise<void> {
+    const settings = this.ensureContainers();
+    const session = this.getSession(id);
+    if (!session) throw new Error(`Conversation session not found: ${id}`);
+    if (!session.pendingTurn || session.pendingTurn.turnId !== turnId) {
+      const tail = session.messages.slice(-2);
+      const alreadyApplied =
+        !session.pendingTurn &&
+        tail.length === 2 &&
+        tail[0].role === "user" &&
+        tail[0].content === userContent &&
+        tail[1].role === "assistant" &&
+        tail[1].content === assistantContent;
+      if (alreadyApplied) {
+        session.codex = { ...(session.codex || {}), ...codex } as ConversationSession["codex"];
+        settings.conversationSessions![id] = cloneSession(session);
+        await this.persistSettings();
+        return;
+      }
+      throw new Error("Codex turn no longer matches the persisted pending task");
+    }
+    const firstUserTurn = !session.messages.some((message) => message.role === "user");
+    const derivedTitle = userContent.replace(/\s+/g, " ").trim().slice(0, 80);
+    session.messages = normalizeConversationMessages([
+      ...session.messages,
+      { role: "user", content: userContent, status: "complete" },
+      { role: "assistant", content: assistantContent, status: "complete" },
+    ]);
+    if (firstUserTurn && derivedTitle) session.title = derivedTitle;
+    session.codex = { ...(session.codex || {}), ...codex } as ConversationSession["codex"];
+    session.pendingTurn = undefined;
+    session.updatedAt = this.now();
+    settings.conversationSessions![id] = cloneSession(session);
+    if (settings.activeConversationSessionIds?.[session.conversationKey] === id) {
+      settings.conversationHistories![session.conversationKey] = {
+        version: 1,
+        updatedAt: session.updatedAt,
+        messages: normalizeConversationMessages(session.messages),
+      };
+    }
+    await this.persistSettings();
+  }
+
   async closeSession(id: string): Promise<void> {
     const settings = this.ensureContainers();
     const session = this.getSession(id);
     if (!session) return;
     if (session.codex) session.codex = { ...session.codex, lifecycle: "closed" };
+    if (session.pendingTurn?.status === "running") {
+      session.pendingTurn = { ...session.pendingTurn, status: "interrupted", progress: "会话已关闭" };
+    }
     session.updatedAt = this.now();
     settings.conversationSessions![id] = cloneSession(session);
     if (settings.activeConversationSessionIds?.[session.conversationKey] === id) {
       delete settings.activeConversationSessionIds[session.conversationKey];
+    }
+    await this.persistSettings();
+  }
+
+  async clearSession(id: string): Promise<void> {
+    const settings = this.ensureContainers();
+    const session = this.getSession(id);
+    if (!session) return;
+    delete settings.conversationSessions![id];
+    if (settings.activeConversationSessionIds?.[session.conversationKey] === id) {
+      delete settings.activeConversationSessionIds[session.conversationKey];
+      delete settings.conversationHistories![session.conversationKey];
     }
     await this.persistSettings();
   }

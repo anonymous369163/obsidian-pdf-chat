@@ -196,6 +196,7 @@ function byTag(root, tagName) {
 function loadBundle(options = {}) {
   const source = fs.readFileSync(path.join(projectRoot, "main.js"), "utf8");
   const settingTabs = [];
+  const fuzzyModals = [];
 
   class Plugin {
     constructor() {
@@ -331,7 +332,29 @@ function loadBundle(options = {}) {
     }
   }
 
+  class FuzzySuggestModal {
+    constructor(app) {
+      this.app = app;
+      this.inputEl = { value: "" };
+      fuzzyModals.push(this);
+    }
+
+    setPlaceholder(value) {
+      this.placeholder = value;
+      return this;
+    }
+
+    open() {
+      this.opened = true;
+    }
+
+    close() {
+      this.opened = false;
+    }
+  }
+
   const obsidian = {
+    FuzzySuggestModal,
     MarkdownRenderer: options.markdownRenderer || {
       async render(_app, text, element) {
         element.setText(text);
@@ -370,7 +393,7 @@ function loadBundle(options = {}) {
   };
   sandbox.exports = sandbox.module.exports;
   vm.runInNewContext(source, sandbox, { filename: path.join(projectRoot, "main.js") });
-  return { bundle: sandbox.module.exports, settingTabs };
+  return { bundle: sandbox.module.exports, settingTabs, fuzzyModals };
 }
 
 function createModalHarness({
@@ -387,7 +410,7 @@ function createModalHarness({
   conversations = {},
   codex,
 } = {}) {
-  const { bundle } = loadBundle({ markdownRenderer, confirm });
+  const { bundle, fuzzyModals } = loadBundle({ markdownRenderer, confirm });
   const settings = JSON.parse(JSON.stringify(bundle.DEFAULT_SETTINGS));
   settings.autoDocSummary = false;
   settings.autoRag = false;
@@ -450,7 +473,7 @@ function createModalHarness({
     autoTranslateOnOpen
   );
   modal.onOpen();
-  return { modal, plugin };
+  return { modal, plugin, fuzzyModals };
 }
 
 test("quick-translate modal starts translation automatically instead of focusing the composer", async () => {
@@ -654,7 +677,19 @@ test("referenced PDF chips can remove restored session references", async () => 
         createdAt: 1,
         updatedAt: 2,
       }),
-      saveActiveSession: async (_key, _messages, metadata) => {
+      getSession: () => ({
+        version: 2,
+        id: "discussion-restored",
+        ["conversation" + "Key"]: "pdf:papers/demo.pdf",
+        title: "Restored",
+        mode: "chat",
+        messages: [{ role: "user", content: "previous question", status: "complete" }],
+        referencedPdfPaths: ["papers/Alpha Paper.pdf", "papers/Beta Paper.pdf"],
+        includeCurrentPdfInCodex: true,
+        createdAt: 1,
+        updatedAt: 2,
+      }),
+      saveSessionById: async (_id, _messages, metadata) => {
         savedMetadata = metadata;
       },
     },
@@ -680,6 +715,9 @@ test("Codex mode lets the current PDF be detached and restored without clearing 
       ensureSession: (_key, metadata) => {
         savedMetadata = metadata;
         return { id: "session-current-toggle", messages: [], referencedPdfPaths: [], ...metadata };
+      },
+      saveSessionById: async (_id, _messages, metadata) => {
+        savedMetadata = metadata;
       },
     },
   });
@@ -792,7 +830,7 @@ test("sending with referenced PDFs augments the request as shared reading contex
   ]);
 });
 
-test("deep-analysis wording asks for Codex CLI instead of using a persistent button", async () => {
+test("deep-analysis wording does not switch models unless the user enters /codex", async () => {
   const referenced = { name: "Alpha Paper.pdf", path: "papers/Alpha Paper.pdf", extension: "pdf", stat: { mtime: 2 } };
   const requests = [];
   let confirmMessage = "";
@@ -816,9 +854,9 @@ test("deep-analysis wording asks for Codex CLI instead of using a persistent but
 
   await modal.handleSubmit();
 
-  assert.equal(codexCalls, 1);
-  assert.equal(requests.length, 0);
-  assert.match(confirmMessage, /Codex CLI|深度分析/);
+  assert.equal(codexCalls, 0);
+  assert.equal(requests.length, 1);
+  assert.equal(confirmMessage, "");
 });
 
 test("/codex command invokes Codex CLI directly with a stripped question", async () => {
@@ -1195,6 +1233,77 @@ test("terminal prompt history restores previous prompts with arrow keys unless @
   assert.equal(modal.inputEl.value, "@");
 });
 
+test("terminal prompt history preserves the draft and respects multiline caret boundaries", () => {
+  const { modal } = createModalHarness({
+    settingsPatch: { promptHistory: ["older prompt", "latest prompt"] },
+  });
+
+  modal.inputEl.value = "unfinished draft";
+  modal.inputEl.selectionStart = modal.inputEl.value.length;
+  modal.inputEl.selectionEnd = modal.inputEl.value.length;
+  modal.inputEl.dispatch("keydown", { key: "ArrowUp" });
+  assert.equal(modal.inputEl.value, "latest prompt");
+  modal.inputEl.dispatch("keydown", { key: "ArrowDown" });
+  assert.equal(modal.inputEl.value, "unfinished draft");
+
+  modal.inputEl.value = "first line\nsecond line";
+  modal.inputEl.selectionStart = modal.inputEl.value.length;
+  modal.inputEl.selectionEnd = modal.inputEl.value.length;
+  modal.inputEl.dispatch("keydown", { key: "ArrowUp" });
+  assert.equal(modal.inputEl.value, "first line\nsecond line");
+
+  modal.inputEl.selectionStart = 0;
+  modal.inputEl.selectionEnd = 0;
+  modal.inputEl.dispatch("keydown", { key: "ArrowUp" });
+  assert.equal(modal.inputEl.value, "latest prompt");
+});
+
+test("PDF mention suggestions support arrow keys, Enter, Tab, and Escape", () => {
+  const files = [
+    { name: "demo.pdf", path: "papers/demo.pdf", extension: "pdf", stat: { mtime: 1 } },
+    { name: "Alpha.pdf", path: "papers/Alpha.pdf", extension: "pdf", stat: { mtime: 2 } },
+    { name: "Beta.pdf", path: "papers/Beta.pdf", extension: "pdf", stat: { mtime: 3 } },
+  ];
+  const app = {
+    vault: {
+      getFiles: () => files,
+      getAbstractFileByPath: (target) => files.find((file) => file.path === target) || null,
+    },
+  };
+  const { modal } = createModalHarness({ app });
+
+  modal.inputEl.value = "@";
+  modal.inputEl.selectionStart = 1;
+  modal.inputEl.selectionEnd = 1;
+  modal.inputEl.dispatch("input");
+  let options = byClass(modal.contentEl, "pdf-chat-composer-mention-option");
+  assert.equal(options.length, 2);
+  assert.equal(options[0].getAttribute("aria-selected"), "true");
+
+  modal.inputEl.dispatch("keydown", { key: "ArrowDown" });
+  options = byClass(modal.contentEl, "pdf-chat-composer-mention-option");
+  assert.equal(options[1].getAttribute("aria-selected"), "true");
+  modal.inputEl.dispatch("keydown", { key: "Enter" });
+  assert.deepEqual(JSON.parse(JSON.stringify(modal.referencedPdfFiles.map((file) => file.path))), ["papers/Beta.pdf"]);
+
+  modal.inputEl.value = "@Al";
+  modal.inputEl.selectionStart = 3;
+  modal.inputEl.selectionEnd = 3;
+  modal.inputEl.dispatch("input");
+  modal.inputEl.dispatch("keydown", { key: "Tab" });
+  assert.deepEqual(JSON.parse(JSON.stringify(modal.referencedPdfFiles.map((file) => file.path))), [
+    "papers/Beta.pdf",
+    "papers/Alpha.pdf",
+  ]);
+
+  modal.inputEl.value = "@";
+  modal.inputEl.selectionStart = 1;
+  modal.inputEl.selectionEnd = 1;
+  modal.inputEl.dispatch("input");
+  modal.inputEl.dispatch("keydown", { key: "Escape" });
+  assert.equal(byClass(modal.contentEl, "pdf-chat-composer-mention-suggestions").length, 0);
+});
+
 test("/model switches Codex presets in Codex mode and API models in normal mode", async () => {
   const { modal, plugin } = createModalHarness();
   plugin.settings.models.push({ id: "api-b", name: "API B", endpoint: "", apiKey: "", model: "api-b-model" });
@@ -1216,7 +1325,7 @@ test("/model switches Codex presets in Codex mode and API models in normal mode"
   assert.equal(byClass(modal.contentEl, "pdf-chat-command-menu").length, 1);
 });
 
-test("/new preserves old sessions and /resume restores a selected session", async () => {
+test("/new preserves old sessions and /resume restores a searchable selected session", async () => {
   const sessionFieldName = "conversation" + "K" + "ey";
   const session = {
     version: 1,
@@ -1234,7 +1343,7 @@ test("/new preserves old sessions and /resume restores a selected session", asyn
     updatedAt: 2,
   };
   let activeSession = null;
-  const { modal } = createModalHarness({
+  const { modal, fuzzyModals } = createModalHarness({
     conversations: {
       getActiveSession: () => null,
       listSessions: () => [session],
@@ -1253,13 +1362,77 @@ test("/new preserves old sessions and /resume restores a selected session", asyn
 
   modal.inputEl.value = "/resume";
   await modal.handleSubmit();
-  const menu = byClass(modal.contentEl, "pdf-chat-command-menu")[0];
-  assert.ok(menu);
-  byClass(menu, "pdf-chat-command-option")[0].dispatch("click");
+  const resumeModal = fuzzyModals.at(-1);
+  assert.ok(resumeModal);
+  assert.match(resumeModal.placeholder, /搜索/);
+  assert.match(resumeModal.getItemText(session), /Old discussion.*demo\.pdf.*Codex/i);
+  resumeModal.onChooseItem(session);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(activeSession, "session-old");
   assert.match(byClass(modal.contentEl, "pdf-chat-mode-badge")[0].textContent, /CODEX MODE/);
   assert.equal(byClass(modal.historyEl, "pdf-chat-bubble").length, 2);
+});
+
+test("/tasks opens a searchable Codex task picker", async () => {
+  const session = {
+    version: 2,
+    id: "session-task",
+    ["conversation" + "Key"]: "pdf:papers/demo.pdf",
+    title: "Long evidence review",
+    mode: "codex",
+    messages: [],
+    referencedPdfPaths: [],
+    includeCurrentPdfInCodex: true,
+    createdAt: 1,
+    updatedAt: 2,
+  };
+  const { modal, fuzzyModals } = createModalHarness({
+    conversations: {
+      getSession: (id) => (id === session.id ? session : null),
+      listSessions: () => [session],
+    },
+    codex: {
+      listSnapshots: () => [
+        {
+          sessionId: session.id,
+          status: "running",
+          question: "Review the evidence",
+          progress: "Reading PDF",
+          startedAt: Date.now() - 5000,
+          attachedPdfPaths: ["papers/demo.pdf"],
+          selectionChars: 0,
+        },
+      ],
+      getSnapshot: () => ({ sessionId: session.id, status: "running", attachedPdfPaths: [], selectionChars: 0 }),
+      subscribe: () => () => {},
+      stopTurn: () => false,
+      closeSession: async () => {},
+      reactivateSession: () => {},
+      retryPersistResult: async () => false,
+      startTurn: async () => ({ sessionId: session.id, status: "idle", attachedPdfPaths: [], selectionChars: 0 }),
+    },
+  });
+
+  modal.inputEl.value = "/tasks";
+  await modal.handleSubmit();
+
+  const taskModal = fuzzyModals.at(-1);
+  assert.ok(taskModal);
+  assert.match(taskModal.placeholder, /任务/);
+  assert.match(taskModal.getItemText(taskModal.getItems()[0]), /Long evidence review.*运行中.*Reading PDF/);
+});
+
+test("/doctor is free by default and requires an explicit real diagnostic argument", async () => {
+  const { modal } = createModalHarness();
+  const calls = [];
+  modal.runCodexDoctor = async (real) => calls.push(real);
+
+  modal.inputEl.value = "/doctor";
+  await modal.handleSubmit();
+  modal.inputEl.value = "/doctor real";
+  await modal.handleSubmit();
+
+  assert.deepEqual(calls, [false, true]);
 });
 
 test("/new in Codex mode starts a plugin session without inheriting the old native thread", async () => {

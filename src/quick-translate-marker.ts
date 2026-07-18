@@ -89,15 +89,25 @@ export class QuickTranslateMarker {
     if (this.markerEl) this.markerEl.hidden = true;
   }
 
+  detach(doc: Document): void {
+    const listeners = this.attached.get(doc);
+    if (!listeners) return;
+    doc.removeEventListener("selectionchange", listeners.selectionChange);
+    doc.removeEventListener("mousedown", listeners.mouseDown, true);
+    doc.removeEventListener("scroll", listeners.scroll, true);
+    doc.removeEventListener("keydown", listeners.keyDown);
+    this.attached.delete(doc);
+    if (this.markerDocument === doc) {
+      this.cancelPendingUpdate();
+      this.markerEl?.remove();
+      this.markerEl = null;
+      this.markerDocument = null;
+    }
+  }
+
   destroy(): void {
     this.cancelPendingUpdate();
-    for (const [doc, listeners] of this.attached) {
-      doc.removeEventListener("selectionchange", listeners.selectionChange);
-      doc.removeEventListener("mousedown", listeners.mouseDown, true);
-      doc.removeEventListener("scroll", listeners.scroll, true);
-      doc.removeEventListener("keydown", listeners.keyDown);
-    }
-    this.attached.clear();
+    for (const doc of Array.from(this.attached.keys())) this.detach(doc);
     this.markerEl?.remove();
     this.markerEl = null;
     this.markerDocument = null;

@@ -77,7 +77,7 @@ function legacySessionFromHistory(key: string, history: { updatedAt?: number; me
   const timestamp =
     typeof history.updatedAt === "number" && Number.isFinite(history.updatedAt) ? history.updatedAt : 0;
   return {
-    version: 1,
+    version: 2,
     id,
     conversationKey: key,
     title: key.replace(/^pdf:/, ""),
@@ -147,6 +147,15 @@ export function migrateSettings(savedValue: unknown, now: () => number = Date.no
   settings.conversationSessions = normalizeConversationSessions(saved && saved.conversationSessions);
   settings.activeConversationSessionIds = normalizeActiveSessionIds(saved && saved.activeConversationSessionIds);
   settings.promptHistory = normalizePromptHistory(saved && saved.promptHistory);
+  for (const session of Object.values(settings.conversationSessions)) {
+    if (session.pendingTurn?.status !== "running") continue;
+    session.pendingTurn = {
+      ...session.pendingTurn,
+      status: "interrupted",
+      progress: session.pendingTurn.progress || "Obsidian 或 PDF Chat 在任务完成前退出",
+    };
+    needsSave = true;
+  }
   for (const [key, history] of Object.entries(settings.conversationHistories)) {
     const hasSession = Object.values(settings.conversationSessions).some((session) => session.conversationKey === key);
     if (hasSession) continue;

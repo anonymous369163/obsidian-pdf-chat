@@ -401,10 +401,10 @@ export class PDFChatSettingTab extends PluginSettingTab {
         "默认快捷键：Ctrl+Alt+Q 新开对话；Ctrl+Q 继续上次对话。可在 设置→快捷键→搜索“PDF Chat”中修改。弹窗支持拖动、缩放、连续追问和停止生成。",
       cls: "setting-item-description",
     });
-    containerEl.createEl("h4", { text: "Codex 深度多论文分析" });
+    containerEl.createEl("h4", { text: "Codex 论文终端" });
     containerEl.createEl("p", {
       text:
-        "启用后，论文上下文区会允许手动触发 Codex CLI。插件只会把论文文本和当前问题写入临时分析包，不会复制 data.json、API key 或模型 endpoint。",
+        "启用后，可在聊天框输入 /codex 进入 Codex CLI 多轮会话。普通模式不会根据关键词自动切换。默认只向 Codex 提供用户问题、所选 PDF 的本地路径和可选的当前选区，不会传递 data.json、API key 或模型 endpoint。",
       cls: "setting-item-description",
     });
     new Setting(containerEl)
@@ -475,7 +475,7 @@ export class PDFChatSettingTab extends PluginSettingTab {
       });
     new Setting(containerEl)
       .setName("Codex input mode")
-      .setDesc("默认 PDF-only：只把所选 PDF 和问题放进临时目录；Debug full 仅用于排查 PDF 读取问题。")
+      .setDesc("默认 PDF-only：Codex 在当前 PDF 文件夹中直接读取所选 PDF 路径；Debug full 仅保留给旧的一次性诊断流程。")
       .addDropdown((dropdown) => {
         dropdown.addOption("pdf-only", "PDF-only");
         dropdown.addOption("debug-full", "Debug full");
@@ -501,7 +501,7 @@ export class PDFChatSettingTab extends PluginSettingTab {
       });
     new Setting(containerEl)
       .setName("Codex 默认附带选区上下文")
-      .setDesc("开启后，PDF Chat 会把当前划选段落写入 selected-context.md；弹窗内也可用“附选区”按钮或 /context 临时切换。")
+      .setDesc("开启后，PDF Chat 会把当前划选段落直接附在下一轮 Codex prompt 中；弹窗内也可用“附选区”按钮或 /context 临时切换。")
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.codexDeepAnalysis.includeSelectionContext).onChange(async (value) => {
           this.plugin.settings.codexDeepAnalysis.includeSelectionContext = value;
@@ -523,7 +523,7 @@ export class PDFChatSettingTab extends PluginSettingTab {
       );
     new Setting(containerEl)
       .setName("保留 Codex 临时分析包")
-      .setDesc("仅用于调试。关闭时任务结束会删除临时包。")
+      .setDesc("仅影响旧的 Debug full 一次性诊断流程；常规 /codex 多轮会话不会创建临时分析包。")
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.codexDeepAnalysis.keepTempFiles).onChange(async (value) => {
           this.plugin.settings.codexDeepAnalysis.keepTempFiles = value;

@@ -12,12 +12,14 @@ import type {
   CodexSessionMetadata,
   CodexVerbosity,
   ConversationSession,
+  PendingCodexTurn,
 } from "./types";
 
 export type CodexTurnStatus = "idle" | "running" | "stopped" | "failed" | "closed";
 
 export interface CodexTurnSnapshot {
   sessionId: string;
+  turnId?: string;
   threadId?: string;
   status: CodexTurnStatus;
   question?: string;
@@ -48,11 +50,21 @@ export interface StartCodexTurnRequest {
 
 export interface CodexSessionPersistence {
   getSession(id: string): ConversationSession | null;
-  updateSessionMetadata(
+  listSessions?(query?: string): ConversationSession[];
+  beginCodexTurn(id: string, pendingTurn: PendingCodexTurn): Promise<void>;
+  updateCodexTurn(
     id: string,
-    metadata: { codex: CodexSessionMetadata }
+    turnId: string,
+    patch: Partial<Pick<PendingCodexTurn, "status" | "threadId" | "progress">>,
+    codex?: CodexSessionMetadata
   ): Promise<void>;
-  appendSessionTurn(id: string, userContent: string, assistantContent: string): Promise<void>;
+  completeCodexTurn(
+    id: string,
+    turnId: string,
+    userContent: string,
+    assistantContent: string,
+    codex: CodexSessionMetadata
+  ): Promise<void>;
   closeSession(id: string): Promise<void>;
 }
 
@@ -66,6 +78,17 @@ interface ManagedTurn {
   controller?: AbortController;
   listeners: Set<(snapshot: CodexTurnSnapshot) => void>;
   runToken: number;
+  pendingResult?: {
+    turnId: string;
+    userContent: string;
+    assistantContent: string;
+    codex: CodexSessionMetadata;
+  };
+}
+
+export interface CodexSessionEvent {
+  snapshot: CodexTurnSnapshot;
+  hasSessionSubscribers: boolean;
 }
 
 function cloneSnapshot(snapshot: CodexTurnSnapshot): CodexTurnSnapshot {
@@ -82,6 +105,7 @@ function errorMessage(error: unknown): string {
 
 export class CodexSessionManager {
   private readonly turns = new Map<string, ManagedTurn>();
+  private readonly globalListeners = new Set<(event: CodexSessionEvent) => void>();
   private nextRunToken = 1;
 
   constructor(
@@ -96,10 +120,23 @@ export class CodexSessionManager {
     managed = {
       snapshot: {
         sessionId,
+        turnId: session?.pendingTurn?.turnId,
         threadId: session?.codex?.threadId,
-        status: session?.codex?.lifecycle === "closed" ? "closed" : "idle",
-        attachedPdfPaths: [...(session?.referencedPdfPaths || [])],
-        selectionChars: 0,
+        status:
+          session?.codex?.lifecycle === "closed"
+            ? "closed"
+            : session?.pendingTurn?.status === "failed"
+              ? "failed"
+              : session?.pendingTurn
+                ? "stopped"
+                : "idle",
+        question: session?.pendingTurn?.question,
+        progress: session?.pendingTurn?.progress,
+        startedAt: session?.pendingTurn?.startedAt,
+        attachedPdfPaths: [
+          ...(session?.pendingTurn?.attachedPdfPaths || session?.referencedPdfPaths || []),
+        ],
+        selectionChars: session?.pendingTurn?.selectionChars || 0,
       },
       listeners: new Set(),
       runToken: 0,
@@ -111,6 +148,8 @@ export class CodexSessionManager {
   private notify(managed: ManagedTurn): void {
     const snapshot = cloneSnapshot(managed.snapshot);
     for (const listener of managed.listeners) listener(snapshot);
+    const event = { snapshot, hasSessionSubscribers: managed.listeners.size > 0 };
+    for (const listener of this.globalListeners) listener(event);
   }
 
   getSnapshot(sessionId: string): CodexTurnSnapshot {
@@ -122,6 +161,22 @@ export class CodexSessionManager {
     managed.listeners.add(listener);
     listener(cloneSnapshot(managed.snapshot));
     return () => managed.listeners.delete(listener);
+  }
+
+  subscribeAll(listener: (event: CodexSessionEvent) => void): () => void {
+    this.globalListeners.add(listener);
+    return () => this.globalListeners.delete(listener);
+  }
+
+  listSnapshots(): CodexTurnSnapshot[] {
+    const sessionIds = new Set<string>(this.turns.keys());
+    for (const session of this.persistence.listSessions?.("") || []) {
+      if (session.pendingTurn) sessionIds.add(session.id);
+    }
+    return Array.from(sessionIds)
+      .map((sessionId) => this.getSnapshot(sessionId))
+      .filter((snapshot) => snapshot.status !== "idle" && snapshot.status !== "closed")
+      .sort((left, right) => (right.startedAt || 0) - (left.startedAt || 0));
   }
 
   async startTurn(request: StartCodexTurnRequest): Promise<CodexTurnSnapshot> {
@@ -136,11 +191,13 @@ export class CodexSessionManager {
     }
 
     const runToken = this.nextRunToken++;
+    const turnId = `turn-${Date.now()}-${runToken}`;
     const controller = new AbortController();
     managed.runToken = runToken;
     managed.controller = controller;
     managed.snapshot = {
       sessionId: request.sessionId,
+      turnId,
       threadId: session.codex?.threadId,
       status: "running",
       question: request.question,
@@ -150,6 +207,25 @@ export class CodexSessionManager {
       attachedPdfPaths: [...request.attachedPdfPaths],
       selectionChars: request.selectionChars,
     };
+    try {
+      await this.persistence.beginCodexTurn(request.sessionId, {
+        turnId,
+        question: request.question,
+        status: "running",
+        startedAt: managed.snapshot.startedAt || Date.now(),
+        threadId: session.codex?.threadId,
+        attachedPdfPaths: [...request.attachedPdfPaths],
+        selectionChars: request.selectionChars,
+        progress: managed.snapshot.progress,
+      });
+    } catch (error) {
+      managed.controller = undefined;
+      managed.snapshot.status = "failed";
+      managed.snapshot.error = `Codex 未启动，任务日志保存失败：${errorMessage(error)}`;
+      managed.snapshot.progress = managed.snapshot.error;
+      this.notify(managed);
+      return cloneSnapshot(managed.snapshot);
+    }
     this.notify(managed);
 
     const codexMetadata = (): CodexSessionMetadata => ({
@@ -160,6 +236,8 @@ export class CodexSessionManager {
       lifecycle: "active",
     });
     let threadSave: Promise<void> = Promise.resolve();
+    let progressSave: Promise<void> = Promise.resolve();
+    let lastProgressPersistedAt = 0;
     const args = buildCodexThreadExecArgs({
       command: request.command,
       workingDirectory: request.workingDirectory,
@@ -172,6 +250,11 @@ export class CodexSessionManager {
     });
 
     try {
+      if (controller.signal.aborted) {
+        const error = new Error("Codex turn was stopped before the process started");
+        error.name = "AbortError";
+        throw error;
+      }
       const result = await this.runner(args, {
         workingDirectory: request.workingDirectory,
         timeoutMs: request.timeoutMs,
@@ -179,30 +262,55 @@ export class CodexSessionManager {
         onThreadId: (threadId) => {
           if (managed.runToken !== runToken || managed.snapshot.status === "closed") return;
           managed.snapshot.threadId = threadId;
-          threadSave = this.persistence.updateSessionMetadata(request.sessionId, {
-            codex: codexMetadata(),
-          });
+          threadSave = this.persistence.updateCodexTurn(
+            request.sessionId,
+            turnId,
+            { threadId },
+            codexMetadata()
+          );
           this.notify(managed);
         },
         onProgress: (progress: CodexThreadProgress) => {
           if (managed.runToken !== runToken || managed.snapshot.status !== "running") return;
           managed.snapshot.progress = progress.message;
+          const now = Date.now();
+          if (now - lastProgressPersistedAt >= 2000) {
+            lastProgressPersistedAt = now;
+            progressSave = progressSave
+              .catch(() => undefined)
+              .then(() =>
+                this.persistence.updateCodexTurn(request.sessionId, turnId, {
+                  progress: progress.message,
+                })
+              );
+          }
           this.notify(managed);
         },
       });
-      await threadSave;
       if (managed.runToken !== runToken || managed.snapshot.status === "closed") {
         return cloneSnapshot(managed.snapshot);
       }
       managed.snapshot.threadId = result.threadId;
-      await this.persistence.updateSessionMetadata(request.sessionId, {
+      managed.snapshot.finalMarkdown = result.markdown;
+      managed.pendingResult = {
+        turnId,
+        userContent: request.userContent,
+        assistantContent: result.markdown,
         codex: codexMetadata(),
-      });
+      };
+      await threadSave;
+      await progressSave;
+      await this.persistence.completeCodexTurn(
+        request.sessionId,
+        turnId,
+        request.userContent,
+        result.markdown,
+        codexMetadata()
+      );
       if (managed.runToken !== runToken) return cloneSnapshot(managed.snapshot);
-      await this.persistence.appendSessionTurn(request.sessionId, request.userContent, result.markdown);
+      managed.pendingResult = undefined;
       managed.snapshot.status = "idle";
       managed.snapshot.progress = "Codex 已完成本轮回答";
-      managed.snapshot.finalMarkdown = result.markdown;
       managed.snapshot.error = undefined;
       this.notify(managed);
     } catch (error) {
@@ -212,18 +320,53 @@ export class CodexSessionManager {
       if (isAbortError(error)) {
         managed.snapshot.status = "stopped";
         managed.snapshot.progress = "Codex 本轮已停止，可继续使用同一 thread 提问";
+        void this.persistence
+          .updateCodexTurn(request.sessionId, turnId, {
+            status: "interrupted",
+            progress: managed.snapshot.progress,
+            threadId: managed.snapshot.threadId,
+          })
+          .catch(() => undefined);
       } else {
         managed.snapshot.status = "failed";
-        managed.snapshot.error = isCodexThreadUnavailableError(error)
+        managed.snapshot.error = managed.snapshot.finalMarkdown
+          ? `Codex 回答已生成，但保存失败：${errorMessage(error)}`
+          : isCodexThreadUnavailableError(error)
           ? "Codex 会话可能来自另一台设备，或本机 Codex thread 记录已被删除。请用 /new 创建新会话。"
           : errorMessage(error);
         managed.snapshot.progress = managed.snapshot.error;
+        void this.persistence
+          .updateCodexTurn(request.sessionId, turnId, {
+            status: "failed",
+            progress: managed.snapshot.progress,
+            threadId: managed.snapshot.threadId,
+          })
+          .catch(() => undefined);
       }
       this.notify(managed);
     } finally {
       if (managed.runToken === runToken) managed.controller = undefined;
     }
     return cloneSnapshot(managed.snapshot);
+  }
+
+  async retryPersistResult(sessionId: string): Promise<boolean> {
+    const managed = this.turns.get(sessionId);
+    const pending = managed?.pendingResult;
+    if (!managed || !pending) return false;
+    await this.persistence.completeCodexTurn(
+      sessionId,
+      pending.turnId,
+      pending.userContent,
+      pending.assistantContent,
+      pending.codex
+    );
+    managed.pendingResult = undefined;
+    managed.snapshot.status = "idle";
+    managed.snapshot.progress = "Codex 回答已重新保存";
+    managed.snapshot.error = undefined;
+    this.notify(managed);
+    return true;
   }
 
   stopTurn(sessionId: string): boolean {
@@ -251,10 +394,14 @@ export class CodexSessionManager {
     const session = this.persistence.getSession(sessionId);
     managed.snapshot = {
       sessionId,
+      turnId: session?.pendingTurn?.turnId,
       threadId: session?.codex?.threadId,
-      status: "idle",
-      attachedPdfPaths: [...(session?.referencedPdfPaths || [])],
-      selectionChars: 0,
+      status: session?.pendingTurn?.status === "failed" ? "failed" : session?.pendingTurn ? "stopped" : "idle",
+      question: session?.pendingTurn?.question,
+      progress: session?.pendingTurn?.progress,
+      startedAt: session?.pendingTurn?.startedAt,
+      attachedPdfPaths: [...(session?.pendingTurn?.attachedPdfPaths || session?.referencedPdfPaths || [])],
+      selectionChars: session?.pendingTurn?.selectionChars || 0,
     };
     this.notify(managed);
   }
@@ -266,5 +413,6 @@ export class CodexSessionManager {
       managed.controller = undefined;
       managed.listeners.clear();
     }
+    this.globalListeners.clear();
   }
 }

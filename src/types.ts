@@ -64,8 +64,26 @@ export interface CodexSessionMetadata {
   lifecycle?: CodexThreadLifecycle;
 }
 
+export interface ApiSessionMetadata {
+  modelId?: string;
+  presetId?: string;
+}
+
+export type PendingCodexTurnStatus = "running" | "interrupted" | "failed";
+
+export interface PendingCodexTurn {
+  turnId: string;
+  question: string;
+  status: PendingCodexTurnStatus;
+  startedAt: number;
+  threadId?: string;
+  attachedPdfPaths: string[];
+  selectionChars: number;
+  progress?: string;
+}
+
 export interface ConversationSession {
-  version: 1;
+  version: 2;
   id: string;
   conversationKey: string;
   title: string;
@@ -73,7 +91,9 @@ export interface ConversationSession {
   messages: ConversationMessage[];
   referencedPdfPaths: string[];
   includeCurrentPdfInCodex: boolean;
+  api?: ApiSessionMetadata;
   codex?: CodexSessionMetadata;
+  pendingTurn?: PendingCodexTurn;
   createdAt: number;
   updatedAt: number;
 }
@@ -219,28 +239,43 @@ export interface ConversationOperations {
   getActiveSession?(key: string): ConversationSession | null;
   ensureSession?(
     key: string,
-    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "codex">>
+    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "api" | "codex">>
   ): ConversationSession;
   startSession?(
     key: string,
-    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "codex">>
+    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "api" | "codex">>
   ): ConversationSession;
   saveActiveSession?(
     key: string,
     messages: ConversationMessage[],
-    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "codex">>
+    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "api" | "codex">>
   ): Promise<void>;
   getSession?(id: string): ConversationSession | null;
   saveSessionById?(
     id: string,
     messages: ConversationMessage[],
-    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "codex">>
+    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "api" | "codex">>
   ): Promise<void>;
   appendSessionTurn?(id: string, userContent: string, assistantContent: string): Promise<void>;
   updateSessionMetadata?(
     id: string,
-    metadata: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "codex">>
+    metadata: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "api" | "codex">>
   ): Promise<void>;
+  beginCodexTurn?(id: string, pendingTurn: PendingCodexTurn): Promise<void>;
+  updateCodexTurn?(
+    id: string,
+    turnId: string,
+    patch: Partial<Pick<PendingCodexTurn, "status" | "threadId" | "progress">>,
+    codex?: CodexSessionMetadata
+  ): Promise<void>;
+  completeCodexTurn?(
+    id: string,
+    turnId: string,
+    userContent: string,
+    assistantContent: string,
+    codex: CodexSessionMetadata
+  ): Promise<void>;
+  clearSession?(id: string): Promise<void>;
   closeSession?(id: string): Promise<void>;
   resumeSession?(id: string): ConversationSession | null;
   listSessions?(query?: string): ConversationSession[];
@@ -276,11 +311,13 @@ export interface ResearchActionOperations {
 
 export interface CodexRuntimeOperations {
   getSnapshot(sessionId: string): CodexTurnSnapshot;
+  listSnapshots(): CodexTurnSnapshot[];
   subscribe(sessionId: string, listener: (snapshot: CodexTurnSnapshot) => void): () => void;
   startTurn(request: StartCodexTurnRequest): Promise<CodexTurnSnapshot>;
   stopTurn(sessionId: string): boolean;
   closeSession(sessionId: string): Promise<void>;
   reactivateSession(sessionId: string): void;
+  retryPersistResult(sessionId: string): Promise<boolean>;
 }
 
 export interface PDFChatModalServices {

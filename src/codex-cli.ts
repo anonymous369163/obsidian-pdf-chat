@@ -69,6 +69,30 @@ export interface RunCodexThreadTurnOptions {
   ) => CodexChildProcess;
 }
 
+export interface RunCodexVersionCheckOptions {
+  workingDirectory: string;
+  timeoutMs?: number;
+  spawn?: RunCodexThreadTurnOptions["spawn"];
+}
+
+export interface RunCodexThreadDoctorRequest {
+  command: string;
+  workingDirectory: string;
+  profile?: string;
+  model?: string;
+  reasoningEffort?: CodexReasoningEffort;
+  verbosity?: CodexVerbosity;
+  timeoutMs: number;
+}
+
+export interface CodexThreadDoctorResult {
+  threadId: string;
+  firstReply: string;
+  resumeReply: string;
+  firstTurnMs: number;
+  resumeTurnMs: number;
+}
+
 function loadNodeModule<T>(name: string): T {
   const nodeRequire = typeof require === "function" ? require : null;
   if (!nodeRequire) throw new Error("Node.js APIs are not available in this Obsidian environment");
@@ -201,6 +225,103 @@ function terminateCodexChild(child: CodexChildProcess): void {
   } catch (error) {
     void error;
   }
+}
+
+export function runCodexVersionCheck(
+  command: string,
+  options: RunCodexVersionCheckOptions
+): Promise<string> {
+  const childProcess = options.spawn
+    ? { spawn: options.spawn }
+    : loadNodeModule<typeof import("node:child_process")>("node:child_process");
+  const resolved = resolveCodexExecArgs({ command: command || "codex", args: ["--version"] });
+  const timeoutMs = Math.max(1, options.timeoutMs || 10000);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let stdout = "";
+    let stderr = "";
+    let timer: ReturnType<typeof setTimeout>;
+    const child = childProcess.spawn(resolved.command, resolved.args, {
+      cwd: options.workingDirectory,
+      windowsHide: true,
+      shell: false,
+    }) as CodexChildProcess;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback();
+    };
+    child.stdout?.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on("error", (error) => finish(() => reject(error)));
+    child.on("close", (code) => {
+      const version = redactProcessText(stdout).trim();
+      if (code === 0 && version) finish(() => resolve(version));
+      else finish(() => reject(new Error(redactProcessText(stderr) || `Codex exited with code ${String(code)}`)));
+    });
+    try {
+      child.stdin?.end();
+    } catch (error) {
+      void error;
+    }
+    timer = setTimeout(() => {
+      terminateCodexChild(child);
+      finish(() => reject(new Error(`Codex version check timed out after ${timeoutMs}ms`)));
+    }, timeoutMs);
+  });
+}
+
+export async function runCodexThreadDoctor(
+  request: RunCodexThreadDoctorRequest,
+  runner: (
+    args: CodexThreadExecArgs,
+    options: RunCodexThreadTurnOptions
+  ) => Promise<CodexThreadTurnResult> = runCodexThreadTurn
+): Promise<CodexThreadDoctorResult> {
+  const base = {
+    command: request.command,
+    workingDirectory: request.workingDirectory,
+    profile: request.profile,
+    model: request.model,
+    reasoningEffort: request.reasoningEffort,
+    verbosity: request.verbosity,
+  };
+  const firstStartedAt = Date.now();
+  const first = await runner(
+    buildCodexThreadExecArgs({ ...base, prompt: "Reply exactly PDF_CHAT_DOCTOR_1" }),
+    { workingDirectory: request.workingDirectory, timeoutMs: request.timeoutMs }
+  );
+  const firstTurnMs = Date.now() - firstStartedAt;
+  if (!first.markdown.includes("PDF_CHAT_DOCTOR_1")) {
+    throw new Error("Codex fresh-thread diagnostic returned an unexpected reply");
+  }
+  const resumeStartedAt = Date.now();
+  const resumed = await runner(
+    buildCodexThreadExecArgs({
+      ...base,
+      threadId: first.threadId,
+      prompt: "Reply exactly PDF_CHAT_DOCTOR_2",
+    }),
+    { workingDirectory: request.workingDirectory, timeoutMs: request.timeoutMs }
+  );
+  if (resumed.threadId !== first.threadId) {
+    throw new Error("Codex resume returned a different thread id");
+  }
+  if (!resumed.markdown.includes("PDF_CHAT_DOCTOR_2")) {
+    throw new Error("Codex resume diagnostic returned an unexpected reply");
+  }
+  return {
+    threadId: first.threadId,
+    firstReply: first.markdown,
+    resumeReply: resumed.markdown,
+    firstTurnMs,
+    resumeTurnMs: Date.now() - resumeStartedAt,
+  };
 }
 
 export function runCodexThreadTurn(

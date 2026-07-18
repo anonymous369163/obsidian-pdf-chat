@@ -145,6 +145,7 @@ function loadPluginModule(options = {}) {
     createPDFChatModalServices: bundle.createPDFChatModalServices,
     normalizeConversationHistories: bundle.normalizeConversationHistories,
     normalizeConversationSessions: bundle.normalizeConversationSessions,
+    migrateSettings: bundle.migrateSettings,
     ConversationStore: bundle.ConversationStore,
     OpenAICompatibleTransport: bundle.OpenAICompatibleTransport,
     PDFChatModal: bundle.PDFChatModal,
@@ -272,6 +273,194 @@ test("keeps an empty Codex session once a native thread id has been recorded", (
   assert.equal(sessions["session-native"].codex.threadId, "thread-123");
   assert.equal(sessions["session-native"].codex.lifecycle, "active");
   assert.deepEqual(plain(sessions["session-native"].messages), []);
+});
+
+test("migrates version-1 sessions to version 2 and preserves per-session API routing", () => {
+  const PluginClass = loadPluginModule();
+  const normalize = PluginClass.__test.normalizeConversationSessions;
+  const sessions = normalize({
+    "session-api": {
+      version: 1,
+      id: "session-api",
+      ["conversation" + "Key"]: "pdf:papers/demo.pdf",
+      title: "API discussion",
+      mode: "chat",
+      messages: [{ role: "user", content: "Question" }],
+      referencedPdfPaths: [],
+      includeCurrentPdfInCodex: true,
+      api: { modelId: "model-b", presetId: "paper-map" },
+      createdAt: 1,
+      updatedAt: 2,
+    },
+  });
+
+  assert.equal(sessions["session-api"].version, 2);
+  assert.deepEqual(plain(sessions["session-api"].api), {
+    modelId: "model-b",
+    presetId: "paper-map",
+  });
+});
+
+test("the first persisted user turn gives a PDF session a useful title", async () => {
+  const PluginClass = loadPluginModule();
+  const { ConversationStore } = PluginClass.__test;
+  const settings = {
+    conversationHistories: {},
+    conversationSessions: {},
+    activeConversationSessionIds: {},
+  };
+  const store = new ConversationStore(() => settings, async () => {}, () => 100);
+  const session = store.startSession("pdf:papers/demo.pdf", { title: "demo.pdf" });
+
+  await store.appendSessionTurn(
+    session.id,
+    "Why does the convergence proof require strong convexity?",
+    "Because..."
+  );
+
+  assert.equal(
+    store.getSession(session.id).title,
+    "Why does the convergence proof require strong convexity?"
+  );
+});
+
+test("settings migration marks an abandoned running Codex turn as interrupted", () => {
+  const PluginClass = loadPluginModule();
+  const { migrateSettings } = PluginClass.__test;
+  const { settings, needsSave } = migrateSettings({
+    conversationSessions: {
+      "session-running": {
+        version: 2,
+        id: "session-running",
+        ["conversation" + "Key"]: "pdf:papers/demo.pdf",
+        title: "Running task",
+        mode: "codex",
+        messages: [],
+        referencedPdfPaths: ["papers/reference.pdf"],
+        includeCurrentPdfInCodex: true,
+        pendingTurn: {
+          turnId: "turn-1",
+          question: "Explain the proof",
+          status: "running",
+          startedAt: 100,
+          threadId: "thread-1",
+          attachedPdfPaths: ["papers/demo.pdf", "papers/reference.pdf"],
+          selectionChars: 42,
+          progress: "Reading",
+        },
+        createdAt: 1,
+        updatedAt: 2,
+      },
+    },
+    activeConversationSessionIds: { "pdf:papers/demo.pdf": "session-running" },
+  });
+
+  assert.equal(settings.conversationSessions["session-running"].pendingTurn.status, "interrupted");
+  assert.equal(settings.conversationSessions["session-running"].pendingTurn.question, "Explain the proof");
+  assert.equal(settings.conversationSessions["session-running"].pendingTurn.selectionChars, 42);
+  assert.equal(needsSave, true);
+});
+
+test("ConversationStore atomically journals and completes a Codex turn", async () => {
+  const PluginClass = loadPluginModule();
+  const { ConversationStore } = PluginClass.__test;
+  const settings = {
+    conversationHistories: {},
+    conversationSessions: {},
+    activeConversationSessionIds: {},
+  };
+  let saves = 0;
+  const store = new ConversationStore(() => settings, async () => { saves += 1; }, () => 100);
+  const session = store.startSession("pdf:papers/demo.pdf", {
+    title: "demo.pdf",
+    mode: "codex",
+    codex: { model: "gpt-5.5", reasoningEffort: "medium", lifecycle: "active" },
+  });
+  const pendingTurn = {
+    turnId: "turn-1",
+    question: "Explain theorem 2",
+    status: "running",
+    startedAt: 100,
+    attachedPdfPaths: ["papers/demo.pdf"],
+    selectionChars: 20,
+    progress: "Starting",
+  };
+
+  await store.beginCodexTurn(session.id, pendingTurn);
+  assert.deepEqual(plain(store.getSession(session.id).pendingTurn), pendingTurn);
+
+  await store.completeCodexTurn(
+    session.id,
+    "turn-1",
+    "Explain theorem 2",
+    "The theorem follows because...",
+    { model: "gpt-5.5", reasoningEffort: "medium", threadId: "thread-1", lifecycle: "active" }
+  );
+
+  const completed = store.getSession(session.id);
+  assert.equal(completed.pendingTurn, undefined);
+  assert.equal(completed.codex.threadId, "thread-1");
+  assert.equal(completed.title, "Explain theorem 2");
+  assert.deepEqual(plain(completed.messages).map((message) => message.content), [
+    "Explain theorem 2",
+    "The theorem follows because...",
+  ]);
+  assert.equal(saves, 2);
+});
+
+test("ConversationStore retries a failed final Codex save without duplicating the visible turn", async () => {
+  const PluginClass = loadPluginModule();
+  const { ConversationStore } = PluginClass.__test;
+  const settings = {
+    conversationHistories: {},
+    conversationSessions: {},
+    activeConversationSessionIds: {},
+  };
+  let failNext = false;
+  const store = new ConversationStore(
+    () => settings,
+    async () => {
+      if (failNext) {
+        failNext = false;
+        throw new Error("disk unavailable");
+      }
+    },
+    () => 100
+  );
+  const session = store.startSession("pdf:papers/A.pdf", {
+    mode: "codex",
+    codex: { model: "gpt-5.5", reasoningEffort: "medium", lifecycle: "active" },
+  });
+  await store.beginCodexTurn(session.id, {
+    turnId: "turn-retry",
+    question: "Question",
+    status: "running",
+    startedAt: 10,
+    attachedPdfPaths: [],
+    selectionChars: 0,
+  });
+  const codex = {
+    model: "gpt-5.5",
+    reasoningEffort: "medium",
+    threadId: "thread-retry",
+    lifecycle: "active",
+  };
+
+  failNext = true;
+  await assert.rejects(
+    store.completeCodexTurn(session.id, "turn-retry", "Question", "Answer", codex),
+    /disk unavailable/
+  );
+  await store.completeCodexTurn(session.id, "turn-retry", "Question", "Answer", codex);
+
+  const completed = store.getSession(session.id);
+  assert.deepEqual(
+    plain(completed.messages).map((message) => [message.role, message.content]),
+    [
+      ["user", "Question"],
+      ["assistant", "Answer"],
+    ]
+  );
 });
 
 test("background Codex completion writes to its original session id after another session becomes active", async () => {
@@ -503,6 +692,127 @@ test("modal constructor skips loading history when starting fresh", () => {
   assert.deepEqual(plain(modal.transcript), []);
   assert.equal(modal.messages.length, 1);
   assert.equal(modal.messages[0].role, "system");
+});
+
+test("a fresh modal creates a new session before its first write instead of overwriting the active session", async () => {
+  const PluginClass = loadPluginModule();
+  const PDFChatModal = PluginClass.__test.PDFChatModal;
+  const calls = [];
+  const oldSession = {
+    version: 1,
+    id: "session-old",
+    ["conversation" + "Key"]: "pdf:papers/demo.pdf",
+    title: "Old discussion",
+    mode: "chat",
+    messages: [{ role: "user", content: "Old question", status: "complete" }],
+    referencedPdfPaths: [],
+    includeCurrentPdfInCodex: true,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const newSession = { ...oldSession, version: 2, id: "session-new", title: "demo.pdf", messages: [] };
+  const services = {
+    conversations: {
+      getKey: () => "pdf:papers/demo.pdf",
+      get: () => oldSession.messages,
+      getActiveSession: () => oldSession,
+      startSession: (_key, metadata) => {
+        calls.push({ type: "start", metadata: plain(metadata) });
+        return newSession;
+      },
+      saveSessionById: async (id, messages, metadata) => {
+        calls.push({ type: "save-id", id, messages: plain(messages), metadata: plain(metadata) });
+      },
+      saveActiveSession: async () => calls.push({ type: "save-active" }),
+    },
+    models: { resolveContinueId: () => "model-a" },
+  };
+  const plugin = Object.create(PluginClass.prototype);
+  plugin.settings = {
+    activeModelId: "model-a",
+    codexDeepAnalysis: { includeSelectionContext: true, profile: "" },
+    conversationHistories: {},
+    lastModelId: "",
+    lastPresetId: "",
+    models: [{ id: "model-a" }],
+    promptPresets: [],
+    systemPrompt: "System instructions",
+  };
+
+  const modal = new PDFChatModal(
+    {},
+    plugin,
+    "Selection",
+    { path: "papers/demo.pdf" },
+    true,
+    services
+  );
+  await modal.recordTranscriptTurn("New question", "New answer", "complete");
+
+  assert.equal(modal.currentSessionId, "session-new");
+  assert.deepEqual(calls.map((call) => call.type), ["start", "save-id"]);
+  assert.equal(calls[1].id, "session-new");
+});
+
+test("a modal always saves to its exact session id even when another same-PDF session is active", async () => {
+  const PluginClass = loadPluginModule();
+  const PDFChatModal = PluginClass.__test.PDFChatModal;
+  const calls = [];
+  const ownedSession = {
+    version: 1,
+    id: "session-owned",
+    ["conversation" + "Key"]: "pdf:papers/demo.pdf",
+    title: "Owned discussion",
+    mode: "chat",
+    messages: [],
+    referencedPdfPaths: [],
+    includeCurrentPdfInCodex: true,
+    api: { modelId: "model-b", presetId: "paper-map" },
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const services = {
+    conversations: {
+      getKey: () => "pdf:papers/demo.pdf",
+      get: () => [],
+      getActiveSession: () => ownedSession,
+      getSession: () => ownedSession,
+      saveSessionById: async (id, messages, metadata) => {
+        calls.push({ type: "save-id", id, messages: plain(messages), metadata: plain(metadata) });
+      },
+      saveActiveSession: async () => calls.push({ type: "save-active" }),
+    },
+    models: { resolveContinueId: () => "model-a" },
+  };
+  const plugin = Object.create(PluginClass.prototype);
+  plugin.settings = {
+    activeModelId: "model-a",
+    codexDeepAnalysis: { includeSelectionContext: true, profile: "" },
+    conversationHistories: {},
+    lastModelId: "",
+    lastPresetId: "",
+    models: [{ id: "model-a" }, { id: "model-b" }],
+    promptPresets: [{ id: "paper-map", name: "Paper map", prompt: "Map it" }],
+    systemPrompt: "System instructions",
+  };
+
+  const modal = new PDFChatModal(
+    {},
+    plugin,
+    "Selection",
+    { path: "papers/demo.pdf" },
+    false,
+    services
+  );
+  assert.equal(modal.currentModelId, "model-b");
+  assert.equal(modal.currentPresetId, "paper-map");
+
+  await modal.recordTranscriptTurn("Owned question", "Owned answer", "complete");
+
+  assert.deepEqual(calls.map((call) => call.type), ["save-id"]);
+  assert.equal(calls[0].id, "session-owned");
+  assert.equal(calls[0].metadata.api.modelId, "model-b");
+  assert.equal(calls[0].metadata.api.presetId, "paper-map");
 });
 
 test("closing an empty fresh-started modal does not erase previously saved history", async () => {
@@ -1046,16 +1356,16 @@ test("onload registers separate new-conversation and continue-conversation hotke
   assert.deepEqual(plain(continued.hotkeys), [{ modifiers: ["Mod"], key: "Q" }]);
 });
 
-test("release metadata and CSS expose the exact 0.8.0 selectable-text contract", () => {
+test("release metadata and CSS expose the exact 0.8.1 selectable-text contract", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8"));
   const manifest = JSON.parse(fs.readFileSync(path.join(projectRoot, "manifest.json"), "utf8"));
   const versions = JSON.parse(fs.readFileSync(path.join(projectRoot, "versions.json"), "utf8"));
   const css = fs.readFileSync(path.join(projectRoot, "styles.css"), "utf8");
 
-  assert.equal(pkg.version, "0.8.0");
-  assert.equal(manifest.version, "0.8.0");
+  assert.equal(pkg.version, "0.8.1");
+  assert.equal(manifest.version, "0.8.1");
   assert.equal(manifest.minAppVersion, "1.4.0");
-  assert.equal(versions["0.8.0"], "1.4.0");
+  assert.equal(versions["0.8.1"], "1.4.0");
   assert.match(css, /\.pdf-chat-bubble[^}]*user-select:\s*text/s);
   assert.match(css, /-webkit-user-select:\s*text/);
   assert.match(css, /\.pdf-chat-bubble[^}]*cursor:\s*text/s);

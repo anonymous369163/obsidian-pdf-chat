@@ -1,6 +1,6 @@
 {
   "name": "pdf-chat",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "private": true,
   "description": "Chat with selected text and PDFs in Obsidian using an OpenAI-compatible API.",
   "main": "main.js",

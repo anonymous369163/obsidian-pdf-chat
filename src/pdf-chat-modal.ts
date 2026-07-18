@@ -1,4 +1,5 @@
 import {
+  FuzzySuggestModal,
   MarkdownRenderer,
   Modal,
   Notice,
@@ -8,7 +9,12 @@ import {
 } from "obsidian";
 import { DEFAULT_SETTINGS } from "./default-settings";
 import { listResearchActionsForSlot } from "./actions";
-import { buildCodexTurnPrompt, resolveCodexPdfLocation } from "./codex-cli";
+import {
+  buildCodexTurnPrompt,
+  resolveCodexPdfLocation,
+  runCodexThreadDoctor,
+  runCodexVersionCheck,
+} from "./codex-cli";
 import type { CodexTurnSnapshot } from "./codex-session-manager";
 import { createPDFChatModalServices } from "./modal-services";
 import {
@@ -28,6 +34,7 @@ import {
   writeCodexOutputSchema,
   buildCodexDebugFullPrompt,
   type CodexRunProgress,
+  type PaperSearchCandidate,
   type PreparedCodexPaper,
 } from "./multi-paper";
 import {
@@ -237,6 +244,7 @@ export class PDFChatModal extends Modal {
   private codexProgressTimer?: ReturnType<typeof setInterval>;
   private lastCodexSnapshot?: CodexTurnSnapshot;
   private promptHistoryCursor: number | null = null;
+  private promptHistoryDraft = "";
 
   zoomOutBtn!: HTMLButtonElement;
   zoomLabel!: HTMLButtonElement;
@@ -263,6 +271,8 @@ export class PDFChatModal extends Modal {
   codexContextToggleBtn?: HTMLButtonElement;
   composerMentionSuggestionsEl?: HTMLElement;
   composerMentionRange?: ComposerMentionRange;
+  private composerMentionCandidates: PaperSearchCandidate[] = [];
+  private composerMentionActiveIndex = 0;
   commandMenuEl?: HTMLElement;
   inputEl!: HTMLTextAreaElement;
   sendBtn!: HTMLButtonElement;
@@ -339,6 +349,18 @@ export class PDFChatModal extends Modal {
         if (activeSession.codex.profile !== undefined) {
           this.plugin.settings.codexDeepAnalysis.profile = activeSession.codex.profile || "";
         }
+      }
+    }
+    if (activeSession?.api) {
+      if (activeSession.api.modelId && this.plugin.settings.models.some((model) => model.id === activeSession.api!.modelId)) {
+        this.currentModelId = activeSession.api.modelId;
+      }
+      if (
+        activeSession.api.presetId &&
+        (activeSession.api.presetId === "__default__" ||
+          this.plugin.settings.promptPresets.some((preset) => preset.id === activeSession.api!.presetId))
+      ) {
+        this.currentPresetId = activeSession.api.presetId;
       }
     }
     if (activeSession?.referencedPdfPaths?.length) {
@@ -436,6 +458,7 @@ export class PDFChatModal extends Modal {
       }
     });
     this.inputEl.addEventListener("keydown", (evt) => {
+      if (this.handleComposerMentionKey(evt)) return;
       if (this.handlePromptHistoryKey(evt)) return;
       if (evt.key === "Enter" && !evt.shiftKey) {
         evt.preventDefault();
@@ -443,15 +466,12 @@ export class PDFChatModal extends Modal {
       }
     });
     this.inputEl.addEventListener("input", () => {
+      if (this.promptHistoryCursor !== null) {
+        this.promptHistoryCursor = null;
+        this.promptHistoryDraft = "";
+      }
       this.hideFollowupSuggestions();
       this.updateComposerMentionSuggestions();
-    });
-    this.inputEl.addEventListener("keydown", (evt) => {
-      if (evt.key === "Escape" && this.composerMentionSuggestionsEl) {
-        evt.preventDefault();
-        evt.stopPropagation();
-        this.hideComposerMentionSuggestions();
-      }
     });
     this.setupCloseIntentHandling();
     if (restoringHistory) {
@@ -672,6 +692,7 @@ export class PDFChatModal extends Modal {
     if (history[history.length - 1] !== text) history.push(text);
     this.plugin.settings.promptHistory = history.slice(-100);
     this.promptHistoryCursor = null;
+    this.promptHistoryDraft = "";
     this.saveSettingsInBackground();
   }
 
@@ -680,17 +701,18 @@ export class PDFChatModal extends Modal {
   }
 
   private saveSessionMetadataInBackground(): void {
-    if (this.transcript.length && this.services.conversations.saveActiveSession) {
+    const session = this.ensureCurrentSessionForWrite();
+    if (session && this.services.conversations.saveSessionById) {
       Promise.resolve(
-        this.services.conversations.saveActiveSession(
-          this.conversationKey,
+        this.services.conversations.saveSessionById(
+          session.id,
           this.transcript,
           this.sessionMetadata()
         )
       ).catch(() => undefined);
       return;
     }
-    if (this.services.conversations.ensureSession) {
+    if (!session && this.services.conversations.ensureSession) {
       try {
         const session = this.services.conversations.ensureSession(this.conversationKey, this.sessionMetadata());
         this.currentSessionId = session?.id || this.currentSessionId;
@@ -706,8 +728,15 @@ export class PDFChatModal extends Modal {
     if (this.composerMentionSuggestionsEl) return false;
     const history = this.plugin.settings.promptHistory || [];
     if (!history.length) return false;
+    const value = this.inputEl.value || "";
+    const selectionStart = typeof this.inputEl.selectionStart === "number" ? this.inputEl.selectionStart : value.length;
+    const selectionEnd = typeof this.inputEl.selectionEnd === "number" ? this.inputEl.selectionEnd : selectionStart;
+    if (selectionStart !== selectionEnd) return false;
+    if (event.key === "ArrowUp" && value.slice(0, selectionStart).includes("\n")) return false;
+    if (event.key === "ArrowDown" && value.slice(selectionEnd).includes("\n")) return false;
     event.preventDefault();
     if (event.key === "ArrowUp") {
+      if (this.promptHistoryCursor === null) this.promptHistoryDraft = value;
       const next = this.promptHistoryCursor === null ? history.length - 1 : Math.max(0, this.promptHistoryCursor - 1);
       this.promptHistoryCursor = next;
       this.inputEl.value = history[next] || "";
@@ -716,11 +745,19 @@ export class PDFChatModal extends Modal {
       const next = this.promptHistoryCursor + 1;
       if (next >= history.length) {
         this.promptHistoryCursor = null;
-        this.inputEl.value = "";
+        this.inputEl.value = this.promptHistoryDraft;
+        this.promptHistoryDraft = "";
       } else {
         this.promptHistoryCursor = next;
         this.inputEl.value = history[next] || "";
       }
+    }
+    const caret = this.inputEl.value.length;
+    if (typeof this.inputEl.setSelectionRange === "function") {
+      this.inputEl.setSelectionRange(caret, caret);
+    } else {
+      this.inputEl.selectionStart = caret;
+      this.inputEl.selectionEnd = caret;
     }
     return true;
   }
@@ -839,6 +876,7 @@ export class PDFChatModal extends Modal {
     mode: "chat" | "codex";
     referencedPdfPaths: string[];
     includeCurrentPdfInCodex: boolean;
+    api: ConversationSession["api"];
     codex?: ConversationSession["codex"];
   } {
     const fallbackTitle = title || this.transcript.find((message) => message.role === "user")?.content || this.getDocumentName();
@@ -850,6 +888,7 @@ export class PDFChatModal extends Modal {
       mode: this.runtimeMode === "codex" ? "codex" : "chat",
       referencedPdfPaths: this.referencedPdfFiles.map((file) => file.path).filter(Boolean),
       includeCurrentPdfInCodex: this.includeCurrentPdfInCodex,
+      api: { modelId: this.currentModelId, presetId: this.currentPresetId },
       codex:
         this.runtimeMode === "codex"
           ? {
@@ -861,6 +900,20 @@ export class PDFChatModal extends Modal {
             }
           : undefined,
     };
+  }
+
+  private ensureCurrentSessionForWrite(): ConversationSession | null {
+    if (this.currentSessionId) {
+      return this.services.conversations.getSession?.(this.currentSessionId) || ({
+        id: this.currentSessionId,
+      } as ConversationSession);
+    }
+    const metadata = this.sessionMetadata();
+    const session = this.startFresh
+      ? this.services.conversations.startSession?.(this.conversationKey, metadata)
+      : this.services.conversations.ensureSession?.(this.conversationKey, metadata);
+    this.currentSessionId = session?.id;
+    return session || null;
   }
 
   private async startNewSession(): Promise<void> {
@@ -927,6 +980,16 @@ export class PDFChatModal extends Modal {
       this.plugin.settings.codexDeepAnalysis.reasoningEffort = session.codex.reasoningEffort;
       this.plugin.settings.codexDeepAnalysis.profile = session.codex.profile || "";
     }
+    if (session.api?.modelId && this.plugin.settings.models.some((model) => model.id === session.api!.modelId)) {
+      this.currentModelId = session.api.modelId;
+    }
+    if (
+      session.api?.presetId &&
+      (session.api.presetId === "__default__" ||
+        this.plugin.settings.promptPresets.some((preset) => preset.id === session.api!.presetId))
+    ) {
+      this.currentPresetId = session.api.presetId;
+    }
     this.referencedPdfFiles = (session.referencedPdfPaths || [])
       .map((path) => this.findPdfFileByPath(path))
       .filter((file): file is TFile => !!file);
@@ -951,14 +1014,145 @@ export class PDFChatModal extends Modal {
       const rightCurrent = right.conversationKey === this.conversationKey ? 1 : 0;
       return rightCurrent - leftCurrent || right.updatedAt - left.updatedAt;
     });
-    this.showCommandMenu(
-      "恢复历史讨论",
-      currentFirst.map((session) => ({
-        label: session.title || session.conversationKey,
-        detail: `${session.mode === "codex" ? "Codex" : "API"} · ${session.conversationKey}`,
-        run: () => this.resumeConversationSession(session.id),
-      }))
-    );
+    const owner = this;
+    class ResumeSessionSuggestModal extends FuzzySuggestModal<ConversationSession> {
+      getItems(): ConversationSession[] {
+        return currentFirst;
+      }
+
+      getItemText(session: ConversationSession): string {
+        const path = session.conversationKey.replace(/^pdf:/, "");
+        const mode = session.mode === "codex" ? "Codex" : "API";
+        return `${session.title || path} · ${path} · ${mode}`;
+      }
+
+      onChooseItem(session: ConversationSession): void {
+        void owner.resumeConversationSession(session.id);
+      }
+    }
+    const picker = new ResumeSessionSuggestModal(this.app);
+    picker.setPlaceholder("搜索标题、PDF 路径或 Codex/API 模式…");
+    picker.open();
+  }
+
+  private showTasksMenu(): void {
+    const tasks = this.services.codex?.listSnapshots() || [];
+    type TaskItem = { task: CodexTurnSnapshot; session: ConversationSession | null };
+    const items: TaskItem[] = tasks.map((task) => ({
+      task,
+      session: this.services.conversations.getSession?.(task.sessionId) || null,
+    }));
+    const owner = this;
+    class CodexTaskSuggestModal extends FuzzySuggestModal<TaskItem> {
+      getItems(): TaskItem[] {
+        return items;
+      }
+
+      getItemText(item: TaskItem): string {
+        const { task, session } = item;
+        const state = task.status === "running" ? "运行中" : task.status === "failed" ? "失败" : "已中断";
+        return `${session?.title || task.question || task.sessionId} · ${state}${task.progress ? ` · ${task.progress}` : ""}`;
+      }
+
+      onChooseItem(item: TaskItem): void {
+        void owner.resumeConversationSession(item.task.sessionId);
+      }
+    }
+    const picker = new CodexTaskSuggestModal(this.app);
+    picker.setPlaceholder("搜索 Codex 后台任务…");
+    picker.open();
+  }
+
+  private async retryCurrentCodexSave(): Promise<void> {
+    if (!this.currentSessionId || !this.services.codex) {
+      new Notice("当前没有可重新保存的 Codex 回答。");
+      return;
+    }
+    try {
+      const saved = await this.services.codex.retryPersistResult(this.currentSessionId);
+      new Notice(saved ? "Codex 回答已重新保存。" : "当前没有待重新保存的 Codex 回答。");
+    } catch (error) {
+      new Notice(`重新保存失败：${errorMessage(error)}`);
+    }
+  }
+
+  private async runCodexDoctor(runRealCheck: boolean): Promise<void> {
+    if (!this.pdfFile) {
+      new Notice("请先从一个 PDF 视图打开 PDF Chat，再运行 /doctor。");
+      return;
+    }
+    let workingDirectory: string;
+    try {
+      workingDirectory = resolveCodexPdfLocation(this.app, this.pdfFile.path).workingDirectory;
+    } catch (error) {
+      new Notice(`Codex 本地路径检查失败：${errorMessage(error)}`);
+      return;
+    }
+    if (runRealCheck) {
+      const candidateWindow = this.contentEl.ownerDocument?.defaultView;
+      const confirmFn = candidateWindow?.confirm?.bind(candidateWindow);
+      if (
+        !confirmFn?.(
+          "真实 Codex 诊断会执行两次模型调用：先创建 thread，再 resume 同一个 thread。是否继续？"
+        )
+      ) {
+        new Notice("已取消真实 Codex 诊断。");
+        return;
+      }
+    }
+
+    this.hideFollowupSuggestions();
+    this.setSendingState(true);
+    const bubble = this.addBubble("assistant", "正在检查 Codex CLI…", {
+      loading: true,
+      assistantAuthor: "Codex Doctor",
+      assistantContext: runRealCheck ? "真实 thread/resume 诊断" : "免费本地诊断",
+    });
+    const settings = this.plugin.settings.codexDeepAnalysis;
+    try {
+      const version = await runCodexVersionCheck(settings.command, {
+        workingDirectory,
+        timeoutMs: 10000,
+      });
+      if (!runRealCheck) {
+        bubble.removeClass("is-loading");
+        setBubbleText(
+          bubble,
+          `Codex CLI 本地检查通过。\n\n- 版本：${version}\n- 命令：${settings.command}\n- 工作目录：${workingDirectory}\n- 未调用模型，未产生 Codex token 消耗。`
+        );
+        return;
+      }
+      setBubbleText(bubble, "Codex CLI 可用；正在验证新 thread 与原生 resume…");
+      const result = await runCodexThreadDoctor({
+        command: settings.command,
+        workingDirectory,
+        profile: settings.profile,
+        model: settings.model,
+        reasoningEffort: settings.reasoningEffort,
+        verbosity: settings.verbosity,
+        timeoutMs: Math.min(settings.timeoutMs, 180000),
+      });
+      bubble.removeClass("is-loading");
+      setBubbleText(
+        bubble,
+        [
+          "Codex CLI 真实诊断通过。",
+          "",
+          `- 版本：${version}`,
+          `- 模型：${settings.model} · ${settings.reasoningEffort}`,
+          `- Thread：${result.threadId}`,
+          `- 首轮：${result.firstTurnMs} ms · ${result.firstReply}`,
+          `- Resume：${result.resumeTurnMs} ms · ${result.resumeReply}`,
+        ].join("\n")
+      );
+    } catch (error) {
+      bubble.removeClass("is-loading");
+      bubble.addClass("is-error");
+      setBubbleText(bubble, `Codex 诊断失败：${errorMessage(error)}`);
+    } finally {
+      this.setSendingState(false);
+      this.inputEl.focus();
+    }
   }
 
   private showStatusMessage(): void {
@@ -1002,6 +1196,9 @@ export class PDFChatModal extends Modal {
         "- /model <model> <effort>：切换 Codex 模型和推理强度",
         "- /new：新建讨论，不删除旧讨论",
         "- /resume：恢复历史讨论",
+        "- /tasks：查看运行中、失败或中断的 Codex 后台任务",
+        "- /retry-save：重新保存已经生成但写入失败的 Codex 回答",
+        "- /doctor：免费检查 Codex 命令与版本；/doctor real 明确执行 thread/resume 真实诊断",
         "- /refs：查看并移除当前引用的 PDF",
         "- /unref <序号或名称>：移除某篇引用 PDF",
         "- /clearrefs：清空当前讨论引用的 PDF",
@@ -1064,6 +1261,18 @@ export class PDFChatModal extends Modal {
       case "resume":
         this.clearComposerInput();
         this.showResumeMenu();
+        return true;
+      case "tasks":
+        this.clearComposerInput();
+        this.showTasksMenu();
+        return true;
+      case "retry-save":
+        this.clearComposerInput();
+        await this.retryCurrentCodexSave();
+        return true;
+      case "doctor":
+        this.clearComposerInput();
+        await this.runCodexDoctor(args.toLowerCase() === "real");
         return true;
       case "refs":
         this.clearComposerInput();
@@ -1201,7 +1410,7 @@ export class PDFChatModal extends Modal {
   private addReferencedPdf(file: TFile): void {
     if (!file || !this.isPdfLikeFile(file)) return;
     if (this.pdfFile && file.path === this.pdfFile.path) {
-      new Notice("当前 PDF 已自动作为对比主体，无需重复引用。");
+      new Notice("当前 PDF 已经作为 Codex 附件，无需重复添加。");
       return;
     }
     if (this.referencedPdfFiles.find((existing) => existing.path === file.path)) return;
@@ -1369,6 +1578,8 @@ export class PDFChatModal extends Modal {
       this.hideComposerMentionSuggestions();
       return;
     }
+    this.composerMentionCandidates = results;
+    this.composerMentionActiveIndex = 0;
     const parent = this.composerCardEl || this.contentEl;
     if (!this.composerMentionSuggestionsEl) {
       this.composerMentionSuggestionsEl = parent.createDiv({
@@ -1377,11 +1588,16 @@ export class PDFChatModal extends Modal {
       });
     }
     this.composerMentionSuggestionsEl.empty();
-    for (const candidate of results) {
+    for (const [index, candidate] of results.entries()) {
       const button = this.composerMentionSuggestionsEl.createEl("button", {
         cls: "pdf-chat-composer-mention-option",
-        attr: { type: "button", role: "option" },
+        attr: {
+          type: "button",
+          role: "option",
+          "aria-selected": index === this.composerMentionActiveIndex ? "true" : "false",
+        },
       });
+      button.toggleClass("is-active", index === this.composerMentionActiveIndex);
       button.createEl("span", { text: candidate.name, cls: "pdf-chat-pdf-search-name" });
       button.createEl("span", {
         text: `${candidate.path}${candidate.cached ? " · 已有缓存" : ""}`,
@@ -1390,6 +1606,46 @@ export class PDFChatModal extends Modal {
       labelControl(button, `引用 ${candidate.name}`);
       button.addEventListener("click", () => this.chooseComposerMention(candidate.path));
     }
+  }
+
+  private updateComposerMentionActiveOption(): void {
+    if (!this.composerMentionSuggestionsEl) return;
+    const options = Array.from(this.composerMentionSuggestionsEl.children).filter((element) =>
+      (element as HTMLElement).hasClass("pdf-chat-composer-mention-option")
+    ) as HTMLElement[];
+    for (const [index, option] of options.entries()) {
+      const active = index === this.composerMentionActiveIndex;
+      option.toggleClass("is-active", active);
+      option.setAttr("aria-selected", active ? "true" : "false");
+      if (active && typeof option.scrollIntoView === "function") {
+        option.scrollIntoView({ block: "nearest" });
+      }
+    }
+  }
+
+  private handleComposerMentionKey(event: KeyboardEvent): boolean {
+    if (!this.composerMentionSuggestionsEl || !this.composerMentionCandidates.length) return false;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      this.hideComposerMentionSuggestions();
+      return true;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const delta = event.key === "ArrowDown" ? 1 : -1;
+      const count = this.composerMentionCandidates.length;
+      this.composerMentionActiveIndex = (this.composerMentionActiveIndex + delta + count) % count;
+      this.updateComposerMentionActiveOption();
+      return true;
+    }
+    if (event.key === "Enter" || event.key === "Tab") {
+      event.preventDefault();
+      const candidate = this.composerMentionCandidates[this.composerMentionActiveIndex];
+      if (candidate) this.chooseComposerMention(candidate.path);
+      return true;
+    }
+    return false;
   }
 
   private hideComposerMentionSuggestions(): void {
@@ -1401,6 +1657,8 @@ export class PDFChatModal extends Modal {
     }
     this.composerMentionSuggestionsEl = undefined;
     this.composerMentionRange = undefined;
+    this.composerMentionCandidates = [];
+    this.composerMentionActiveIndex = 0;
   }
 
   private chooseComposerMention(path: string): void {
@@ -1573,9 +1831,10 @@ export class PDFChatModal extends Modal {
 
   async persistConversation(): Promise<boolean> {
     try {
-      if (this.services.conversations.saveActiveSession) {
-        await this.services.conversations.saveActiveSession(
-          this.conversationKey,
+      const session = this.ensureCurrentSessionForWrite();
+      if (session && this.services.conversations.saveSessionById) {
+        await this.services.conversations.saveSessionById(
+          session.id,
           this.transcript,
           this.sessionMetadata()
         );
@@ -1644,7 +1903,11 @@ export class PDFChatModal extends Modal {
     this.emptyStateEl = undefined;
     this.showEmptyState();
     try {
-      await this.services.conversations.clear(this.conversationKey);
+      if (this.currentSessionId && this.services.conversations.clearSession) {
+        await this.services.conversations.clearSession(this.currentSessionId);
+      } else {
+        await this.services.conversations.clear(this.conversationKey);
+      }
       new Notice("对话已清空,原文上下文保留");
     } catch (err) {
       new Notice("界面已清空,但删除已保存对话失败: " + errorMessage(err));
@@ -1838,38 +2101,6 @@ export class PDFChatModal extends Modal {
     return refs ? `多论文问题：${question}\n\n引用论文：${refs}` : `多论文问题：${question}`;
   }
 
-  private codexSlashQuestion(question: string): string | null {
-    const trimmed = question.trim();
-    if (!/^\/codex\b/i.test(trimmed)) return null;
-    const stripped = trimmed.replace(/^\/codex\b[:：]?\s*/i, "").trim();
-    return (
-      stripped ||
-      "请基于当前论文和已引用论文进行深度阅读，提炼关键问题、核心方法、证据、局限和后续值得追问的方向。"
-    );
-  }
-
-  private shouldOfferCodexDeepAnalysis(question: string): boolean {
-    if (!this.pdfFile || !this.referencedPdfFiles.length) return false;
-    return /(深度分析|深度阅读|深入分析|深入阅读|Codex|codex|CLI|cli)/.test(question);
-  }
-
-  private confirmCodexDeepAnalysis(): boolean {
-    const message =
-      "检测到你想做多论文深度分析。是否使用 Codex CLI 读取当前论文和 @ 引用论文？\n\n选择“取消”会继续使用当前模型基于多论文上下文回答。";
-    const candidateWindow = this.contentEl?.ownerDocument
-      ? (this.contentEl.ownerDocument as Document & { defaultView?: Window | null }).defaultView
-      : null;
-    const confirmFn =
-      (candidateWindow && typeof candidateWindow.confirm === "function" && candidateWindow.confirm.bind(candidateWindow)) ||
-      (typeof window !== "undefined" && typeof window.confirm === "function" && window.confirm.bind(window)) ||
-      (typeof confirm === "function" && confirm);
-    if (!confirmFn) {
-      new Notice("检测到深度分析意图，但当前环境无法弹出确认框，已改用当前模型基于多论文上下文回答。");
-      return false;
-    }
-    return confirmFn(message);
-  }
-
   private async buildApiMultiPaperContext(question: string, progress?: (message: string) => void): Promise<string> {
     const papers = this.selectedPaperFiles();
     const parts: string[] = [];
@@ -2011,10 +2242,7 @@ export class PDFChatModal extends Modal {
 
     const question = (questionOverride && questionOverride.trim()) || this.getMultiPaperQuestion();
     this.enterCodexMode();
-    const session = this.services.conversations.ensureSession?.(
-      this.conversationKey,
-      this.sessionMetadata(this.getDocumentName())
-    );
+    const session = this.ensureCurrentSessionForWrite();
     this.currentSessionId = session?.id || this.currentSessionId;
     if (!this.currentSessionId) {
       new Notice("无法创建 Codex 会话，请重新打开 PDF Chat。");
@@ -2584,17 +2812,6 @@ export class PDFChatModal extends Modal {
 
     if (this.activeComposerKind === "translate" && this.translateTranscript.length) {
       await this.handleTranslateFollowup(question, usingOverride);
-      return;
-    }
-
-    if (
-      !usingOverride &&
-      !opts.outgoingContentOverride &&
-      !opts.skipContextAugmentation &&
-      this.shouldOfferCodexDeepAnalysis(question) &&
-      this.confirmCodexDeepAnalysis()
-    ) {
-      await this.runCodexDeepAnalysis(question);
       return;
     }
 

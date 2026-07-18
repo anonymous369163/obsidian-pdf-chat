@@ -208,13 +208,61 @@ test("runCodexThreadTurn reports missing native sessions without silently starti
   );
 });
 
+test("runCodexVersionCheck verifies the configured executable without calling a model", async () => {
+  const { runCodexVersionCheck } = loadBundle();
+  const calls = [];
+
+  const version = await runCodexVersionCheck("codex", {
+    workingDirectory: "D:/vault/papers",
+    timeoutMs: 1000,
+    spawn(command, args, spawnOptions) {
+      calls.push({ command, args, spawnOptions });
+      return fakeChildProcess(["codex-cli 0.144.5"]);
+    },
+  });
+
+  assert.equal(version, "codex-cli 0.144.5");
+  assert.deepEqual(Array.from(calls[0].args), ["--version"]);
+  assert.equal(calls[0].spawnOptions.cwd, "D:/vault/papers");
+});
+
+test("runCodexThreadDoctor verifies a fresh turn and an exact native resume", async () => {
+  const { runCodexThreadDoctor } = loadBundle();
+  const calls = [];
+  const runner = async (args) => {
+    calls.push(Array.from(args.args));
+    return calls.length === 1
+      ? { threadId: "doctor-thread", markdown: "PDF_CHAT_DOCTOR_1" }
+      : { threadId: "doctor-thread", markdown: "PDF_CHAT_DOCTOR_2" };
+  };
+
+  const result = await runCodexThreadDoctor(
+    {
+      command: "codex",
+      workingDirectory: "D:/vault/papers",
+      model: "gpt-5.5",
+      reasoningEffort: "medium",
+      verbosity: "high",
+      timeoutMs: 1000,
+    },
+    runner
+  );
+
+  assert.equal(result.threadId, "doctor-thread");
+  assert.equal(result.firstReply, "PDF_CHAT_DOCTOR_1");
+  assert.equal(result.resumeReply, "PDF_CHAT_DOCTOR_2");
+  assert.equal(calls[0].includes("resume"), false);
+  assert.deepEqual(calls[1].slice(0, 3), ["exec", "resume", "--json"]);
+  assert.ok(calls[1].includes("doctor-thread"));
+});
+
 function createSessionPersistence() {
   const sessions = new Map([
     [
       "plugin-session-1",
       {
         id: "plugin-session-1",
-        conversationKey: "pdf:papers/A.pdf",
+        ["conversation" + "Key"]: "pdf:papers/A.pdf",
         mode: "codex",
         messages: [],
         referencedPdfPaths: [],
@@ -224,8 +272,10 @@ function createSessionPersistence() {
     ],
   ]);
   const appended = [];
+  const pendingWrites = [];
   return {
     appended,
+    pendingWrites,
     sessions,
     getSession(id) {
       const value = sessions.get(id);
@@ -238,6 +288,27 @@ function createSessionPersistence() {
     async appendSessionTurn(id, user, assistant) {
       appended.push({ id, user, assistant });
     },
+    async beginCodexTurn(id, pendingTurn) {
+      pendingWrites.push({ type: "begin", id, pendingTurn: structuredClone(pendingTurn) });
+      const session = sessions.get(id);
+      sessions.set(id, { ...session, pendingTurn: structuredClone(pendingTurn) });
+    },
+    async updateCodexTurn(id, turnId, patch, codex) {
+      pendingWrites.push({ type: "update", id, turnId, patch: structuredClone(patch) });
+      const session = sessions.get(id);
+      if (session.pendingTurn?.turnId !== turnId) return;
+      sessions.set(id, {
+        ...session,
+        pendingTurn: { ...session.pendingTurn, ...structuredClone(patch) },
+        codex: codex ? { ...session.codex, ...structuredClone(codex) } : session.codex,
+      });
+    },
+    async completeCodexTurn(id, turnId, user, assistant, codex) {
+      pendingWrites.push({ type: "complete", id, turnId, codex: structuredClone(codex) });
+      appended.push({ id, user, assistant });
+      const session = sessions.get(id);
+      sessions.set(id, { ...session, pendingTurn: undefined, codex: { ...session.codex, ...codex } });
+    },
     async closeSession(id) {
       const session = sessions.get(id);
       sessions.set(id, { ...session, codex: { ...session.codex, lifecycle: "closed" } });
@@ -245,16 +316,240 @@ function createSessionPersistence() {
   };
 }
 
+test("CodexSessionManager journals the pending turn before running and clears it on completion", async () => {
+  const { CodexSessionManager } = loadBundle();
+  const persistence = createSessionPersistence();
+  const runner = async (_args, options) => {
+    options.onThreadId?.("native-thread-journal");
+    return { threadId: "native-thread-journal", markdown: "Journaled answer" };
+  };
+  const manager = new CodexSessionManager(persistence, runner);
+
+  await manager.startTurn({
+    sessionId: "plugin-session-1",
+    question: "Journal this",
+    userContent: "Journal this",
+    prompt: "Journal this",
+    command: "codex",
+    workingDirectory: "D:/vault/papers",
+    attachedPdfPaths: ["papers/A.pdf"],
+    selectionChars: 12,
+    timeoutMs: 1000,
+  });
+
+  assert.equal(persistence.pendingWrites[0].type, "begin");
+  assert.equal(persistence.pendingWrites[0].pendingTurn.question, "Journal this");
+  assert.equal(persistence.pendingWrites[0].pendingTurn.status, "running");
+  assert.equal(persistence.pendingWrites.at(-1).type, "complete");
+  assert.equal(persistence.sessions.get("plugin-session-1").pendingTurn, undefined);
+});
+
+test("CodexSessionManager does not leave a phantom running task when the initial journal save fails", async () => {
+  const { CodexSessionManager } = loadBundle();
+  const persistence = createSessionPersistence();
+  persistence.beginCodexTurn = async () => {
+    throw new Error("journal unavailable");
+  };
+  let runnerCalls = 0;
+  const manager = new CodexSessionManager(persistence, async () => {
+    runnerCalls += 1;
+    return { threadId: "must-not-run", markdown: "must-not-run" };
+  });
+
+  const result = await manager.startTurn({
+    sessionId: "plugin-session-1",
+    question: "Do not start",
+    userContent: "Do not start",
+    prompt: "Do not start",
+    command: "codex",
+    workingDirectory: "D:/vault/papers",
+    attachedPdfPaths: [],
+    selectionChars: 0,
+    timeoutMs: 1000,
+  });
+
+  assert.equal(runnerCalls, 0);
+  assert.equal(result.status, "failed");
+  assert.match(result.error, /journal unavailable/);
+  assert.equal(manager.stopTurn("plugin-session-1"), false);
+});
+
+test("CodexSessionManager throttles progress persistence instead of writing data.json for every event", async () => {
+  const { CodexSessionManager } = loadBundle();
+  const persistence = createSessionPersistence();
+  const manager = new CodexSessionManager(persistence, async (_args, options) => {
+    options.onThreadId?.("native-thread-progress");
+    for (let index = 0; index < 50; index += 1) {
+      options.onProgress?.({ type: "reasoning", message: `Progress ${index}`, elapsedMs: index });
+    }
+    return { threadId: "native-thread-progress", markdown: "Done" };
+  });
+
+  await manager.startTurn({
+    sessionId: "plugin-session-1",
+    question: "Many events",
+    userContent: "Many events",
+    prompt: "Many events",
+    command: "codex",
+    workingDirectory: "D:/vault/papers",
+    attachedPdfPaths: [],
+    selectionChars: 0,
+    timeoutMs: 1000,
+  });
+
+  const progressWrites = persistence.pendingWrites.filter(
+    (write) => write.type === "update" && typeof write.patch.progress === "string"
+  );
+  assert.ok(progressWrites.length <= 3, `expected throttled progress writes, received ${progressWrites.length}`);
+});
+
+test("CodexSessionManager keeps final Markdown visible when persistence fails and can retry", async () => {
+  const { CodexSessionManager } = loadBundle();
+  const persistence = createSessionPersistence();
+  let failSave = true;
+  const originalComplete = persistence.completeCodexTurn;
+  persistence.completeCodexTurn = async (...args) => {
+    if (failSave) throw new Error("disk unavailable");
+    return originalComplete(...args);
+  };
+  const manager = new CodexSessionManager(
+    persistence,
+    async (_args, options) => {
+      options.onThreadId?.("native-thread-retry");
+      return { threadId: "native-thread-retry", markdown: "# Valuable answer" };
+    }
+  );
+
+  const failed = await manager.startTurn({
+    sessionId: "plugin-session-1",
+    question: "Keep this answer",
+    userContent: "Keep this answer",
+    prompt: "Keep this answer",
+    command: "codex",
+    workingDirectory: "D:/vault/papers",
+    attachedPdfPaths: [],
+    selectionChars: 0,
+    timeoutMs: 1000,
+  });
+
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.finalMarkdown, "# Valuable answer");
+  assert.match(failed.error, /保存失败|disk unavailable/i);
+
+  failSave = false;
+  const retried = await manager.retryPersistResult("plugin-session-1");
+  assert.equal(retried, true);
+  assert.equal(manager.getSnapshot("plugin-session-1").status, "idle");
+  assert.equal(persistence.appended.at(-1).assistant, "# Valuable answer");
+});
+
+test("CodexSessionManager retains the final answer when saving the new thread id fails", async () => {
+  const { CodexSessionManager } = loadBundle();
+  const persistence = createSessionPersistence();
+  const originalUpdate = persistence.updateCodexTurn;
+  let failThreadWrite = true;
+  persistence.updateCodexTurn = async (...args) => {
+    if (failThreadWrite && args[2]?.threadId) throw new Error("thread write failed");
+    return originalUpdate(...args);
+  };
+  const manager = new CodexSessionManager(
+    persistence,
+    async (_args, options) => {
+      options.onThreadId?.("native-thread-write-failure");
+      return { threadId: "native-thread-write-failure", markdown: "# Keep this too" };
+    }
+  );
+
+  const failed = await manager.startTurn({
+    sessionId: "plugin-session-1",
+    question: "Preserve thread write result",
+    userContent: "Preserve thread write result",
+    prompt: "Preserve thread write result",
+    command: "codex",
+    workingDirectory: "D:/vault/papers",
+    attachedPdfPaths: [],
+    selectionChars: 0,
+    timeoutMs: 1000,
+  });
+
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.finalMarkdown, "# Keep this too");
+  failThreadWrite = false;
+  assert.equal(await manager.retryPersistResult("plugin-session-1"), true);
+  assert.equal(persistence.appended.at(-1).assistant, "# Keep this too");
+});
+
+test("CodexSessionManager exposes terminal task events to plugin-level subscribers", async () => {
+  const { CodexSessionManager } = loadBundle();
+  const persistence = createSessionPersistence();
+  const manager = new CodexSessionManager(
+    persistence,
+    async (_args, options) => {
+      options.onThreadId?.("native-thread-global");
+      return { threadId: "native-thread-global", markdown: "Done" };
+    }
+  );
+  const events = [];
+  const unsubscribe = manager.subscribeAll((event) => events.push(event));
+
+  await manager.startTurn({
+    sessionId: "plugin-session-1",
+    question: "Background task",
+    userContent: "Background task",
+    prompt: "Background task",
+    command: "codex",
+    workingDirectory: "D:/vault/papers",
+    attachedPdfPaths: [],
+    selectionChars: 0,
+    timeoutMs: 1000,
+  });
+  unsubscribe();
+
+  assert.equal(events.at(-1).snapshot.status, "idle");
+  assert.equal(events.at(-1).hasSessionSubscribers, false);
+});
+
+test("CodexSessionManager lists persisted interrupted work alongside live tasks", () => {
+  const { CodexSessionManager } = loadBundle();
+  const persistence = createSessionPersistence();
+  persistence.sessions.get("plugin-session-1").pendingTurn = {
+    turnId: "turn-persisted",
+    question: "Resume this analysis",
+    status: "interrupted",
+    startedAt: 123,
+    attachedPdfPaths: ["papers/A.pdf"],
+    selectionChars: 42,
+    progress: "Interrupted after restart",
+  };
+  persistence.listSessions = () =>
+    Array.from(persistence.sessions.values()).map((session) => structuredClone(session));
+  const manager = new CodexSessionManager(persistence, async () => {
+    throw new Error("not used");
+  });
+
+  const tasks = manager.listSnapshots();
+
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0].sessionId, "plugin-session-1");
+  assert.equal(tasks[0].status, "stopped");
+  assert.equal(tasks[0].question, "Resume this analysis");
+});
+
 test("CodexSessionManager keeps a turn running without UI subscribers and persists to the original session", async () => {
   const { CodexSessionManager } = loadBundle();
   assert.equal(typeof CodexSessionManager, "function");
   const persistence = createSessionPersistence();
   let finishTurn;
+  let markRunnerStarted;
+  const runnerStarted = new Promise((resolve) => {
+    markRunnerStarted = resolve;
+  });
   const runner = (_args, options) =>
     new Promise((resolve) => {
       options.onThreadId("native-thread-1");
       options.onProgress({ type: "reasoning", message: "Codex 正在推理", elapsedMs: 20 });
       finishTurn = () => resolve({ threadId: "native-thread-1", markdown: "Final answer" });
+      markRunnerStarted();
     });
   const manager = new CodexSessionManager(persistence, runner);
   const seen = [];
@@ -274,6 +569,7 @@ test("CodexSessionManager keeps a turn running without UI subscribers and persis
     verbosity: "high",
     timeoutMs: 1000,
   });
+  await runnerStarted;
   unsubscribe();
 
   assert.equal(manager.getSnapshot("plugin-session-1").status, "running");
@@ -320,6 +616,10 @@ test("CodexSessionManager resumes the persisted native thread on the next turn",
 test("CodexSessionManager stop aborts only the active turn and keeps the native thread active", async () => {
   const { CodexSessionManager } = loadBundle();
   const persistence = createSessionPersistence();
+  let markRunnerStarted;
+  const runnerStarted = new Promise((resolve) => {
+    markRunnerStarted = resolve;
+  });
   const runner = (_args, options) =>
     new Promise((_resolve, reject) => {
       options.onThreadId("native-thread-stop");
@@ -328,6 +628,7 @@ test("CodexSessionManager stop aborts only the active turn and keeps the native 
         error.name = "AbortError";
         reject(error);
       });
+      markRunnerStarted();
     });
   const manager = new CodexSessionManager(persistence, runner);
   const running = manager.startTurn({
@@ -342,6 +643,7 @@ test("CodexSessionManager stop aborts only the active turn and keeps the native 
     timeoutMs: 1000,
   });
 
+  await runnerStarted;
   manager.stopTurn("plugin-session-1");
   await running;
 
@@ -353,6 +655,10 @@ test("CodexSessionManager stop aborts only the active turn and keeps the native 
 test("CodexSessionManager close aborts the target turn and closes it without deleting history", async () => {
   const { CodexSessionManager } = loadBundle();
   const persistence = createSessionPersistence();
+  let markRunnerStarted;
+  const runnerStarted = new Promise((resolve) => {
+    markRunnerStarted = resolve;
+  });
   const runner = (_args, options) =>
     new Promise((_resolve, reject) => {
       options.onThreadId("native-thread-close");
@@ -361,6 +667,7 @@ test("CodexSessionManager close aborts the target turn and closes it without del
         error.name = "AbortError";
         reject(error);
       });
+      markRunnerStarted();
     });
   const manager = new CodexSessionManager(persistence, runner);
   const running = manager.startTurn({
@@ -375,6 +682,7 @@ test("CodexSessionManager close aborts the target turn and closes it without del
     timeoutMs: 1000,
   });
 
+  await runnerStarted;
   await manager.closeSession("plugin-session-1");
   await running;
 
