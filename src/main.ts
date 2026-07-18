@@ -2,6 +2,7 @@ import { Notice, Plugin, type App, type TFile } from "obsidian";
 
 import { ActionRegistry, createResearchActionRegistry } from "./actions";
 import { DEFAULT_SETTINGS } from "./default-settings";
+import { CodexSessionManager } from "./codex-session-manager";
 import {
   cleanSelectionText,
   ConversationStore,
@@ -51,6 +52,14 @@ export {
   normalizeConversationMessages,
   stableConversationHash,
 } from "./conversation";
+export {
+  buildCodexThreadExecArgs,
+  buildCodexTurnPrompt,
+  isCodexThreadUnavailableError,
+  resolveCodexPdfLocation,
+  runCodexThreadTurn,
+} from "./codex-cli";
+export { CodexSessionManager } from "./codex-session-manager";
 export { DEFAULT_SETTINGS, LEGACY_0_4_0_TRANSLATE_PROMPT } from "./default-settings";
 export { OpenAICompatibleTransport } from "./llm-transport";
 export { resolveContinueModelId, resolveTranslateModelId } from "./model-routing";
@@ -66,20 +75,30 @@ export {
 } from "./paper-context";
 export {
   buildCodexDeepAnalysisPrompt,
+  buildCodexDebugFullMarkdownPrompt,
+  buildCodexDebugFullPrompt,
   buildCodexExecArgs,
+  buildCodexMarkdownPrompt,
+  buildCodexPdfOnlyPrompt,
   codexAnalysisOutputSchema,
   createCodexAnalysisTempDir,
+  extractCodexMarkdownAnalysis,
   parseCodexAnalysisOutput,
+  parseCodexMarkdownOutput,
   renderCodexAnalysisMarkdown,
   removeCodexAnalysisTempDir,
+  resolveCodexExecArgs,
   runCodexExec,
   searchPdfFiles,
   writeCodexAnalysisPackage,
+  writeCodexDebugFullPackage,
+  writeCodexOutputSchema,
+  writeCodexPdfOnlyPackage,
 } from "./multi-paper";
 export { createPDFChatModalServices } from "./modal-services";
 export { PDFChatModal } from "./pdf-chat-modal";
 export { QuickTranslateMarker } from "./quick-translate-marker";
-export { migrateSettings, normalizeRagChunkSettings } from "./settings";
+export { migrateSettings, normalizeCodexInputMode, normalizeCodexOutputMode, normalizeRagChunkSettings } from "./settings";
 export { buildTranslationMessages, splitTranslationChunks, TranslationService } from "./translation";
 export type { LlmRequest, PaperContext, ResearchAction } from "./types";
 
@@ -132,6 +151,7 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
   actionRegistry?: ActionRegistry;
   modalServices?: PDFChatModalServices;
   quickTranslateMarker?: QuickTranslateMarker;
+  codexSessionManager?: CodexSessionManager;
 
   async onload(): Promise<void> {
     this._saveQueue = Promise.resolve();
@@ -140,6 +160,7 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
       () => this.settings,
       () => this.saveSettings()
     );
+    this.codexSessionManager = new CodexSessionManager(this.conversationStore);
     this.llmTransport = new OpenAICompatibleTransport(
       () => this.settings,
       (id) => this.getModelProfile(id)
@@ -164,6 +185,14 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
         startSession: (key, metadata) => this.conversationStore!.startSession(key, metadata),
         saveActiveSession: (key, messages, metadata) =>
           this.conversationStore!.saveActiveSession(key, messages, metadata),
+        getSession: (id) => this.conversationStore!.getSession(id),
+        saveSessionById: (id, messages, metadata) =>
+          this.conversationStore!.saveSessionById(id, messages, metadata),
+        appendSessionTurn: (id, userContent, assistantContent) =>
+          this.conversationStore!.appendSessionTurn(id, userContent, assistantContent),
+        updateSessionMetadata: (id, metadata) =>
+          this.conversationStore!.updateSessionMetadata(id, metadata),
+        closeSession: (id) => this.conversationStore!.closeSession(id),
         resumeSession: (id) => this.conversationStore!.resumeSession(id),
         listSessions: (query) => this.conversationStore!.listSessions(query),
       },
@@ -186,6 +215,7 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
       },
       actions: this.actionRegistry,
       translations: this.translationService,
+      codex: this.codexSessionManager,
     });
     this.addSettingTab(new PDFChatSettingTab(this.app, this));
 
@@ -221,6 +251,8 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
   }
 
   onunload(): void {
+    this.codexSessionManager?.dispose();
+    this.codexSessionManager = undefined;
     this.quickTranslateMarker?.destroy();
     this.quickTranslateMarker = undefined;
   }
@@ -232,13 +264,13 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
     const sel = win.getSelection ? win.getSelection() : null;
     const raw = sel ? sel.toString() : "";
     const text = cleanSelectionText(raw || "");
+    const pdfFile = getActivePdfFile(this.app);
 
-    if (!text) {
+    if (!text && !pdfFile) {
       new Notice("没有检测到选中的文字,请先划选一段内容再按快捷键");
       return;
     }
 
-    const pdfFile = getActivePdfFile(this.app);
     const paperContext = this.paperContextService!.createContext(
       pdfFile,
       text,

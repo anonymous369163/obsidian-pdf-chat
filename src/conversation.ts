@@ -105,7 +105,6 @@ export function normalizeConversationSessions(saved: unknown): Record<string, Co
         ? entry.conversationKey.trim()
         : "";
     const messages = normalizeConversationMessages(entry.messages);
-    if (!conversationKey || !messages.length) continue;
     const id = normalizeSessionId(entry.id || key, `${conversationKey}:${key}`);
     const createdAt =
       typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt) ? entry.createdAt : 0;
@@ -118,8 +117,11 @@ export function normalizeConversationSessions(saved: unknown): Record<string, Co
             model: codexCandidate.model.trim(),
             reasoningEffort: normalizeReasoningEffort(codexCandidate.reasoningEffort),
             profile: typeof codexCandidate.profile === "string" ? codexCandidate.profile.trim() : "",
+            threadId: typeof codexCandidate.threadId === "string" ? codexCandidate.threadId.trim() || undefined : undefined,
+            lifecycle: codexCandidate.lifecycle === "closed" ? ("closed" as const) : ("active" as const),
           }
         : undefined;
+    if (!conversationKey) continue;
     normalized[id] = {
       version: 1,
       id,
@@ -131,6 +133,7 @@ export function normalizeConversationSessions(saved: unknown): Record<string, Co
       mode: normalizeSessionMode(entry.mode),
       messages,
       referencedPdfPaths: normalizeStringArray(entry.referencedPdfPaths),
+      includeCurrentPdfInCodex: entry.includeCurrentPdfInCodex !== false,
       codex,
       createdAt,
       updatedAt,
@@ -161,6 +164,7 @@ export interface ConversationSessionMetadata {
   title?: string;
   mode?: ConversationSessionMode;
   referencedPdfPaths?: string[];
+  includeCurrentPdfInCodex?: boolean;
   codex?: ConversationSession["codex"];
 }
 
@@ -209,7 +213,8 @@ export class ConversationStore {
       mode: metadata.mode || "chat",
       messages,
       referencedPdfPaths: normalizeStringArray(metadata.referencedPdfPaths),
-      codex: metadata.codex ? { ...metadata.codex } : undefined,
+      includeCurrentPdfInCodex: metadata.includeCurrentPdfInCodex !== false,
+      codex: metadata.codex ? { ...metadata.codex, lifecycle: metadata.codex.lifecycle || "active" } : undefined,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -227,13 +232,31 @@ export class ConversationStore {
     if (metadata.referencedPdfPaths) {
       session.referencedPdfPaths = normalizeStringArray(metadata.referencedPdfPaths);
     }
-    if (metadata.codex) session.codex = { ...metadata.codex };
+    if (typeof metadata.includeCurrentPdfInCodex === "boolean") {
+      session.includeCurrentPdfInCodex = metadata.includeCurrentPdfInCodex;
+    }
+    if (metadata.codex) {
+      session.codex = {
+        ...(session.codex || {}),
+        ...metadata.codex,
+        lifecycle: metadata.codex.lifecycle || session.codex?.lifecycle || "active",
+      } as ConversationSession["codex"];
+    }
     return session;
+  }
+
+  private normalizedSessions(): Record<string, ConversationSession> {
+    return normalizeConversationSessions(this.ensureContainers().conversationSessions);
+  }
+
+  private sessionsForKey(key: string): ConversationSession[] {
+    return Object.values(this.normalizedSessions()).filter((session) => session.conversationKey === key);
   }
 
   get(key: string): ConversationMessage[] {
     const active = this.getActiveSession(key);
     if (active) return normalizeConversationMessages(active.messages);
+    if (this.sessionsForKey(key).length) return [];
     const entry = (this.getSettings().conversationHistories || {})[key];
     return entry ? normalizeConversationMessages(entry.messages) : [];
   }
@@ -242,14 +265,19 @@ export class ConversationStore {
     const settings = this.ensureContainers();
     const activeId = settings.activeConversationSessionIds?.[key];
     const sessions = normalizeConversationSessions(settings.conversationSessions);
-    if (activeId && sessions[activeId]) return cloneSession(sessions[activeId]);
+    if (activeId && sessions[activeId]) {
+      const active = sessions[activeId];
+      if (active.codex?.lifecycle !== "closed") return cloneSession(active);
+      delete settings.activeConversationSessionIds![key];
+    }
     const newest = Object.values(sessions)
-      .filter((session) => session.conversationKey === key)
+      .filter((session) => session.conversationKey === key && session.codex?.lifecycle !== "closed")
       .sort((left, right) => right.updatedAt - left.updatedAt)[0];
     if (newest) {
       settings.activeConversationSessionIds![key] = newest.id;
       return cloneSession(newest);
     }
+    if (Object.values(sessions).some((session) => session.conversationKey === key)) return null;
     return this.createSessionFromHistory(key);
   }
 
@@ -277,7 +305,8 @@ export class ConversationStore {
       mode: metadata.mode || "chat",
       messages: [],
       referencedPdfPaths: normalizeStringArray(metadata.referencedPdfPaths),
-      codex: metadata.codex ? { ...metadata.codex } : undefined,
+      includeCurrentPdfInCodex: metadata.includeCurrentPdfInCodex !== false,
+      codex: metadata.codex ? { ...metadata.codex, lifecycle: metadata.codex.lifecycle || "active" } : undefined,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -296,6 +325,15 @@ export class ConversationStore {
     const timestamp = this.now();
     if (!normalizedMessages.length) {
       const activeId = settings.activeConversationSessionIds?.[key];
+      const active = activeId ? this.getSession(activeId) : null;
+      const mergedCodex = metadata.codex || active?.codex;
+      if (active && mergedCodex?.threadId) {
+        const session = this.applySessionMetadata(active, metadata);
+        session.updatedAt = timestamp;
+        settings.conversationSessions![session.id] = cloneSession(session);
+        await this.persistSettings();
+        return;
+      }
       if (activeId) delete settings.conversationSessions![activeId];
       delete settings.activeConversationSessionIds![key];
       delete settings.conversationHistories![key];
@@ -315,11 +353,69 @@ export class ConversationStore {
     await this.persistSettings();
   }
 
+  getSession(id: string): ConversationSession | null {
+    const session = this.normalizedSessions()[id];
+    return session ? cloneSession(session) : null;
+  }
+
+  async saveSessionById(
+    id: string,
+    messages: unknown,
+    metadata: ConversationSessionMetadata = {}
+  ): Promise<void> {
+    const settings = this.ensureContainers();
+    const existing = this.getSession(id);
+    if (!existing) throw new Error(`Conversation session not found: ${id}`);
+    const session = this.applySessionMetadata(existing, metadata);
+    session.messages = normalizeConversationMessages(messages);
+    session.updatedAt = this.now();
+    settings.conversationSessions![id] = cloneSession(session);
+    if (settings.activeConversationSessionIds?.[session.conversationKey] === id && session.messages.length) {
+      settings.conversationHistories![session.conversationKey] = {
+        version: 1,
+        updatedAt: session.updatedAt,
+        messages: normalizeConversationMessages(session.messages),
+      };
+    }
+    await this.persistSettings();
+  }
+
+  async appendSessionTurn(id: string, userContent: string, assistantContent: string): Promise<void> {
+    const session = this.getSession(id);
+    if (!session) throw new Error(`Conversation session not found: ${id}`);
+    const messages = [
+      ...session.messages,
+      { role: "user" as const, content: userContent, status: "complete" as const },
+      { role: "assistant" as const, content: assistantContent, status: "complete" as const },
+    ];
+    await this.saveSessionById(id, messages);
+  }
+
+  async updateSessionMetadata(id: string, metadata: ConversationSessionMetadata): Promise<void> {
+    const session = this.getSession(id);
+    if (!session) throw new Error(`Conversation session not found: ${id}`);
+    await this.saveSessionById(id, session.messages, metadata);
+  }
+
+  async closeSession(id: string): Promise<void> {
+    const settings = this.ensureContainers();
+    const session = this.getSession(id);
+    if (!session) return;
+    if (session.codex) session.codex = { ...session.codex, lifecycle: "closed" };
+    session.updatedAt = this.now();
+    settings.conversationSessions![id] = cloneSession(session);
+    if (settings.activeConversationSessionIds?.[session.conversationKey] === id) {
+      delete settings.activeConversationSessionIds[session.conversationKey];
+    }
+    await this.persistSettings();
+  }
+
   resumeSession(id: string): ConversationSession | null {
     const settings = this.ensureContainers();
     const sessions = normalizeConversationSessions(settings.conversationSessions);
     const session = sessions[id];
     if (!session) return null;
+    if (session.codex) session.codex = { ...session.codex, lifecycle: "active" };
     settings.activeConversationSessionIds![session.conversationKey] = session.id;
     settings.conversationSessions![session.id] = cloneSession(session);
     return cloneSession(session);

@@ -8,17 +8,26 @@ import {
 } from "obsidian";
 import { DEFAULT_SETTINGS } from "./default-settings";
 import { listResearchActionsForSlot } from "./actions";
+import { buildCodexTurnPrompt, resolveCodexPdfLocation } from "./codex-cli";
+import type { CodexTurnSnapshot } from "./codex-session-manager";
 import { createPDFChatModalServices } from "./modal-services";
 import {
-  buildCodexDeepAnalysisPrompt,
+  buildCodexMarkdownPrompt,
+  buildCodexPdfOnlyPrompt,
+  buildCodexDebugFullMarkdownPrompt,
   buildCodexExecArgs,
   createCodexAnalysisTempDir,
   parseCodexAnalysisOutput,
+  parseCodexMarkdownOutput,
   renderCodexAnalysisMarkdown,
   removeCodexAnalysisTempDir,
   runCodexExec,
   searchPdfFiles,
   writeCodexAnalysisPackage,
+  writeCodexDebugFullPackage,
+  writeCodexOutputSchema,
+  buildCodexDebugFullPrompt,
+  type CodexRunProgress,
   type PreparedCodexPaper,
 } from "./multi-paper";
 import {
@@ -35,6 +44,8 @@ import {
 import type {
   CodexReasoningEffort,
   CodexVerbosity,
+  CodexInputMode,
+  CodexOutputMode,
   ConversationMessage,
   ConversationSession,
   DocChunksEntry,
@@ -61,6 +72,7 @@ interface BubbleOptions {
 
 type ModalConversationKind = "chat" | "translate";
 type ModalRuntimeMode = "api" | "codex";
+type CodexCloseIntent = "suspend" | "terminate";
 
 interface ComposerMentionRange {
   start: number;
@@ -86,6 +98,27 @@ function isAbortError(error: unknown): boolean {
 function isCodexUnavailableError(error: unknown): boolean {
   const message = errorMessage(error);
   return /failed to start|not available|ENOENT|not recognized|cannot find/i.test(message);
+}
+
+function isCodexTimeoutError(error: unknown): boolean {
+  return /timed out after \d+ms/i.test(errorMessage(error));
+}
+
+function formatCodexElapsed(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const two = (value: number) => String(value).padStart(2, "0");
+  return hours ? `${hours}:${two(minutes)}:${two(seconds)}` : `${two(minutes)}:${two(seconds)}`;
+}
+
+function codexProgressBubbleText(elapsedMs: number, detail: string): string {
+  return [
+    `Codex 已运行 ${formatCodexElapsed(elapsedMs)}`,
+    detail || "等待 Codex CLI 事件…",
+    "xhigh 深度分析可能需要 10–30 分钟；如果不想继续，可以点击“停止”。",
+  ].join("\n");
 }
 
 async function renderMarkdownInto(
@@ -193,12 +226,23 @@ export class PDFChatModal extends Modal {
   runtimeMode: ModalRuntimeMode = "api";
   currentSessionId?: string;
   isSending = false;
+  isCodexRunning = false;
+  codexCloseIntent: CodexCloseIntent = "suspend";
+  includeCurrentPdfInCodex = true;
+  includeSelectionContextInCodex = true;
   abortController: AbortController | null = null;
+  private codexUnsubscribe?: () => void;
+  private codexTaskBubble?: BubbleElement;
+  private codexTaskQuestion?: string;
+  private codexProgressTimer?: ReturnType<typeof setInterval>;
+  private lastCodexSnapshot?: CodexTurnSnapshot;
   private promptHistoryCursor: number | null = null;
 
   zoomOutBtn!: HTMLButtonElement;
   zoomLabel!: HTMLButtonElement;
   zoomInBtn!: HTMLButtonElement;
+  moreButton?: HTMLButtonElement;
+  moreMenu?: HTMLElement;
   modeBadgeEl?: HTMLElement;
   modelSelect!: HTMLSelectElement;
   modeSelect!: HTMLSelectElement;
@@ -214,7 +258,9 @@ export class PDFChatModal extends Modal {
   emptyStateEl?: HTMLDivElement;
   suggestionsEl?: HTMLElement;
   composerStatusEl?: HTMLElement;
+  referencedPdfsEl?: HTMLElement;
   composerCardEl?: HTMLElement;
+  codexContextToggleBtn?: HTMLButtonElement;
   composerMentionSuggestionsEl?: HTMLElement;
   composerMentionRange?: ComposerMentionRange;
   commandMenuEl?: HTMLElement;
@@ -244,6 +290,9 @@ export class PDFChatModal extends Modal {
         : contextText;
     this.paperContext = paperContext;
     this.contextText = paperContext.selectedText;
+    this.includeSelectionContextInCodex = this.contextText.trim()
+      ? true
+      : this.plugin.settings.codexDeepAnalysis.includeSelectionContext === true;
     this.pdfFile = paperContext.file || null;
     this.startFresh = !!startFresh;
     this.autoTranslateOnOpen = !!autoTranslateOnOpen;
@@ -297,6 +346,7 @@ export class PDFChatModal extends Modal {
         .map((path) => this.findPdfFileByPath(path))
         .filter((file): file is TFile => !!file);
     }
+    this.includeCurrentPdfInCodex = activeSession?.includeCurrentPdfInCodex !== false;
     const existingTranscript = activeSession?.messages || this.services.conversations.get(this.conversationKey);
     this.hadExistingHistory = existingTranscript.length > 0;
     this.transcript = this.startFresh ? [] : existingTranscript;
@@ -340,6 +390,8 @@ export class PDFChatModal extends Modal {
     this.zoomOutBtn = header.zoomOutButton;
     this.zoomLabel = header.zoomResetButton;
     this.zoomInBtn = header.zoomInButton;
+    this.moreButton = header.moreButton;
+    this.moreMenu = header.moreMenu;
     this.setupDragging(header.root);
     header.clearButton.addEventListener("click", () => void this.resetConversation());
     this.modelSelect.addEventListener("change", () => this.applyModel(this.modelSelect.value));
@@ -369,9 +421,12 @@ export class PDFChatModal extends Modal {
     const composer = buildComposer(contentEl);
     this.composerCardEl = composer.card;
     this.composerStatusEl = composer.status;
+    this.referencedPdfsEl = composer.references;
+    this.codexContextToggleBtn = composer.contextToggle;
     this.inputEl = composer.input;
     this.sendBtn = composer.sendButton;
     this.updateComposerContextStatus();
+    this.codexContextToggleBtn.addEventListener("click", () => this.toggleCodexSelectionContext());
     const submit = () => this.handleSubmit();
     this.sendBtn.addEventListener("click", () => {
       if (this.isSending) {
@@ -392,18 +447,58 @@ export class PDFChatModal extends Modal {
       this.updateComposerMentionSuggestions();
     });
     this.inputEl.addEventListener("keydown", (evt) => {
-      if (evt.key === "Escape") this.hideComposerMentionSuggestions();
+      if (evt.key === "Escape" && this.composerMentionSuggestionsEl) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this.hideComposerMentionSuggestions();
+      }
     });
+    this.setupCloseIntentHandling();
     if (restoringHistory) {
-      this.restoreConversationHistory().catch((err) => {
-        this.setHistoryLiveMode("polite");
-        new Notice("恢复上次对话显示失败: " + errorMessage(err));
-      });
+      void this.restoreConversationHistory()
+        .catch((err) => {
+          this.setHistoryLiveMode("polite");
+          new Notice("恢复上次对话显示失败: " + errorMessage(err));
+        })
+        .finally(() => {
+          if (this.currentSessionId) this.attachCodexRuntime(this.currentSessionId);
+        });
     } else if (this.startFresh && this.hadExistingHistory) {
       new Notice("已开始新对话(发出第一条消息后会替换掉上次保存的记录)");
+    } else if (this.currentSessionId) {
+      this.attachCodexRuntime(this.currentSessionId);
     }
     if (this.autoTranslateOnOpen) this.handleTranslate();
     else this.inputEl.focus();
+  }
+
+  private setupCloseIntentHandling(): void {
+    const closeButton = (this.modalEl.querySelector?.(".modal-close-button") ||
+      this.containerEl?.querySelector?.(".modal-close-button")) as HTMLElement | null;
+    closeButton?.addEventListener(
+      "click",
+      () => {
+        this.codexCloseIntent = "terminate";
+      },
+      { capture: true }
+    );
+    this.scope?.register([], "Escape", () => {
+      if (this.composerMentionSuggestionsEl) {
+        this.hideComposerMentionSuggestions();
+        return false;
+      }
+      if (this.commandMenuEl) {
+        this.hideCommandMenu();
+        return false;
+      }
+      if (this.moreMenu && !this.moreMenu.hasClass("is-hidden")) {
+        this.moreButton?.click();
+        return false;
+      }
+      this.codexCloseIntent = "suspend";
+      this.close();
+      return false;
+    });
   }
 
   private getDocumentName(): string {
@@ -432,10 +527,96 @@ export class PDFChatModal extends Modal {
     );
   }
 
+  private getCodexInputMode(): CodexInputMode {
+    const value = this.plugin.settings.codexDeepAnalysis.inputMode;
+    return value === "debug-full" ? "debug-full" : "pdf-only";
+  }
+
+  private codexInputModeLabel(): string {
+    const mode = this.getCodexInputMode();
+    if (mode === "debug-full") return "Debug full";
+    return "PDF-only";
+  }
+
+  private getCodexOutputMode(): CodexOutputMode {
+    const value = this.plugin.settings.codexDeepAnalysis.outputMode;
+    return value === "json-schema" ? "json-schema" : "markdown";
+  }
+
+  private codexOutputModeLabel(): string {
+    return this.getCodexOutputMode() === "json-schema" ? "JSON schema" : "Markdown";
+  }
+
   private codexMetaText(fallback = false): string {
     if (fallback) return "Codex CLI 不可用或失败，已改用当前 API 模型";
     const profile = this.plugin.settings.codexDeepAnalysis.profile || "default profile";
-    return `requested model: ${this.getCodexModel()} · effort: ${this.getCodexReasoningEffort()} · profile: ${profile}`;
+    const context = this.shouldAttachSelectionContext() ? "selection context on" : "selection context off";
+    return `requested model: ${this.getCodexModel()} · effort: ${this.getCodexReasoningEffort()} · input: ${this.codexInputModeLabel()} · ${context} · output: ${this.codexOutputModeLabel()} · profile: ${profile}`;
+  }
+
+  private hasSelectionContext(): boolean {
+    return !!(this.contextText || "").trim();
+  }
+
+  private shouldAttachSelectionContext(): boolean {
+    return this.includeSelectionContextInCodex && this.hasSelectionContext();
+  }
+
+  private setCodexSelectionContextEnabled(value: boolean): void {
+    this.includeSelectionContextInCodex = value;
+    this.plugin.settings.codexDeepAnalysis.includeSelectionContext = value;
+    this.saveSettingsInBackground();
+    this.updateComposerContextStatus();
+  }
+
+  private toggleCodexSelectionContext(): void {
+    if (!this.hasSelectionContext()) {
+      new Notice("当前没有可附带的选区上下文。");
+      this.updateComposerContextStatus();
+      return;
+    }
+    this.setCodexSelectionContextEnabled(!this.includeSelectionContextInCodex);
+  }
+
+  private applyContextCommand(args: string): void {
+    const value = args.trim().toLowerCase();
+    if (!this.hasSelectionContext()) {
+      new Notice("当前没有可附带的选区上下文。");
+      this.updateComposerContextStatus();
+      return;
+    }
+    if (!value) {
+      this.toggleCodexSelectionContext();
+      return;
+    }
+    if (["on", "true", "yes", "1", "with"].includes(value)) {
+      this.setCodexSelectionContextEnabled(true);
+      return;
+    }
+    if (["off", "false", "no", "0", "without"].includes(value)) {
+      this.setCodexSelectionContextEnabled(false);
+      return;
+    }
+    new Notice("用法：/context、/context on 或 /context off");
+  }
+
+  private updateCodexContextToggle(): void {
+    if (!this.codexContextToggleBtn) return;
+    const hasContext = this.hasSelectionContext();
+    const enabled = this.includeSelectionContextInCodex;
+    this.codexContextToggleBtn.disabled = !hasContext;
+    this.codexContextToggleBtn.toggleClass("is-enabled", hasContext && enabled);
+    this.codexContextToggleBtn.toggleClass("is-disabled", !hasContext || !enabled);
+    const text = !hasContext ? "无选区" : enabled ? "附选区" : "不附选区";
+    this.codexContextToggleBtn.setText(text);
+    labelControl(
+      this.codexContextToggleBtn,
+      !hasContext
+        ? "当前没有可附带的选区上下文"
+        : enabled
+          ? "Codex 会附带当前选区上下文，点击关闭"
+          : "Codex 不附带当前选区上下文，点击开启"
+    );
   }
 
   private updateRuntimeModeUi(): void {
@@ -443,9 +624,18 @@ export class PDFChatModal extends Modal {
     this.contentEl.toggleClass("is-codex-mode", codexMode);
     this.modalEl.toggleClass("is-codex-mode", codexMode);
     if (this.modeBadgeEl) {
+      const snapshot = this.lastCodexSnapshot;
+      const persistedThread = this.currentSessionId
+        ? this.services.conversations.getSession?.(this.currentSessionId)?.codex?.threadId
+        : undefined;
+      const threadId = snapshot?.threadId || persistedThread;
+      const running =
+        snapshot?.status === "running" && snapshot.startedAt
+          ? ` · Running ${formatCodexElapsed(Date.now() - snapshot.startedAt)}`
+          : "";
       this.modeBadgeEl.setText(
         codexMode
-          ? `CODEX MODE · ${this.getCodexModel()} · ${this.getCodexReasoningEffort()}`
+          ? `CODEX MODE · ${this.getCodexModel()} · ${this.getCodexReasoningEffort()}${threadId ? ` · Thread ${threadId.slice(0, 8)}…` : " · New thread"}${running}`
           : "API MODE"
       );
     }
@@ -458,11 +648,13 @@ export class PDFChatModal extends Modal {
     this.plugin.settings.codexDeepAnalysis.enabled = true;
     this.saveSettingsInBackground();
     this.updateRuntimeModeUi();
+    this.saveSessionMetadataInBackground();
   }
 
   private exitCodexMode(): void {
     this.runtimeMode = "api";
     this.updateRuntimeModeUi();
+    this.saveSessionMetadataInBackground();
   }
 
   private clearComposerInput(): void {
@@ -485,6 +677,28 @@ export class PDFChatModal extends Modal {
 
   private saveSettingsInBackground(): void {
     Promise.resolve(this.plugin.saveSettings()).catch(() => undefined);
+  }
+
+  private saveSessionMetadataInBackground(): void {
+    if (this.transcript.length && this.services.conversations.saveActiveSession) {
+      Promise.resolve(
+        this.services.conversations.saveActiveSession(
+          this.conversationKey,
+          this.transcript,
+          this.sessionMetadata()
+        )
+      ).catch(() => undefined);
+      return;
+    }
+    if (this.services.conversations.ensureSession) {
+      try {
+        const session = this.services.conversations.ensureSession(this.conversationKey, this.sessionMetadata());
+        this.currentSessionId = session?.id || this.currentSessionId;
+        this.saveSettingsInBackground();
+      } catch (error) {
+        void error;
+      }
+    }
   }
 
   private handlePromptHistoryKey(event: KeyboardEvent): boolean {
@@ -566,6 +780,7 @@ export class PDFChatModal extends Modal {
     this.plugin.settings.codexDeepAnalysis.reasoningEffort = normalizedEffort as CodexReasoningEffort;
     this.saveSettingsInBackground();
     this.updateRuntimeModeUi();
+    this.saveSessionMetadataInBackground();
     new Notice(`Codex 模型已切换到 ${normalizedModel} · ${normalizedEffort}`);
     return true;
   }
@@ -623,38 +838,58 @@ export class PDFChatModal extends Modal {
     title: string;
     mode: "chat" | "codex";
     referencedPdfPaths: string[];
+    includeCurrentPdfInCodex: boolean;
     codex?: ConversationSession["codex"];
   } {
     const fallbackTitle = title || this.transcript.find((message) => message.role === "user")?.content || this.getDocumentName();
+    const existingCodex = this.currentSessionId
+      ? this.services.conversations.getSession?.(this.currentSessionId)?.codex
+      : undefined;
     return {
       title: fallbackTitle.slice(0, 80),
       mode: this.runtimeMode === "codex" ? "codex" : "chat",
       referencedPdfPaths: this.referencedPdfFiles.map((file) => file.path).filter(Boolean),
+      includeCurrentPdfInCodex: this.includeCurrentPdfInCodex,
       codex:
         this.runtimeMode === "codex"
           ? {
               model: this.getCodexModel(),
               reasoningEffort: this.getCodexReasoningEffort(),
               profile: this.plugin.settings.codexDeepAnalysis.profile || "",
+              threadId: existingCodex?.threadId,
+              lifecycle: existingCodex?.lifecycle || "active",
             }
           : undefined,
     };
   }
 
   private async startNewSession(): Promise<void> {
+    this.codexUnsubscribe?.();
+    this.codexUnsubscribe = undefined;
+    const metadata = this.sessionMetadata(this.getDocumentName());
+    if (metadata.codex) {
+      metadata.codex = {
+        model: metadata.codex.model,
+        reasoningEffort: metadata.codex.reasoningEffort,
+        profile: metadata.codex.profile,
+        lifecycle: "active",
+      };
+    }
     const session = this.services.conversations.startSession?.(
       this.conversationKey,
-      this.sessionMetadata(this.getDocumentName())
+      metadata
     );
     this.currentSessionId = session?.id;
     this.transcript = [];
     this.messages = [this.buildSystemMessage()];
     this.activeComposerKind = "chat";
     this.fullTextAttached = false;
+    this.includeCurrentPdfInCodex = true;
     this.historyEl.empty();
     this.hideFollowupSuggestions();
     this.emptyStateEl = undefined;
     this.showEmptyState();
+    if (this.currentSessionId) this.attachCodexRuntime(this.currentSessionId);
     await this.plugin.saveSettings();
     new Notice("已新建讨论，旧讨论可用 /resume 找回。");
   }
@@ -666,6 +901,26 @@ export class PDFChatModal extends Modal {
       return;
     }
     this.currentSessionId = session.id;
+    this.services.codex?.reactivateSession(session.id);
+    if (session.conversationKey !== this.conversationKey && session.conversationKey.startsWith("pdf:")) {
+      const targetPath = session.conversationKey.slice("pdf:".length);
+      const targetFile = this.findPdfFileByPath(targetPath);
+      if (!targetFile) {
+        new Notice("这段会话对应的 PDF 已移动或不存在；聊天记录仍保留。");
+        return;
+      }
+      await this.app.workspace.getLeaf(false).openFile(targetFile);
+      this.codexCloseIntent = "suspend";
+      this.close();
+      const paperContext: PaperContext = {
+        app: this.app,
+        file: targetFile,
+        selectedText: "",
+        conversationKey: session.conversationKey,
+      };
+      new PDFChatModal(this.app, this.plugin, paperContext, null, false, this.services).open();
+      return;
+    }
     this.runtimeMode = session.mode === "codex" ? "codex" : "api";
     if (session.codex) {
       this.plugin.settings.codexDeepAnalysis.model = session.codex.model;
@@ -675,6 +930,7 @@ export class PDFChatModal extends Modal {
     this.referencedPdfFiles = (session.referencedPdfPaths || [])
       .map((path) => this.findPdfFileByPath(path))
       .filter((file): file is TFile => !!file);
+    this.includeCurrentPdfInCodex = session.includeCurrentPdfInCodex !== false;
     this.transcript = session.messages || [];
     this.messages = [
       this.buildSystemMessage(),
@@ -683,6 +939,7 @@ export class PDFChatModal extends Modal {
     this.historyEl.empty();
     this.emptyStateEl = undefined;
     this.updateRuntimeModeUi();
+    this.attachCodexRuntime(session.id);
     await this.plugin.saveSettings();
     await this.restoreConversationHistory();
   }
@@ -708,12 +965,22 @@ export class PDFChatModal extends Modal {
     const refs = this.referencedPdfFiles.length
       ? this.referencedPdfFiles.map((file) => file.name || file.path).join("、")
       : "无";
+    const codexSnapshot = this.currentSessionId
+      ? this.services.codex?.getSnapshot(this.currentSessionId)
+      : undefined;
+    const session = this.currentSessionId
+      ? this.services.conversations.getSession?.(this.currentSessionId)
+      : undefined;
     const lines = [
       `当前模式：${this.runtimeMode === "codex" ? "Codex CLI" : "PDF Chat API"}`,
       `API 模型：${this.plugin.settings.models.find((model) => model.id === this.currentModelId)?.name || this.currentModelId}`,
       `Codex：${this.getCodexModel()} · ${this.getCodexReasoningEffort()} · ${this.plugin.settings.codexDeepAnalysis.profile || "default profile"}`,
       `引用 PDF：${refs}`,
+      `选区上下文：${this.shouldAttachSelectionContext() ? `下一轮直接附带 ${this.contextText.length} 字` : "不附带"}`,
       `Session：${this.currentSessionId || "未创建"}`,
+      `Codex Thread：${codexSnapshot?.threadId || session?.codex?.threadId || "尚未创建"}`,
+      `Codex 状态：${codexSnapshot?.status || "idle"}`,
+      `工作目录：${codexSnapshot?.workingDirectory || (this.pdfFile ? "当前 PDF 所在文件夹" : "vault 根目录")}`,
     ];
     this.addBubble("assistant", lines.join("\n"), {
       assistantAuthor: this.runtimeMode === "codex" ? "Codex Mode" : "PDF Chat",
@@ -730,10 +997,16 @@ export class PDFChatModal extends Modal {
         "- /codex：进入 Codex 模式",
         "- /codex <问题>：进入 Codex 模式并立即让 Codex 读取当前/引用 PDF",
         "- /exit：回到普通 API 聊天",
+        "- /stop：停止当前 Codex turn，但保留 thread",
         "- /model：选择当前模式下的模型",
         "- /model <model> <effort>：切换 Codex 模型和推理强度",
         "- /new：新建讨论，不删除旧讨论",
         "- /resume：恢复历史讨论",
+        "- /refs：查看并移除当前引用的 PDF",
+        "- /unref <序号或名称>：移除某篇引用 PDF",
+        "- /clearrefs：清空当前讨论引用的 PDF",
+        "- /context：切换是否把当前选区作为 Codex 上下文",
+        "- /context on|off：开启或关闭 Codex 选区上下文",
         "- /status：查看当前模式、模型、引用 PDF 和 session",
       ].join("\n"),
       {
@@ -760,6 +1033,18 @@ export class PDFChatModal extends Modal {
         this.clearComposerInput();
         new Notice("已退出 Codex 模式，回到 PDF Chat API。");
         return true;
+      case "stop":
+        this.clearComposerInput();
+        if (
+          this.runtimeMode === "codex" &&
+          this.currentSessionId &&
+          this.services.codex?.stopTurn(this.currentSessionId)
+        ) {
+          new Notice("正在停止当前 Codex turn；thread 会保留，可继续追问。");
+        } else {
+          new Notice("当前没有正在运行的 Codex turn。");
+        }
+        return true;
       case "status":
         this.clearComposerInput();
         this.showStatusMessage();
@@ -779,6 +1064,23 @@ export class PDFChatModal extends Modal {
       case "resume":
         this.clearComposerInput();
         this.showResumeMenu();
+        return true;
+      case "refs":
+        this.clearComposerInput();
+        this.showReferencesMenu();
+        return true;
+      case "unref":
+        this.clearComposerInput();
+        this.applyUnrefCommand(args);
+        return true;
+      case "clearrefs":
+        this.clearComposerInput();
+        if (this.clearReferencedPdfs()) new Notice("已清空当前讨论引用的 PDF。");
+        else new Notice("当前没有引用 PDF。");
+        return true;
+      case "context":
+        this.clearComposerInput();
+        this.applyContextCommand(args);
         return true;
       default:
         if (this.runtimeMode === "codex") {
@@ -909,6 +1211,128 @@ export class PDFChatModal extends Modal {
     }
     this.referencedPdfFiles.push(file);
     this.updateComposerContextStatus();
+    this.saveSessionMetadataInBackground();
+  }
+
+  private removeReferencedPdfByPath(path: string): boolean {
+    const before = this.referencedPdfFiles.length;
+    this.referencedPdfFiles = this.referencedPdfFiles.filter((file) => file.path !== path);
+    if (this.referencedPdfFiles.length === before) return false;
+    this.updateComposerContextStatus();
+    this.saveSessionMetadataInBackground();
+    return true;
+  }
+
+  private clearReferencedPdfs(): boolean {
+    if (!this.referencedPdfFiles.length) return false;
+    this.referencedPdfFiles = [];
+    this.updateComposerContextStatus();
+    this.saveSessionMetadataInBackground();
+    return true;
+  }
+
+  private setCurrentPdfCodexAttachment(enabled: boolean): void {
+    if (!this.pdfFile) return;
+    this.includeCurrentPdfInCodex = enabled;
+    this.updateComposerContextStatus();
+    this.saveSessionMetadataInBackground();
+  }
+
+  private findReferencedPdf(query: string): TFile | null {
+    const trimmed = query.trim();
+    if (!trimmed) return null;
+    const index = Number.parseInt(trimmed, 10);
+    if (Number.isFinite(index) && String(index) === trimmed && index >= 1) {
+      return this.referencedPdfFiles[index - 1] || null;
+    }
+    const lower = trimmed.toLowerCase();
+    return (
+      this.referencedPdfFiles.find((file) =>
+        [file.name, file.path].some((value) => String(value || "").toLowerCase().includes(lower))
+      ) || null
+    );
+  }
+
+  private renderReferencedPdfChips(): void {
+    if (!this.referencedPdfsEl) return;
+    this.referencedPdfsEl.empty();
+    const showCurrentPdfChip = this.runtimeMode === "codex" && !!this.pdfFile;
+    this.referencedPdfsEl.toggleClass("is-empty", !showCurrentPdfChip && !this.referencedPdfFiles.length);
+    if (showCurrentPdfChip && this.pdfFile) {
+      const currentChip = this.referencedPdfsEl.createDiv({
+        cls: `pdf-chat-reference-chip pdf-chat-current-pdf-chip${this.includeCurrentPdfInCodex ? "" : " is-detached"}`,
+        attr: { role: "listitem" },
+      });
+      currentChip.createEl("span", {
+        text: `${this.includeCurrentPdfInCodex ? "当前 PDF" : "未附当前 PDF"} · ${this.pdfFile.name || this.pdfFile.path}`,
+        cls: "pdf-chat-reference-chip-label pdf-chat-current-pdf-label",
+      });
+      const currentButton = currentChip.createEl("button", {
+        text: this.includeCurrentPdfInCodex ? "×" : "附上",
+        cls: this.includeCurrentPdfInCodex
+          ? "pdf-chat-reference-chip-remove pdf-chat-current-pdf-remove"
+          : "pdf-chat-reference-chip-restore pdf-chat-current-pdf-restore",
+        attr: { type: "button" },
+      });
+      labelControl(
+        currentButton,
+        this.includeCurrentPdfInCodex ? "本轮 Codex 不再附带当前 PDF" : "重新把当前 PDF 附给 Codex"
+      );
+      currentButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.setCurrentPdfCodexAttachment(!this.includeCurrentPdfInCodex);
+      });
+    }
+    for (const [index, file] of this.referencedPdfFiles.entries()) {
+      const chip = this.referencedPdfsEl.createDiv({
+        cls: "pdf-chat-reference-chip",
+        attr: { role: "listitem" },
+      });
+      chip.createEl("span", {
+        text: file.name || file.path || `PDF ${index + 1}`,
+        cls: "pdf-chat-reference-chip-label",
+      });
+      const removeButton = chip.createEl("button", {
+        text: "×",
+        cls: "pdf-chat-reference-chip-remove",
+        attr: { type: "button" },
+      });
+      labelControl(removeButton, `移除引用 PDF：${file.name || file.path}`);
+      removeButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.removeReferencedPdfByPath(file.path);
+      });
+    }
+  }
+
+  private showReferencesMenu(): void {
+    this.showCommandMenu(
+      "管理引用 PDF",
+      this.referencedPdfFiles.map((file, index) => ({
+        label: `${index + 1}. ${file.name || file.path}`,
+        detail: "点击移除这个引用",
+        run: () => {
+          this.removeReferencedPdfByPath(file.path);
+        },
+      }))
+    );
+  }
+
+  private applyUnrefCommand(args: string): void {
+    const trimmed = args.trim();
+    if (!trimmed) {
+      this.showReferencesMenu();
+      return;
+    }
+    const match = this.findReferencedPdf(trimmed);
+    if (!match) {
+      new Notice("没有找到匹配的引用 PDF。输入 /refs 可查看当前引用。");
+      return;
+    }
+    this.removeReferencedPdfByPath(match.path);
+    new Notice(`已移除引用：${match.name || match.path}`);
   }
 
   private getComposerMentionRange(): ComposerMentionRange | null {
@@ -1050,22 +1474,30 @@ export class PDFChatModal extends Modal {
 
   updateComposerContextStatus(): void {
     if (!this.composerStatusEl) return;
+    this.renderReferencedPdfChips();
+    this.updateCodexContextToggle();
     const modePrefix = this.runtimeMode === "codex" ? "CODEX MODE · " : "";
     const referenceSuffix = this.referencedPdfFiles.length
       ? ` · 已引用 ${this.referencedPdfFiles.length} 篇论文`
       : "";
+    const selectionSuffix =
+      this.runtimeMode === "codex" && this.hasSelectionContext()
+        ? this.shouldAttachSelectionContext()
+          ? " · 附选区"
+          : " · 不附选区"
+        : "";
     if (!this.pdfFile) {
-      this.composerStatusEl.setText(modePrefix + "选区上下文已启用" + referenceSuffix);
+      this.composerStatusEl.setText(modePrefix + "选区上下文已启用" + referenceSuffix + selectionSuffix);
       return;
     }
     if (this.useRag && this.useFullTextMode) {
-      this.composerStatusEl.setText(modePrefix + "全文上下文已启用" + referenceSuffix);
+      this.composerStatusEl.setText(modePrefix + "全文上下文已启用" + referenceSuffix + selectionSuffix);
     } else if (this.useRag) {
-      this.composerStatusEl.setText(modePrefix + "RAG 检索已启用" + referenceSuffix);
+      this.composerStatusEl.setText(modePrefix + "RAG 检索已启用" + referenceSuffix + selectionSuffix);
     } else if (this.useDocSummary) {
-      this.composerStatusEl.setText(modePrefix + "摘要背景已启用" + referenceSuffix);
+      this.composerStatusEl.setText(modePrefix + "摘要背景已启用" + referenceSuffix + selectionSuffix);
     } else {
-      this.composerStatusEl.setText(modePrefix + "当前选区上下文已启用" + referenceSuffix);
+      this.composerStatusEl.setText(modePrefix + "当前选区上下文已启用" + referenceSuffix + selectionSuffix);
     }
   }
 
@@ -1386,7 +1818,7 @@ export class PDFChatModal extends Modal {
 
   private selectedPaperFiles(): Array<{ file: TFile; role: "current" | "referenced" }> {
     const papers: Array<{ file: TFile; role: "current" | "referenced" }> = [];
-    if (this.pdfFile) papers.push({ file: this.pdfFile, role: "current" });
+    if (this.pdfFile && this.includeCurrentPdfInCodex) papers.push({ file: this.pdfFile, role: "current" });
     for (const file of this.referencedPdfFiles) papers.push({ file, role: "referenced" });
     return papers;
   }
@@ -1511,15 +1943,37 @@ export class PDFChatModal extends Modal {
     this.multiPaperStatusEl?.setText("已改用当前模型基于多论文上下文回答。");
   }
 
-  private async prepareCodexPapers(progress?: (message: string) => void): Promise<PreparedCodexPaper[]> {
+  private async prepareCodexPdfFiles(progress?: (message: string) => void): Promise<PreparedCodexPaper[]> {
+    const prepared: PreparedCodexPaper[] = [];
+    const usedIds = new Map<string, number>();
+    for (const { file, role } of this.selectedPaperFiles()) {
+      progress?.(`正在复制 ${file.name || file.path} 到 Codex 临时目录…`);
+      const originalPdfBuffer = await this.app.vault.readBinary(file);
+      const baseId = file.path || file.name || `paper-${prepared.length + 1}`;
+      const seen = usedIds.get(baseId) || 0;
+      usedIds.set(baseId, seen + 1);
+      prepared.push({
+        id: seen ? `${baseId}-${seen + 1}` : baseId,
+        role,
+        name: file.name || file.path,
+        vaultPath: file.path,
+        mtime: file.stat && file.stat.mtime,
+        originalPdfData: new Uint8Array(originalPdfBuffer),
+      });
+    }
+    return prepared;
+  }
+
+  private async prepareCodexTextAssets(progress?: (message: string) => void): Promise<PreparedCodexPaper[]> {
     const prepared: PreparedCodexPaper[] = [];
     const usedIds = new Map<string, number>();
     for (const { file, role } of this.selectedPaperFiles()) {
       progress?.(`正在抽取 ${file.name || file.path} 的全文、分页文本和缓存资产…`);
-      const [pages, summary, chunksEntry] = await Promise.all([
+      const [pages, summary, chunksEntry, originalPdfBuffer] = await Promise.all([
         this.services.papers.extractPages(file),
         this.services.papers.getOrCreateDocSummary(file, false),
         this.services.papers.getOrCreateDocChunks(file, false),
+        this.app.vault.readBinary(file),
       ]);
       const baseId = file.path || file.name || `paper-${prepared.length + 1}`;
       const seen = usedIds.get(baseId) || 0;
@@ -1533,42 +1987,92 @@ export class PDFChatModal extends Modal {
         summary: summary.summary || "",
         chunks: chunksEntry.chunks || [],
         pages,
+        originalPdfData: new Uint8Array(originalPdfBuffer),
       });
     }
     return prepared;
   }
 
-  async runOrdinaryMultiPaperCompare(): Promise<void> {
-    if (!this.pdfFile) {
-      new Notice("多论文阅读需要从 PDF 视图打开。");
-      return;
-    }
-    if (!this.referencedPdfFiles.length) {
-      new Notice("请先 @ 引用至少一篇其他 PDF。");
+  async runCodexDeepAnalysis(questionOverride?: string): Promise<void> {
+    if (!this.plugin.settings.codexDeepAnalysis.enabled) {
+      new Notice("需要先在 PDF Chat 设置中启用 Codex CLI。");
       return;
     }
     if (this.isSending) return;
-    const question = this.getMultiPaperQuestion();
-    const loadingNotice = new Notice("正在准备多论文上下文…", 0);
-    try {
-      const outgoing = await this.buildApiMultiPaperContext(question, (message) => {
-        this.multiPaperStatusEl?.setText(message);
-      });
-      loadingNotice.hide();
-      await this.handleSubmit({
-        question: this.multiPaperUserLabel(question),
-        outgoingContentOverride: outgoing,
-        skipContextAugmentation: true,
-      });
-      this.multiPaperStatusEl?.setText("多论文上下文回答已完成，可继续追问。");
-    } catch (error) {
-      loadingNotice.hide();
-      new Notice("多论文上下文准备失败: " + errorMessage(error));
-      this.multiPaperStatusEl?.setText("多论文上下文准备失败。");
+    if (this.getCodexInputMode() === "debug-full") {
+      await this.runLegacyCodexDebugAnalysis(questionOverride);
+      return;
     }
+    const runtime = this.services.codex;
+    if (!runtime) {
+      new Notice("Codex 会话管理器不可用，请重新加载插件。");
+      return;
+    }
+
+    const question = (questionOverride && questionOverride.trim()) || this.getMultiPaperQuestion();
+    this.enterCodexMode();
+    const session = this.services.conversations.ensureSession?.(
+      this.conversationKey,
+      this.sessionMetadata(this.getDocumentName())
+    );
+    this.currentSessionId = session?.id || this.currentSessionId;
+    if (!this.currentSessionId) {
+      new Notice("无法创建 Codex 会话，请重新打开 PDF Chat。");
+      return;
+    }
+
+    const papers = this.selectedPaperFiles().map(({ file, role }) => {
+      const location = resolveCodexPdfLocation(this.app, file.path);
+      return {
+        role,
+        name: file.name || file.path,
+        absolutePath: location.absolutePath,
+      };
+    });
+    const currentLocation = this.pdfFile
+      ? resolveCodexPdfLocation(this.app, this.pdfFile.path)
+      : null;
+    const adapter = this.app.vault?.adapter as {
+      getBasePath?: () => string;
+    };
+    const workingDirectory =
+      currentLocation?.workingDirectory || adapter?.getBasePath?.() || ".";
+    const selectedContext = this.shouldAttachSelectionContext() ? this.contextText : "";
+    const prompt = buildCodexTurnPrompt({ question, papers, selectedContext });
+
+    this.activeComposerKind = "chat";
+    this.hideFollowupSuggestions();
+    this.clearComposerInput();
+    this.rememberPromptHistory(question);
+    this.attachCodexRuntime(this.currentSessionId);
+    void runtime
+      .startTurn({
+        sessionId: this.currentSessionId,
+        question,
+        userContent: question,
+        prompt,
+        command:
+          this.plugin.settings.codexDeepAnalysis.command ||
+          DEFAULT_SETTINGS.codexDeepAnalysis.command,
+        workingDirectory,
+        attachedPdfPaths: this.selectedPaperFiles().map(({ file }) => file.path),
+        selectionChars: selectedContext.length,
+        profile: this.plugin.settings.codexDeepAnalysis.profile || "",
+        model: this.getCodexModel(),
+        reasoningEffort: this.getCodexReasoningEffort(),
+        verbosity:
+          this.plugin.settings.codexDeepAnalysis.verbosity ||
+          DEFAULT_SETTINGS.codexDeepAnalysis.verbosity,
+        timeoutMs:
+          this.plugin.settings.codexDeepAnalysis.timeoutMs ||
+          DEFAULT_SETTINGS.codexDeepAnalysis.timeoutMs,
+      })
+      .catch((error) => {
+        new Notice("Codex 启动失败: " + errorMessage(error));
+      });
   }
 
-  async runCodexDeepAnalysis(questionOverride?: string): Promise<void> {
+  private async runLegacyCodexDebugAnalysis(questionOverride?: string): Promise<void> {
     if (!this.pdfFile) {
       new Notice("Codex 深度分析需要从 PDF 视图打开。");
       return;
@@ -1588,7 +2092,9 @@ export class PDFChatModal extends Modal {
     this.inputEl.value = "";
     if (this.inputEl.style) this.inputEl.style.height = "";
     this.setSendingState(true);
-    const loadingBubble = this.addBubble("assistant", "正在准备 Codex 多论文分析包…", {
+    this.isCodexRunning = true;
+    const inputMode = this.getCodexInputMode();
+    const loadingBubble = this.addBubble("assistant", `正在准备 Codex ${this.codexInputModeLabel()} 分析包…`, {
       loading: true,
       assistantAuthor: "Codex CLI",
       assistantContext: this.codexMetaText(),
@@ -1596,22 +2102,57 @@ export class PDFChatModal extends Modal {
     });
     this.abortController = new AbortController();
     let analysisDir = "";
+    let codexTimeoutMs = DEFAULT_SETTINGS.codexDeepAnalysis.timeoutMs;
+    let codexProgressTimer: ReturnType<typeof setInterval> | null = null;
+    const codexStartedAt = Date.now();
+    let codexProgressDetail = `正在准备 Codex ${this.codexInputModeLabel()} 分析包…`;
+    const stopCodexProgressTimer = () => {
+      if (!codexProgressTimer) return;
+      clearInterval(codexProgressTimer);
+      codexProgressTimer = null;
+    };
+    const updateCodexProgress = (detail?: string) => {
+      if (detail) codexProgressDetail = detail;
+      const elapsedMs = Date.now() - codexStartedAt;
+      const bubbleText = codexProgressBubbleText(elapsedMs, codexProgressDetail);
+      setBubbleText(loadingBubble, bubbleText);
+      this.multiPaperStatusEl?.setText(`Codex 已运行 ${formatCodexElapsed(elapsedMs)} · ${codexProgressDetail}`);
+    };
 
     try {
       const taskId = String(Date.now());
-      const papers = await this.prepareCodexPapers((message) => {
-        this.multiPaperStatusEl?.setText(message);
-        setBubbleText(loadingBubble, message);
-      });
+      const papers =
+        inputMode === "debug-full"
+          ? await this.prepareCodexTextAssets((message) => {
+              this.multiPaperStatusEl?.setText(message);
+              setBubbleText(loadingBubble, message);
+            })
+          : await this.prepareCodexPdfFiles((message) => {
+              this.multiPaperStatusEl?.setText(message);
+              setBubbleText(loadingBubble, message);
+            });
       analysisDir = createCodexAnalysisTempDir(taskId);
-      await writeCodexAnalysisPackage({
+      const packageRequest = {
         baseDir: analysisDir,
         taskId,
         createdAt: new Date().toISOString(),
         question,
         papers,
-      });
+        selectedContext: this.shouldAttachSelectionContext() ? this.contextText : "",
+      };
+      let selectedContextPath: string | undefined;
+      if (inputMode === "debug-full") {
+        const codexPackage = await writeCodexDebugFullPackage(packageRequest);
+        selectedContextPath = codexPackage.selectedContextPath;
+      } else {
+        const codexPackage = await writeCodexAnalysisPackage(packageRequest);
+        selectedContextPath = codexPackage.selectedContextPath;
+      }
       const settings = this.plugin.settings.codexDeepAnalysis;
+      codexTimeoutMs = settings.timeoutMs || DEFAULT_SETTINGS.codexDeepAnalysis.timeoutMs;
+      const outputMode = this.getCodexOutputMode();
+      if (outputMode === "json-schema" && inputMode !== "debug-full") writeCodexOutputSchema(analysisDir);
+      const outputFileName = outputMode === "json-schema" ? "codex-output.json" : "codex-output.md";
       const execArgs = buildCodexExecArgs({
         analysisDir,
         command: settings.command || DEFAULT_SETTINGS.codexDeepAnalysis.command,
@@ -1619,17 +2160,33 @@ export class PDFChatModal extends Modal {
         model: settings.model || DEFAULT_SETTINGS.codexDeepAnalysis.model,
         reasoningEffort: settings.reasoningEffort || DEFAULT_SETTINGS.codexDeepAnalysis.reasoningEffort,
         verbosity: settings.verbosity || DEFAULT_SETTINGS.codexDeepAnalysis.verbosity,
-        prompt: buildCodexDeepAnalysisPrompt(),
+        outputMode,
+        outputFileName,
+        prompt:
+          outputMode === "json-schema"
+            ? inputMode === "debug-full"
+              ? buildCodexDebugFullPrompt()
+              : buildCodexPdfOnlyPrompt(question, papers, { selectedContextPath })
+            : inputMode === "debug-full"
+              ? buildCodexDebugFullMarkdownPrompt()
+              : buildCodexMarkdownPrompt(question, papers, { selectedContextPath }),
       });
-      const runningMessage = `Codex 正在阅读 ${papers.length} 篇论文…`;
-      this.multiPaperStatusEl?.setText(runningMessage);
-      setBubbleText(loadingBubble, runningMessage);
+      const runningMessage = `Codex 正在读取 ${papers.length} 篇 PDF${selectedContextPath ? " + 选区上下文" : ""} · ${this.codexInputModeLabel()} · ${this.codexOutputModeLabel()}…`;
+      updateCodexProgress(runningMessage);
+      codexProgressTimer = setInterval(() => updateCodexProgress(), 1000);
       const raw = await runCodexExec(execArgs, {
-        timeoutMs: settings.timeoutMs || DEFAULT_SETTINGS.codexDeepAnalysis.timeoutMs,
+        timeoutMs: codexTimeoutMs,
+        outputFileName,
         signal: this.abortController.signal,
+        onProgress: (progress: CodexRunProgress) => {
+          updateCodexProgress(progress.message);
+        },
       });
-      const output = parseCodexAnalysisOutput(raw);
-      const markdown = renderCodexAnalysisMarkdown(output);
+      stopCodexProgressTimer();
+      const markdown =
+        outputMode === "json-schema"
+          ? renderCodexAnalysisMarkdown(parseCodexAnalysisOutput(raw))
+          : parseCodexMarkdownOutput(raw);
       loadingBubble.removeClass("is-loading");
       loadingBubble.addClass("is-rendered");
       await renderMarkdownIntoBubble(this.app, this.plugin, loadingBubble, markdown);
@@ -1638,6 +2195,7 @@ export class PDFChatModal extends Modal {
       this.showFollowupSuggestions("chat");
       this.multiPaperStatusEl?.setText("Codex 深度分析已完成。");
     } catch (error) {
+      stopCodexProgressTimer();
       loadingBubble.removeClass("is-loading");
       if (isAbortError(error)) {
         loadingBubble.addClass("is-stopped");
@@ -1655,12 +2213,20 @@ export class PDFChatModal extends Modal {
           setBubbleText(loadingBubble, "多论文上下文回答也失败: " + errorMessage(fallbackError));
           this.multiPaperStatusEl?.setText("多论文上下文回答失败。");
         }
+      } else if (isCodexTimeoutError(error)) {
+        loadingBubble.addClass("is-error");
+        setBubbleText(
+          loadingBubble,
+          `Codex 深度分析超过 ${formatCodexElapsed(codexTimeoutMs)} 后已停止。\n可能是 Codex 读取 PDF 或高强度推理耗时过长。可以切换到 /model gpt-5.5 medium，减少引用 PDF，或重试。`
+        );
+        this.multiPaperStatusEl?.setText(`Codex 超过 ${formatCodexElapsed(codexTimeoutMs)} 后停止。`);
       } else {
         loadingBubble.addClass("is-error");
         setBubbleText(loadingBubble, "Codex 深度分析失败: " + errorMessage(error));
         this.multiPaperStatusEl?.setText("Codex 深度分析失败，可改用当前模型回答。");
       }
     } finally {
+      stopCodexProgressTimer();
       const keep = this.plugin.settings.codexDeepAnalysis.keepTempFiles;
       if (analysisDir && !keep) {
         try {
@@ -1670,6 +2236,7 @@ export class PDFChatModal extends Modal {
         }
       }
       this.setSendingState(false);
+      this.isCodexRunning = false;
       this.abortController = null;
       this.inputEl.focus();
     }
@@ -1713,6 +2280,13 @@ export class PDFChatModal extends Modal {
   }
 
   stopGenerating(): void {
+    if (
+      this.isCodexRunning &&
+      this.currentSessionId &&
+      this.services.codex?.stopTurn(this.currentSessionId)
+    ) {
+      return;
+    }
     if (this.abortController) {
       this.abortController.abort();
     }
@@ -1724,6 +2298,130 @@ export class PDFChatModal extends Modal {
     this.sendBtn.setText(sending ? "停止" : "↑");
     this.sendBtn.toggleClass("is-stop", sending);
     labelControl(this.sendBtn, sending ? "停止生成" : "发送问题");
+  }
+
+  private stopCodexUiTimer(): void {
+    if (!this.codexProgressTimer) return;
+    clearInterval(this.codexProgressTimer);
+    this.codexProgressTimer = undefined;
+  }
+
+  private updateCodexProgressBubble(snapshot: CodexTurnSnapshot): void {
+    if (!this.codexTaskBubble || snapshot.status !== "running") return;
+    const elapsed = snapshot.startedAt ? Date.now() - snapshot.startedAt : 0;
+    setBubbleText(
+      this.codexTaskBubble,
+      `Codex 正在运行 ${formatCodexElapsed(elapsed)}\n${snapshot.progress || "正在等待 Codex CLI 事件…"}`
+    );
+    this.setAssistantBubbleMeta(
+      this.codexTaskBubble,
+      "Codex CLI",
+      `${this.getCodexModel()} · ${this.getCodexReasoningEffort()} · Thread ${snapshot.threadId || "starting"}`
+    );
+    this.multiPaperStatusEl?.setText(
+      `Codex ${snapshot.threadId ? `Thread ${snapshot.threadId.slice(0, 8)}…` : "正在启动"} · ${formatCodexElapsed(elapsed)}`
+    );
+    if (this.modeBadgeEl) {
+      this.modeBadgeEl.setText(
+        `CODEX MODE · ${this.getCodexModel()} · ${this.getCodexReasoningEffort()} · ${snapshot.threadId ? `Thread ${snapshot.threadId.slice(0, 8)}…` : "New thread"} · Running ${formatCodexElapsed(elapsed)}`
+      );
+    }
+  }
+
+  private async applyCodexSnapshot(snapshot: CodexTurnSnapshot): Promise<void> {
+    if (snapshot.sessionId !== this.currentSessionId) return;
+    this.lastCodexSnapshot = snapshot;
+    if (snapshot.status === "running") {
+      this.isCodexRunning = true;
+      this.setSendingState(true);
+      this.hideFollowupSuggestions();
+      if (!this.codexTaskBubble || this.codexTaskQuestion !== snapshot.question) {
+        this.emptyStateEl?.remove();
+        this.emptyStateEl = undefined;
+        if (snapshot.question) this.addBubble("user", snapshot.question);
+        this.codexTaskQuestion = snapshot.question;
+        this.codexTaskBubble = this.addBubble("assistant", "Codex 正在启动…", {
+          loading: true,
+          assistantAuthor: "Codex CLI",
+          assistantContext: this.codexMetaText(),
+          assistantClass: "is-codex-response",
+        });
+      }
+      this.updateCodexProgressBubble(snapshot);
+      if (!this.codexProgressTimer) {
+        this.codexProgressTimer = setInterval(() => {
+          if (this.lastCodexSnapshot) this.updateCodexProgressBubble(this.lastCodexSnapshot);
+        }, 1000);
+      }
+      return;
+    }
+
+    this.stopCodexUiTimer();
+    this.isCodexRunning = false;
+    this.setSendingState(false);
+    this.updateRuntimeModeUi();
+    if (snapshot.finalMarkdown) {
+      const session = this.services.conversations.getSession?.(snapshot.sessionId);
+      if (session) {
+        this.transcript = [...session.messages];
+        this.messages = [
+          this.buildSystemMessage(),
+          ...this.transcript.map((message) => ({ role: message.role, content: message.content })),
+        ];
+      }
+      const alreadyVisible =
+        !this.codexTaskBubble &&
+        this.transcript[this.transcript.length - 1]?.role === "assistant" &&
+        this.transcript[this.transcript.length - 1]?.content === snapshot.finalMarkdown;
+      if (!alreadyVisible) {
+        const bubble =
+          this.codexTaskBubble ||
+          this.addBubble("assistant", "", {
+            assistantAuthor: "Codex CLI",
+            assistantContext: this.codexMetaText(),
+            assistantClass: "is-codex-response",
+          });
+        bubble.removeClass("is-loading", "is-error", "is-stopped");
+        bubble.addClass("is-rendered");
+        this.setAssistantBubbleMeta(
+          bubble,
+          "Codex CLI",
+          `${this.getCodexModel()} · ${this.getCodexReasoningEffort()} · Thread ${snapshot.threadId || "unknown"}`
+        );
+        await renderMarkdownIntoBubble(this.app, this.plugin, bubble, snapshot.finalMarkdown);
+      }
+      this.multiPaperStatusEl?.setText("Codex 本轮回答已完成。");
+      this.showFollowupSuggestions("chat");
+    } else if (snapshot.status === "failed" || snapshot.status === "stopped") {
+      const bubble =
+        this.codexTaskBubble ||
+        this.addBubble("assistant", "", {
+          assistantAuthor: "Codex CLI",
+          assistantContext: this.codexMetaText(),
+          assistantClass: "is-codex-response",
+        });
+      bubble.removeClass("is-loading");
+      bubble.addClass(snapshot.status === "failed" ? "is-error" : "is-stopped");
+      setBubbleText(
+        bubble,
+        snapshot.status === "failed"
+          ? `Codex 本轮失败：${snapshot.error || snapshot.progress || "未知错误"}`
+          : snapshot.progress || "Codex 本轮已停止，可继续使用同一 thread 提问。"
+      );
+      this.multiPaperStatusEl?.setText(snapshot.progress || "Codex 本轮已停止。");
+    }
+    this.codexTaskBubble = undefined;
+    this.codexTaskQuestion = undefined;
+    this.inputEl?.focus();
+  }
+
+  private attachCodexRuntime(sessionId: string): void {
+    const runtime = this.services.codex;
+    if (!runtime) return;
+    this.codexUnsubscribe?.();
+    this.codexUnsubscribe = runtime.subscribe(sessionId, (snapshot) => {
+      void this.applyCodexSnapshot(snapshot);
+    });
   }
 
   handleTranslate(): void {
@@ -1868,14 +2566,14 @@ export class PDFChatModal extends Modal {
     const usingOverride = typeof opts.question === "string";
     const question = typeof opts.question === "string" ? opts.question.trim() : this.inputEl.value.trim();
     if (!question) return;
-    if (this.isSending) {
-      new Notice("上一个问题还在生成中,请稍候或点击停止");
-      return;
-    }
 
     if (!usingOverride) this.rememberPromptHistory(question);
 
     if (await this.handleSlashCommand(question, usingOverride)) {
+      return;
+    }
+    if (this.isSending) {
+      new Notice("上一个问题还在生成中,请稍候或点击停止");
       return;
     }
 
@@ -2081,10 +2779,24 @@ export class PDFChatModal extends Modal {
   }
 
   onClose(): void {
-    this.stopGenerating();
+    this.codexUnsubscribe?.();
+    this.codexUnsubscribe = undefined;
+    this.stopCodexUiTimer();
+    const terminateCodex =
+      this.codexCloseIntent === "terminate" &&
+      this.runtimeMode === "codex" &&
+      !!this.currentSessionId;
+    if (terminateCodex && this.currentSessionId) {
+      void this.services.codex?.closeSession(this.currentSessionId);
+      new Notice("Codex 会话已关闭；历史与 thread 已保留，可通过 /resume 找回。");
+    } else if (this.isCodexRunning) {
+      new Notice("Codex 仍在后台运行，完成后会保存到当前会话；稍后重新打开即可查看结果。");
+    } else {
+      this.stopGenerating();
+    }
     // 只在这次会话确实产生过消息时才回写存储:避免“新开对话”模式下,用户什么都没问就
     // 直接关闭弹窗,却因为 this.transcript 一开始就是空数组而把上次保存的记录误清空。
-    if (this.transcript.length) {
+    if (this.transcript.length && !terminateCodex && !this.isCodexRunning) {
       void this.persistConversation();
     }
     if (this.translateTranscript.length) {

@@ -31,13 +31,17 @@ export class PDFChatSettingTab extends PluginSettingTab {
   private renderModelSection(containerEl: HTMLElement): void {
     containerEl.createEl("p", {
       text:
-        "可以添加多套 OpenAI 兼容模型配置。弹窗会列出全部条目，标为默认的条目用于新对话。",
+        "日常只需要维护主要 API 模型；多模型配置仍然保留在下方高级折叠区。",
       cls: "setting-item-description",
     });
 
-    this.plugin.settings.models.forEach((model, index) => {
+    const renderModelConfig = (
+      targetEl: HTMLElement,
+      model: PDFChatPluginApi["settings"]["models"][number],
+      index: number
+    ) => {
       const isActive = model.id === this.plugin.settings.activeModelId;
-      const header = new Setting(containerEl).setName(`模型 ${index + 1}${isActive ? " · 默认" : ""}`);
+      const header = new Setting(targetEl).setName(`模型 ${index + 1}${isActive ? " · 默认" : ""}`);
       header.addText((text) =>
         text
           .setPlaceholder("名称")
@@ -77,7 +81,7 @@ export class PDFChatSettingTab extends PluginSettingTab {
           });
       });
 
-      new Setting(containerEl).setName("Endpoint").addText((text) =>
+      new Setting(targetEl).setName("Endpoint").addText((text) =>
         text
           .setPlaceholder("OpenAI 兼容的 chat/completions 接口地址")
           .setValue(model.endpoint)
@@ -86,23 +90,41 @@ export class PDFChatSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
-      new Setting(containerEl).setName("API Key").addText((text) => {
+      new Setting(targetEl).setName("API Key").addText((text) => {
         text.inputEl.type = "password";
         text.setValue(model.apiKey).onChange(async (value) => {
           model.apiKey = value.trim();
           await this.plugin.saveSettings();
         });
       });
-      new Setting(containerEl).setName("模型名(model 字段)").addText((text) =>
+      new Setting(targetEl).setName("模型名(model 字段)").addText((text) =>
         text.setValue(model.model).onChange(async (value) => {
           model.model = value.trim();
           await this.plugin.saveSettings();
         })
       );
-      containerEl.createEl("hr");
+      targetEl.createEl("hr");
+    };
+
+    const activeIndex = Math.max(
+      0,
+      this.plugin.settings.models.findIndex((model) => model.id === this.plugin.settings.activeModelId)
+    );
+    const activeModel = this.plugin.settings.models[activeIndex] || this.plugin.settings.models[0];
+    if (activeModel) renderModelConfig(containerEl, activeModel, activeIndex);
+
+    const maybeAdvancedEl = containerEl.createEl("details", { cls: "pdf-chat-settings-advanced-models" });
+    const advancedEl =
+      maybeAdvancedEl && typeof maybeAdvancedEl.createEl === "function" ? maybeAdvancedEl : containerEl;
+    if (advancedEl !== containerEl) {
+      advancedEl.createEl("summary", { text: "高级模型配置" });
+    }
+    this.plugin.settings.models.forEach((model, index) => {
+      if (index === activeIndex) return;
+      renderModelConfig(advancedEl, model, index);
     });
 
-    new Setting(containerEl).addButton((button) =>
+    new Setting(advancedEl).addButton((button) =>
       button
         .setButtonText("+ 添加模型")
         .setCta()
@@ -415,7 +437,7 @@ export class PDFChatSettingTab extends PluginSettingTab {
       );
     new Setting(containerEl)
       .setName("Codex model")
-      .setDesc("对应 codex exec --model。默认 gpt-5.6-sol；也可以在聊天框用 /model 切换。")
+      .setDesc("对应 codex exec --model。默认 gpt-5.5；也可以在聊天框用 /model 切换。")
       .addText((text) =>
         text.setValue(this.plugin.settings.codexDeepAnalysis.model).onChange(async (value) => {
           this.plugin.settings.codexDeepAnalysis.model =
@@ -425,7 +447,7 @@ export class PDFChatSettingTab extends PluginSettingTab {
       );
     new Setting(containerEl)
       .setName("Codex reasoning effort")
-      .setDesc("对应 -c model_reasoning_effort。默认 xhigh；如果账户或模型不支持，可降到 high/medium。")
+      .setDesc("对应 -c model_reasoning_effort。默认 medium；深度任务可升到 high/xhigh。")
       .addDropdown((dropdown) => {
         for (const effort of ["minimal", "low", "medium", "high", "xhigh"]) {
           dropdown.addOption(effort, effort);
@@ -440,7 +462,7 @@ export class PDFChatSettingTab extends PluginSettingTab {
       });
     new Setting(containerEl)
       .setName("Codex verbosity")
-      .setDesc("对应 -c model_verbosity。默认 high，让深度阅读输出更充分。")
+      .setDesc("对应 -c model_verbosity。默认 medium，需要更充分时可改 high。")
       .addDropdown((dropdown) => {
         for (const verbosity of ["low", "medium", "high"]) dropdown.addOption(verbosity, verbosity);
         dropdown.setValue(this.plugin.settings.codexDeepAnalysis.verbosity).onChange(async (value) => {
@@ -452,8 +474,43 @@ export class PDFChatSettingTab extends PluginSettingTab {
         });
       });
     new Setting(containerEl)
+      .setName("Codex input mode")
+      .setDesc("默认 PDF-only：只把所选 PDF 和问题放进临时目录；Debug full 仅用于排查 PDF 读取问题。")
+      .addDropdown((dropdown) => {
+        dropdown.addOption("pdf-only", "PDF-only");
+        dropdown.addOption("debug-full", "Debug full");
+        dropdown.setValue(this.plugin.settings.codexDeepAnalysis.inputMode || DEFAULT_SETTINGS.codexDeepAnalysis.inputMode);
+        dropdown.onChange(async (value) => {
+          this.plugin.settings.codexDeepAnalysis.inputMode =
+            value === "debug-full" ? value : "pdf-only";
+          await this.plugin.saveSettings();
+        });
+      });
+    new Setting(containerEl)
+      .setName("Codex output mode")
+      .setDesc("默认 Markdown：让 Codex 自然回答；JSON schema 仅用于结构化兼容或调试。")
+      .addDropdown((dropdown) => {
+        dropdown.addOption("markdown", "Markdown (natural)");
+        dropdown.addOption("json-schema", "JSON schema (structured/debug)");
+        dropdown.setValue(this.plugin.settings.codexDeepAnalysis.outputMode || DEFAULT_SETTINGS.codexDeepAnalysis.outputMode);
+        dropdown.onChange(async (value) => {
+          this.plugin.settings.codexDeepAnalysis.outputMode =
+            value === "json-schema" ? "json-schema" : "markdown";
+          await this.plugin.saveSettings();
+        });
+      });
+    new Setting(containerEl)
+      .setName("Codex 默认附带选区上下文")
+      .setDesc("开启后，PDF Chat 会把当前划选段落写入 selected-context.md；弹窗内也可用“附选区”按钮或 /context 临时切换。")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.codexDeepAnalysis.includeSelectionContext).onChange(async (value) => {
+          this.plugin.settings.codexDeepAnalysis.includeSelectionContext = value;
+          await this.plugin.saveSettings();
+        })
+      );
+    new Setting(containerEl)
       .setName("Codex 超时毫秒")
-      .setDesc("默认 600000，即 10 分钟；超时后会终止 Codex 进程。")
+      .setDesc("默认 1800000，即 30 分钟；PDF 读取或高强度推理可能较慢，超时后会终止 Codex 进程。")
       .addText((text) =>
         text.setValue(String(this.plugin.settings.codexDeepAnalysis.timeoutMs)).onChange(async (value) => {
           const parsed = Number(value.trim());

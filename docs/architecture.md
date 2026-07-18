@@ -8,7 +8,9 @@ PDF Chat is a dependency-light Obsidian plugin organized around typed service bo
 - `src/pdf-chat-modal.ts`, `src/modal-ui.ts`, and `src/modal-services.ts` own the research-workbench presentation and coordinate actions without embedding transport or extraction logic.
 - `src/llm-transport.ts` accepts a typed `LlmRequest` and isolates the OpenAI-compatible HTTP and streaming protocol.
 - `src/paper-context.ts` creates typed `PaperContext` values, extracts PDF text, caches summaries/chunks, and performs local retrieval.
-- `src/multi-paper.ts` owns vault PDF search, Codex analysis package creation, safe Codex CLI argument construction, process execution, and structured output parsing.
+- `src/codex-cli.ts` owns native Codex CLI argument construction, JSONL parsing, direct PDF path prompts, and scoped child-process termination.
+- `src/codex-session-manager.ts` owns background Codex turns, native thread IDs, UI subscriptions, and session-safe result persistence.
+- `src/multi-paper.ts` owns vault PDF search, ordinary API multi-paper context, and the advanced one-shot `debug-full` compatibility path.
 - `src/actions.ts` registers typed `ResearchAction` implementations, while `src/translation.ts` owns the dedicated academic-translation pipeline.
 - `src/conversation.ts`, `src/settings.ts`, and `src/default-settings.ts` own local persistence, migration, and safe empty defaults.
 
@@ -18,14 +20,17 @@ The paper service should extract once, cache by document identity and modificati
 
 This separation keeps extraction, retrieval, model transport, conversations, and UI independently testable. Local `data.json` is persistence, not a release artifact.
 
-## Multi-paper analysis boundary
+## Native Codex session boundary
 
-The first multi-paper layer is intentionally two-tiered:
+The default Codex path is deliberately small:
 
-- Ordinary comparison stays inside the plugin and uses the configured OpenAI-compatible chat model. It passes summaries and retrieved chunks for the current PDF plus referenced PDFs.
-- Codex deep analysis is an explicit external job. The plugin writes a temporary package containing `manifest.json`, `question.md`, `output.schema.json`, and per-paper assets (`summary.md`, `full_text.md`, `chunks.json`, page files, and metadata), then runs `codex exec` in read-only ephemeral mode with `--cd` pointing at that package.
+- The first turn runs persistent `codex exec` in the current PDF's parent folder and records `thread.started.thread_id`.
+- Later turns run `codex exec resume <threadId>` so Codex retains its native conversation context without an idle background process.
+- Each turn sends only the user's question, explicitly attached PDF paths, and the selected passage when enabled. A greeting does not require PDF reading.
+- `CodexSessionManager` outlives individual modals. Esc removes only the UI subscriber; X aborts the current turn and marks the plugin session closed. Completed background results are appended by session ID, never by whichever modal happens to be open.
+- Normal API chat may still use summaries and local retrieval for referenced PDFs, but `@PDF` means “attach this paper,” not “force a comparison.”
 
-Codex must not receive plugin runtime data such as `data.json`, API keys, endpoints, private model profiles, or the vault/plugin source tree. Referenced PDFs update only their summary/chunk caches; their conversation histories remain isolated from the current PDF's analysis result.
+Absolute paths exist only in the in-memory Codex prompt. `data.json` stores the native thread ID, model choice, relative PDF paths, and visible transcript; it never stores absolute PDF paths or selected text. Codex must not receive plugin runtime data such as `data.json`, API keys, endpoints, or private model profiles. The old extracted-text package remains available only through the explicit advanced `debug-full` path.
 
 ## Future integrations
 

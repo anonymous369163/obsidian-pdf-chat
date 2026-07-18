@@ -759,6 +759,12 @@
   gap: var(--pdf-chat-space-small);
 }
 
+.pdf-chat-composer-status-group {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
 .pdf-chat-composer-status {
   min-width: 0;
   overflow: hidden;
@@ -766,6 +772,112 @@
   font-size: 0.72rem;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.pdf-chat-reference-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.pdf-chat-reference-chips.is-empty {
+  display: none;
+}
+
+.pdf-chat-reference-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: min(260px, 100%);
+  gap: 4px;
+  padding: 2px 4px 2px 8px;
+  border: 1px solid var(--pdf-chat-accent-border);
+  border-radius: var(--pdf-chat-radius-sm);
+  background: var(--pdf-chat-accent-soft);
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+
+.pdf-chat-current-pdf-chip {
+  border-color: color-mix(in srgb, var(--interactive-accent) 36%, var(--background-modifier-border));
+  color: var(--text-normal);
+}
+
+.pdf-chat-current-pdf-chip.is-detached {
+  border-color: var(--background-modifier-border);
+  background: color-mix(in srgb, var(--background-secondary) 82%, transparent);
+  color: var(--text-muted);
+}
+
+.pdf-chat-reference-chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-chat-reference-chip-remove,
+.pdf-chat-reference-chip-restore {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 18px;
+  min-height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.pdf-chat-reference-chip-remove {
+  width: 18px;
+  min-width: 18px;
+}
+
+.pdf-chat-reference-chip-restore {
+  min-width: 34px;
+  padding: 0 7px;
+  color: var(--interactive-accent);
+}
+
+.pdf-chat-reference-chip-remove:hover,
+.pdf-chat-reference-chip-remove:focus-visible,
+.pdf-chat-reference-chip-restore:hover,
+.pdf-chat-reference-chip-restore:focus-visible {
+  background: color-mix(in srgb, var(--interactive-accent) 16%, transparent);
+  color: var(--text-normal);
+}
+
+.pdf-chat-codex-context-toggle {
+  min-height: 30px;
+  padding: 4px 9px;
+  border: 1px solid var(--pdf-chat-accent-border);
+  border-radius: var(--pdf-chat-radius-sm);
+  background: var(--pdf-chat-accent-soft);
+  color: var(--pdf-chat-accent-muted);
+  box-shadow: none;
+  font-size: 0.72rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.pdf-chat-codex-context-toggle.is-disabled {
+  border-color: var(--background-modifier-border);
+  background: color-mix(in srgb, var(--background-secondary) 70%, transparent);
+  color: var(--text-faint);
+}
+
+.pdf-chat-codex-context-toggle:disabled {
+  cursor: default;
+}
+
+.pdf-chat-codex-context-toggle:hover:not(:disabled),
+.pdf-chat-codex-context-toggle:focus-visible {
+  border-color: var(--interactive-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 16%, transparent);
+  color: var(--text-normal);
 }
 
 .pdf-chat-composer-actions {

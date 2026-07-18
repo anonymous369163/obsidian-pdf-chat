@@ -282,8 +282,10 @@ export interface ComposerElements {
   root: HTMLElement;
   card: HTMLElement;
   status: HTMLElement;
+  references: HTMLElement;
   input: HTMLTextAreaElement;
   actions: HTMLElement;
+  contextToggle: HTMLButtonElement;
   sendButton: HTMLButtonElement;
   hint: HTMLElement;
 }
@@ -309,11 +311,22 @@ export function buildComposer(parent: HTMLElement): ComposerElements {
     },
   });
   const footer = card.createDiv({ cls: "pdf-chat-composer-footer" });
-  const status = footer.createDiv({
+  const statusGroup = footer.createDiv({ cls: "pdf-chat-composer-status-group" });
+  const status = statusGroup.createDiv({
     text: "当前选区上下文已启用",
     cls: "pdf-chat-composer-status",
   });
+  const references = statusGroup.createDiv({
+    cls: "pdf-chat-reference-chips",
+    attr: { role: "list", "aria-label": "已引用 PDF" },
+  });
   const actions = footer.createDiv({ cls: "pdf-chat-composer-actions" });
+  const contextToggle = actions.createEl("button", {
+    text: "附选区",
+    cls: "pdf-chat-codex-context-toggle",
+    attr: { type: "button" },
+  });
+  setElementLabel(contextToggle, "切换是否把当前选区作为 Codex 上下文");
   const hint = actions.createDiv({
     cls: "pdf-chat-hint",
     text: "Enter 发送 · Shift+Enter 换行",
@@ -325,7 +338,7 @@ export function buildComposer(parent: HTMLElement): ComposerElements {
   });
   setElementLabel(sendButton, "发送问题");
   input.addEventListener("input", () => resizeComposerTextarea(input));
-  return { root, card, status, input, actions, sendButton, hint };
+  return { root, card, status, references, input, actions, contextToggle, sendButton, hint };
 }
 
 export function buildFollowupSuggestions(parent: HTMLElement, suggestions: string[]): HTMLElement {

@@ -1,4 +1,4 @@
-// PDF Chat 0.7.1
+// PDF Chat 0.8.0
 var global = globalThis;
 "use strict";
 var __defProp = Object.defineProperty;
@@ -25,6 +25,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
 var main_exports = {};
 __export(main_exports, {
   ActionRegistry: () => ResearchActionRegistry,
+  CodexSessionManager: () => CodexSessionManager,
   ConversationStore: () => ConversationStore,
   DEFAULT_SETTINGS: () => DEFAULT_SETTINGS,
   LEGACY_0_4_0_TRANSLATE_PROMPT: () => LEGACY_0_4_0_TRANSLATE_PROMPT,
@@ -36,8 +37,14 @@ __export(main_exports, {
   TranslationService: () => TranslationService,
   bm25Retrieve: () => bm25Retrieve,
   bm25RetrieveMulti: () => bm25RetrieveMulti,
+  buildCodexDebugFullMarkdownPrompt: () => buildCodexDebugFullMarkdownPrompt,
+  buildCodexDebugFullPrompt: () => buildCodexDebugFullPrompt,
   buildCodexDeepAnalysisPrompt: () => buildCodexDeepAnalysisPrompt,
   buildCodexExecArgs: () => buildCodexExecArgs,
+  buildCodexMarkdownPrompt: () => buildCodexMarkdownPrompt,
+  buildCodexPdfOnlyPrompt: () => buildCodexPdfOnlyPrompt,
+  buildCodexThreadExecArgs: () => buildCodexThreadExecArgs,
+  buildCodexTurnPrompt: () => buildCodexTurnPrompt,
   buildTranslationMessages: () => buildTranslationMessages,
   chunkPdfPages: () => chunkPdfPages,
   cleanSelectionText: () => cleanSelectionText,
@@ -48,25 +55,36 @@ __export(main_exports, {
   createResearchActionRegistry: () => createResearchActionRegistry,
   default: () => PDFChatPlugin,
   expandWithNeighbors: () => expandWithNeighbors,
+  extractCodexMarkdownAnalysis: () => extractCodexMarkdownAnalysis,
   extractPdfFullText: () => extractPdfFullText,
   extractPdfPages: () => extractPdfPages,
   getConversationKey: () => getConversationKey,
+  isCodexThreadUnavailableError: () => isCodexThreadUnavailableError,
   migrateSettings: () => migrateSettings,
+  normalizeCodexInputMode: () => normalizeCodexInputMode,
+  normalizeCodexOutputMode: () => normalizeCodexOutputMode,
   normalizeConversationHistories: () => normalizeConversationHistories,
   normalizeConversationMessages: () => normalizeConversationMessages,
   normalizeConversationSessions: () => normalizeConversationSessions,
   normalizeRagChunkSettings: () => normalizeRagChunkSettings,
   parseCodexAnalysisOutput: () => parseCodexAnalysisOutput,
+  parseCodexMarkdownOutput: () => parseCodexMarkdownOutput,
   removeCodexAnalysisTempDir: () => removeCodexAnalysisTempDir,
   renderCodexAnalysisMarkdown: () => renderCodexAnalysisMarkdown,
+  resolveCodexExecArgs: () => resolveCodexExecArgs,
+  resolveCodexPdfLocation: () => resolveCodexPdfLocation,
   resolveContinueModelId: () => resolveContinueModelId,
   resolveTranslateModelId: () => resolveTranslateModelId,
   runCodexExec: () => runCodexExec,
+  runCodexThreadTurn: () => runCodexThreadTurn,
   searchPdfFiles: () => searchPdfFiles,
   splitTranslationChunks: () => splitTranslationChunks,
   stableConversationHash: () => stableConversationHash,
   tokenizeForBM25: () => tokenizeForBM25,
-  writeCodexAnalysisPackage: () => writeCodexAnalysisPackage
+  writeCodexAnalysisPackage: () => writeCodexAnalysisPackage,
+  writeCodexDebugFullPackage: () => writeCodexDebugFullPackage,
+  writeCodexOutputSchema: () => writeCodexOutputSchema,
+  writeCodexPdfOnlyPackage: () => writeCodexPdfOnlyPackage
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian5 = require("obsidian");
@@ -109,6 +127,1166 @@ function createResearchActionRegistry() {
     }
   });
 }
+
+// src/multi-paper.ts
+var import_obsidian = require("obsidian");
+function loadNodeModule(name) {
+  const nodeRequire = typeof require === "function" ? require : null;
+  if (!nodeRequire) throw new Error("Node.js APIs are not available in this Obsidian environment");
+  return nodeRequire(name);
+}
+function isPdfFile(file) {
+  const extension = String(file.extension || "").toLowerCase();
+  if (extension) return extension === "pdf";
+  return /\.pdf$/i.test(file.path || file.name || "");
+}
+function searchPdfFiles(app, query, options = {}) {
+  var _a;
+  const files = ((_a = app == null ? void 0 : app.vault) == null ? void 0 : _a.getFiles) ? app.vault.getFiles() : [];
+  const normalizedQuery = (query || "").trim();
+  const matcher = normalizedQuery && typeof import_obsidian.prepareFuzzySearch === "function" ? (0, import_obsidian.prepareFuzzySearch)(normalizedQuery) : null;
+  const fallbackQuery = normalizedQuery.toLowerCase();
+  const candidates = files.filter(isPdfFile).filter((file) => {
+    var _a2;
+    return !((_a2 = options.excludePaths) == null ? void 0 : _a2.has(file.path));
+  }).map((file) => {
+    var _a2;
+    const target = `${file.name || ""} ${file.path || ""}`;
+    const match = matcher ? matcher(target) : fallbackQuery ? target.toLowerCase().includes(fallbackQuery) ? { score: fallbackQuery.length, matches: [] } : null : { score: 1, matches: [] };
+    if (!match) return null;
+    return {
+      path: file.path,
+      name: file.name || file.path.split(/[\\/]/).pop() || file.path,
+      score: typeof match.score === "number" ? match.score : normalizedQuery.length || 1,
+      cached: Boolean((_a2 = options.cachedPaths) == null ? void 0 : _a2.has(file.path))
+    };
+  }).filter((candidate) => Boolean(candidate)).sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
+  return candidates.slice(0, options.limit || 8);
+}
+function safePaperId(input, fallback) {
+  const base = (input || fallback || "paper").replace(/\\/g, "/").split("/").pop().replace(/\.pdf$/i, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return base || fallback || "paper";
+}
+function writeJson(fs, file, value) {
+  fs.writeFileSync(file, JSON.stringify(value, null, 2), "utf8");
+}
+function pageFileName(page) {
+  return `page-${String(page).padStart(3, "0")}.md`;
+}
+function compactWhitespace(text) {
+  return String(text || "").replace(/\s+/g, " ").trim();
+}
+function buildCodexPaperBrief(paper, maxChars = 250) {
+  const source = compactWhitespace(paper.summary) || compactWhitespace((paper.pages || []).map((page) => page.text).join(" "));
+  if (!source) return `${paper.name || paper.vaultPath}: no brief available.`;
+  if (source.length <= maxChars) return source;
+  return source.slice(0, Math.max(0, maxChars - 1)).trimEnd() + "\u2026";
+}
+function buildPdfExtractionReport(paper) {
+  const pages = paper.pages || [];
+  const pageLengths = pages.map((page) => compactWhitespace(page.text).length);
+  const pageCount = pages.length;
+  const fullTextLength = pageLengths.reduce((total, length) => total + length, 0);
+  const emptyPages = pages.filter((page) => compactWhitespace(page.text).length === 0).map((page) => page.page);
+  const veryShortPages = pages.filter((page) => {
+    const length = compactWhitespace(page.text).length;
+    return length > 0 && length < 80;
+  }).map((page) => page.page);
+  const warnings = [];
+  if (!pageCount) warnings.push("No pages were extracted from the PDF text layer.");
+  if (emptyPages.length) warnings.push(`Text-layer extraction produced empty pages: ${emptyPages.join(", ")}.`);
+  if (veryShortPages.length) warnings.push(`Some pages have very little extracted text: ${veryShortPages.join(", ")}.`);
+  if (fullTextLength < 500) warnings.push("The extracted text is short; inspect original.pdf before making detailed claims.");
+  if (!paper.originalPdfData) warnings.push("original.pdf is not available in this package; rely on extracted text cautiously.");
+  const emptyRatio = pageCount ? emptyPages.length / pageCount : 1;
+  const quality = !pageCount || fullTextLength < 200 || emptyRatio > 0.5 ? "poor" : warnings.length ? "mixed" : "good";
+  return {
+    pageCount,
+    fullTextLength,
+    averageCharsPerPage: pageCount ? Math.round(fullTextLength / pageCount) : 0,
+    longestPageChars: pageLengths.length ? Math.max(...pageLengths) : 0,
+    emptyPages,
+    veryShortPages,
+    originalPdfAvailable: Boolean(paper.originalPdfData),
+    quality,
+    warnings
+  };
+}
+function buildCodexAnalysisSkillMarkdown() {
+  return [
+    "---",
+    "name: pdf-paper-analysis",
+    "description: Read a PDF Chat multi-paper analysis package and produce evidence-grounded JSON for comparing or synthesizing research papers.",
+    "---",
+    "",
+    "# PDF Paper Analysis",
+    "",
+    "Follow this workflow exactly for the current analysis package.",
+    "",
+    "1. Read `manifest.json` and `question.md` first.",
+    "2. For each paper, read `metadata.json` and `extraction_report.json` before drawing conclusions.",
+    "3. Use `brief.md` only for orientation. It is intentionally short and incomplete.",
+    "4. Use `summary.md`, `full_text.md`, `pages/`, and `chunks.json` for claims and evidence.",
+    "5. If `extraction_report.json` says quality is `mixed` or `poor`, or if text evidence looks garbled, inspect `original.pdf` when it is available.",
+    "6. Do not read or request private plugin settings, credential files, model URLs, or files outside this analysis package.",
+    "7. Cite important claims with paper name plus page number or chunk/page source. If the package cannot support a claim, say so in `limitations`.",
+    "8. Return only JSON matching `output.schema.json`; do not include Markdown fences or extra commentary."
+  ].join("\n");
+}
+function createCodexAnalysisTempDir(taskId) {
+  const fs = loadNodeModule("node:fs");
+  const os = loadNodeModule("node:os");
+  const path = loadNodeModule("node:path");
+  return fs.mkdtempSync(path.join(os.tmpdir(), `pdf-chat-analysis-${taskId}-`));
+}
+function removeCodexAnalysisTempDir(analysisDir) {
+  if (!analysisDir) return;
+  const fs = loadNodeModule("node:fs");
+  fs.rmSync(analysisDir, { recursive: true, force: true });
+}
+function codexAnalysisOutputSchema() {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["taskType", "question", "papers", "comparison", "synthesis", "limitations"],
+    properties: {
+      taskType: { const: "multi-paper-analysis" },
+      question: { type: "string" },
+      papers: {
+        type: "array",
+        maxItems: 4,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["id", "name", "role", "oneSentenceTakeaway", "coreMethod", "keyEvidence"],
+          properties: {
+            id: { type: "string" },
+            name: { type: "string" },
+            role: { enum: ["current", "referenced"] },
+            oneSentenceTakeaway: { type: "string" },
+            coreMethod: { type: "string" },
+            keyEvidence: {
+              type: "array",
+              maxItems: 5,
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["claim", "source"],
+                properties: {
+                  claim: { type: "string" },
+                  source: { type: "string" },
+                  page: { type: "number" }
+                }
+              }
+            }
+          }
+        }
+      },
+      comparison: {
+        type: "object",
+        additionalProperties: false,
+        required: ["similarities", "differences", "complementaryOpportunities", "conflictsOrRisks"],
+        properties: {
+          similarities: { type: "array", maxItems: 5, items: { type: "string" } },
+          differences: { type: "array", maxItems: 5, items: { type: "string" } },
+          complementaryOpportunities: { type: "array", maxItems: 5, items: { type: "string" } },
+          conflictsOrRisks: { type: "array", maxItems: 5, items: { type: "string" } }
+        }
+      },
+      synthesis: {
+        type: "object",
+        additionalProperties: false,
+        required: ["shortAnswer", "detailedAnalysisMarkdown", "suggestedNextQuestions"],
+        properties: {
+          shortAnswer: { type: "string" },
+          detailedAnalysisMarkdown: { type: "string" },
+          suggestedNextQuestions: { type: "array", maxItems: 4, items: { type: "string" } }
+        }
+      },
+      limitations: { type: "array", maxItems: 5, items: { type: "string" } }
+    }
+  };
+}
+function codexPdfFileName(role, index) {
+  if (role === "current") return "current.pdf";
+  return `reference-${Math.max(1, index)}.pdf`;
+}
+async function writeCodexPdfOnlyPackage(request) {
+  const fs = loadNodeModule("node:fs");
+  const path = loadNodeModule("node:path");
+  const analysisDir = request.baseDir;
+  fs.mkdirSync(path.join(analysisDir, "papers"), { recursive: true });
+  let referenceIndex = 0;
+  for (const [index, paper] of request.papers.entries()) {
+    if (!paper.originalPdfData) {
+      throw new Error(`Codex PDF-only package requires original PDF data for ${paper.name || paper.vaultPath || index + 1}`);
+    }
+    const id = safePaperId(paper.id || paper.vaultPath || paper.name, `paper-${index + 1}`);
+    const pdfFileName = codexPdfFileName(paper.role, paper.role === "current" ? 0 : ++referenceIndex);
+    const pdfPath = path.join("papers", pdfFileName).replace(/\\/g, "/");
+    fs.writeFileSync(path.join(analysisDir, pdfPath), paper.originalPdfData);
+    void id;
+  }
+  const selectedContext = (request.selectedContext || "").trim();
+  const selectedContextPath = selectedContext ? "selected-context.md" : void 0;
+  if (selectedContextPath) fs.writeFileSync(path.join(analysisDir, selectedContextPath), selectedContext, "utf8");
+  return { analysisDir, inputMode: "pdf-only", selectedContextPath };
+}
+function writeCodexOutputSchema(analysisDir) {
+  const fs = loadNodeModule("node:fs");
+  const path = loadNodeModule("node:path");
+  const outputSchemaPath = path.join(analysisDir, "output.schema.json");
+  writeJson(fs, outputSchemaPath, codexAnalysisOutputSchema());
+  return outputSchemaPath;
+}
+async function writeCodexDebugFullPackage(request) {
+  const fs = loadNodeModule("node:fs");
+  const path = loadNodeModule("node:path");
+  const analysisDir = request.baseDir;
+  fs.mkdirSync(path.join(analysisDir, "papers"), { recursive: true });
+  const skillPath = "SKILL.md";
+  fs.writeFileSync(path.join(analysisDir, skillPath), buildCodexAnalysisSkillMarkdown(), "utf8");
+  const selectedContext = (request.selectedContext || "").trim();
+  const selectedContextPath = selectedContext ? "selected-context.md" : void 0;
+  if (selectedContextPath) fs.writeFileSync(path.join(analysisDir, selectedContextPath), selectedContext, "utf8");
+  const manifestPapers = [];
+  for (const [index, paper] of request.papers.entries()) {
+    const id = safePaperId(paper.id || paper.vaultPath || paper.name, `paper-${index + 1}`);
+    const paperDir = path.join(analysisDir, "papers", id);
+    const pagesDir = path.join(paperDir, "pages");
+    fs.mkdirSync(pagesDir, { recursive: true });
+    const metadataPath = path.join("papers", id, "metadata.json");
+    const briefPath = path.join("papers", id, "brief.md");
+    const summaryPath = path.join("papers", id, "summary.md");
+    const fullTextPath = path.join("papers", id, "full_text.md");
+    const chunksPath = path.join("papers", id, "chunks.json");
+    const extractionReportPath = path.join("papers", id, "extraction_report.json");
+    const originalPdfPath = paper.originalPdfData ? path.join("papers", id, "original.pdf") : void 0;
+    const relativePagesDir = path.join("papers", id, "pages").replace(/\\/g, "/");
+    const pages = paper.pages || [];
+    const chunks = paper.chunks || [];
+    const extractionReport = buildPdfExtractionReport(paper);
+    writeJson(fs, path.join(analysisDir, metadataPath), {
+      id,
+      name: paper.name,
+      role: paper.role,
+      vaultPath: paper.vaultPath,
+      mtime: paper.mtime,
+      pageCount: pages.length,
+      fullTextLength: pages.reduce((total, page) => total + (page.text || "").length, 0),
+      chunkCount: chunks.length,
+      originalPdfAvailable: Boolean(paper.originalPdfData)
+    });
+    fs.writeFileSync(path.join(analysisDir, briefPath), buildCodexPaperBrief(paper), "utf8");
+    fs.writeFileSync(path.join(analysisDir, summaryPath), paper.summary || "(no summary)", "utf8");
+    fs.writeFileSync(
+      path.join(analysisDir, fullTextPath),
+      [`# ${paper.name}`, `Vault path: ${paper.vaultPath}`, "", ...pages.map((page) => `[Page ${page.page}]
+${page.text}`)].join("\n\n"),
+      "utf8"
+    );
+    writeJson(fs, path.join(analysisDir, chunksPath), chunks);
+    writeJson(fs, path.join(analysisDir, extractionReportPath), extractionReport);
+    if (paper.originalPdfData && originalPdfPath) {
+      fs.writeFileSync(path.join(analysisDir, originalPdfPath), paper.originalPdfData);
+    }
+    for (const page of pages) {
+      fs.writeFileSync(path.join(pagesDir, pageFileName(page.page)), page.text || "", "utf8");
+    }
+    manifestPapers.push({
+      id,
+      role: paper.role,
+      name: paper.name,
+      vaultPath: paper.vaultPath,
+      metadataPath: metadataPath.replace(/\\/g, "/"),
+      briefPath: briefPath.replace(/\\/g, "/"),
+      summaryPath: summaryPath.replace(/\\/g, "/"),
+      fullTextPath: fullTextPath.replace(/\\/g, "/"),
+      chunksPath: chunksPath.replace(/\\/g, "/"),
+      extractionReportPath: extractionReportPath.replace(/\\/g, "/"),
+      originalPdfPath: originalPdfPath == null ? void 0 : originalPdfPath.replace(/\\/g, "/"),
+      pagesDir: relativePagesDir
+    });
+  }
+  const manifest = {
+    version: 1,
+    taskId: request.taskId,
+    createdAt: request.createdAt,
+    question: request.question,
+    skillPath,
+    papers: manifestPapers
+  };
+  const manifestPath = path.join(analysisDir, "manifest.json");
+  const questionPath = path.join(analysisDir, "question.md");
+  const outputSchemaPath = path.join(analysisDir, "output.schema.json");
+  writeJson(fs, manifestPath, manifest);
+  fs.writeFileSync(questionPath, request.question, "utf8");
+  writeJson(fs, outputSchemaPath, codexAnalysisOutputSchema());
+  return {
+    analysisDir,
+    inputMode: "debug-full",
+    skillPath: path.join(analysisDir, skillPath),
+    manifestPath,
+    questionPath,
+    outputSchemaPath,
+    selectedContextPath
+  };
+}
+async function writeCodexAnalysisPackage(request) {
+  return writeCodexPdfOnlyPackage(request);
+}
+function codexPdfPromptList(papers = []) {
+  let referenceIndex = 0;
+  return papers.map((paper, index) => {
+    const pdfPath = `papers/${codexPdfFileName(paper.role, paper.role === "current" ? 0 : ++referenceIndex)}`;
+    const role = paper.role === "current" ? "current" : `reference-${referenceIndex}`;
+    const displayName = paper.name || paper.vaultPath || `paper-${index + 1}`;
+    return `- ${pdfPath} (${role}) = ${displayName}${paper.vaultPath ? `; vault path: ${paper.vaultPath}` : ""}`;
+  });
+}
+function buildCodexPdfOnlyPrompt(question = "", papers = [], options = {}) {
+  const paperLines = codexPdfPromptList(papers);
+  return [
+    "You are inside a read-only PDF Chat Codex directory that contains only the PDF files selected for this turn.",
+    "Read only these PDF files:",
+    paperLines.length ? paperLines.join("\n") : "- No PDF files are attached for this turn.",
+    options.selectedContextPath ? `${options.selectedContextPath} contains the user's selected passage or local context. Use it as the primary passage to explain when it is relevant to the question.` : "",
+    question ? `User question:
+${question}` : "Use the user's question from the command prompt.",
+    "Answer the user's exact question. Use the PDF files when the question needs paper evidence or local context; for casual or operational prompts, answer directly without unnecessary reading.",
+    "Do not write a full survey or generic comparison unless the user explicitly asks for it.",
+    "Keep schema side fields concise: use empty arrays or short strings when a section is not needed for the user's question.",
+    "Put the user-facing answer in synthesis.detailedAnalysisMarkdown.",
+    "When you make an important claim, cite the paper name and page number when the PDF reader exposes page information.",
+    "If a PDF cannot be read or page evidence is unavailable, say that clearly in limitations instead of guessing.",
+    "Return only JSON that matches output.schema.json. Do not include markdown fences."
+  ].filter(Boolean).join("\n");
+}
+function buildCodexMarkdownPrompt(question = "", papers = [], options = {}) {
+  const paperLines = codexPdfPromptList(papers);
+  return [
+    "You are inside a read-only PDF Chat Codex directory that contains only the PDF files selected for this turn.",
+    "Read only these PDF files:",
+    paperLines.length ? paperLines.join("\n") : "- No PDF files are attached for this turn.",
+    options.selectedContextPath ? `${options.selectedContextPath} contains the user's selected passage or selected context. Treat it as the primary passage to explain when it is relevant to the question.` : "",
+    question ? `User question:
+${question}` : "Use the user's question from the command prompt.",
+    "Answer the user's exact question. Use the PDF files when the question needs paper evidence or local context; for casual or operational prompts, answer directly without unnecessary reading.",
+    "Write a natural, readable Markdown answer. Do not output JSON and do not wrap the answer in a markdown fence.",
+    "Do not write a full survey, generic comparison, or table unless the user's question asks for it.",
+    "When you make an important claim, cite the paper name and page number when the PDF reader exposes page information.",
+    "If a PDF cannot be read or page evidence is unavailable, say that clearly instead of guessing."
+  ].filter(Boolean).join("\n");
+}
+function buildCodexDebugFullPrompt() {
+  return [
+    "Read SKILL.md first, then follow it exactly for this multi-paper analysis package.",
+    "Read manifest.json and question.md after SKILL.md.",
+    "If selected-context.md exists, treat it as the user's selected passage or local context for the question.",
+    "For each paper: inspect extraction_report.json and brief.md first for orientation, then summary.md, full_text.md, pages/, and chunks.json for evidence.",
+    "If extraction_report.json reports mixed/poor quality or the text looks garbled, inspect original.pdf when present.",
+    "The prompt intentionally does not include the full paper text. Open the files listed in manifest.json inside this read-only analysis directory.",
+    "Extract each paper's research problem, core method, assumptions, experiments, conclusions, and limitations.",
+    "Only compare similarities, differences, complementary opportunities, and conflicts or risks when the user's question asks for comparison.",
+    "Every important claim must cite the paper name and page or chunk/source location when available.",
+    "Return only JSON that matches output.schema.json. Do not include markdown fences."
+  ].join("\n");
+}
+function buildCodexDebugFullMarkdownPrompt() {
+  return [
+    "You are inside a read-only PDF Chat Codex debug analysis directory.",
+    "Read manifest.json and question.md first.",
+    "If selected-context.md exists, treat it as the user's selected passage or local context for the question.",
+    "For each paper, use extraction_report.json and brief.md only for orientation.",
+    "Use summary.md, full_text.md, pages/, chunks.json, and original.pdf when useful for evidence.",
+    "Answer the user's exact question in natural, readable Markdown.",
+    "Do not output JSON and do not wrap the answer in a markdown fence.",
+    "Do not write a full survey, generic comparison, or table unless the user's question asks for it.",
+    "Every important claim should cite the paper name and page, chunk, or file source when available.",
+    "If text extraction is poor or evidence is unavailable, say that clearly instead of guessing."
+  ].join("\n");
+}
+function buildCodexDeepAnalysisPrompt() {
+  return buildCodexMarkdownPrompt();
+}
+function buildCodexExecArgs(request) {
+  const outputMode = request.outputMode === "json-schema" ? "json-schema" : "markdown";
+  const outputFileName = request.outputFileName || (outputMode === "json-schema" ? "codex-output.json" : "codex-output.md");
+  const args = [
+    "exec",
+    "--json",
+    "--sandbox",
+    "read-only",
+    "--skip-git-repo-check",
+    "--ephemeral",
+    "--cd",
+    request.analysisDir,
+    "--output-last-message",
+    outputFileName
+  ];
+  if (outputMode === "json-schema") args.push("--output-schema", "output.schema.json");
+  if (request.profile) args.push("--profile", request.profile);
+  if (request.model) args.push("--model", request.model);
+  if (request.reasoningEffort) args.push("-c", `model_reasoning_effort="${request.reasoningEffort}"`);
+  if (request.verbosity) args.push("-c", `model_verbosity="${request.verbosity}"`);
+  args.push(request.prompt);
+  return { command: request.command || "codex", args };
+}
+function envValue(env, key) {
+  return env[key] || env[key.toUpperCase()] || env[key.toLowerCase()] || "";
+}
+function winJoin(...parts) {
+  return parts.filter(Boolean).map((part, index) => index === 0 ? part.replace(/[\\/]+$/g, "") : part.replace(/^[\\/]+|[\\/]+$/g, "")).join("\\");
+}
+function defaultResolveEnv() {
+  return typeof process !== "undefined" && (process == null ? void 0 : process.env) ? process.env : {};
+}
+function defaultResolvePlatform() {
+  return typeof process !== "undefined" && (process == null ? void 0 : process.platform) ? process.platform : "";
+}
+function defaultExistsSync(file) {
+  try {
+    const fs = loadNodeModule("node:fs");
+    return fs.existsSync(file);
+  } catch (error) {
+    void error;
+    return false;
+  }
+}
+function defaultReaddirSync(dir) {
+  try {
+    const fs = loadNodeModule("node:fs");
+    return fs.readdirSync(dir);
+  } catch (error) {
+    void error;
+    return [];
+  }
+}
+function commandBasename(command) {
+  return String(command || "").trim().replace(/^["']|["']$/g, "").split(/[\\/]/).pop() || "";
+}
+function commandDirname(command) {
+  const normalized = String(command || "").trim().replace(/^["']|["']$/g, "");
+  const index = Math.max(normalized.lastIndexOf("\\"), normalized.lastIndexOf("/"));
+  return index > 0 ? normalized.slice(0, index) : "";
+}
+function isAbsoluteCodexExe(command) {
+  return /[\\/]/.test(command) && /^codex\.exe$/i.test(commandBasename(command));
+}
+function isResolvableCodexCommand(command) {
+  if (isAbsoluteCodexExe(command)) return false;
+  return /^codex(?:\.(?:exe|cmd|ps1))?$/i.test(commandBasename(command));
+}
+function pathDirs(env) {
+  return (envValue(env, "PATH") || envValue(env, "Path") || "").split(";").map((dir) => dir.trim()).filter(Boolean);
+}
+function nodeExecutableCandidates(env) {
+  const candidates = [
+    envValue(env, "PDF_CHAT_NODE_EXE"),
+    ...pathDirs(env).map((dir) => winJoin(dir, "node.exe")),
+    winJoin(envValue(env, "ProgramFiles"), "nodejs", "node.exe"),
+    winJoin(envValue(env, "ProgramFiles(x86)"), "nodejs", "node.exe"),
+    winJoin(envValue(env, "LOCALAPPDATA"), "Programs", "nodejs", "node.exe")
+  ];
+  return [...new Set(candidates.filter(Boolean))];
+}
+function npmCodexScriptCandidates(env, command) {
+  const commandDir = commandDirname(command);
+  return [
+    commandDir ? winJoin(commandDir, "node_modules", "@openai", "codex", "bin", "codex.js") : "",
+    winJoin(envValue(env, "APPDATA"), "npm", "node_modules", "@openai", "codex", "bin", "codex.js"),
+    winJoin(envValue(env, "LOCALAPPDATA"), "npm", "node_modules", "@openai", "codex", "bin", "codex.js")
+  ].filter(Boolean);
+}
+function bundledCodexExeCandidates(env, readdirSync) {
+  const roots = [
+    winJoin(envValue(env, "USERPROFILE"), ".cursor", "extensions"),
+    winJoin(envValue(env, "USERPROFILE"), ".vscode", "extensions"),
+    winJoin(envValue(env, "USERPROFILE"), ".windsurf", "extensions")
+  ].filter(Boolean);
+  const candidates = [];
+  for (const root of roots) {
+    for (const entry of readdirSync(root)) {
+      if (!/^openai\.chatgpt-.*win32-x64$/i.test(entry)) continue;
+      candidates.push(winJoin(root, entry, "bin", "windows-x86_64", "codex.exe"));
+    }
+  }
+  return candidates.sort().reverse();
+}
+function resolveCodexExecArgs(execArgs, options = {}) {
+  const platform = options.platform || defaultResolvePlatform();
+  if (platform !== "win32" || !isResolvableCodexCommand(execArgs.command)) return execArgs;
+  const env = options.env || defaultResolveEnv();
+  const existsSync = options.existsSync || defaultExistsSync;
+  const readdirSync = options.readdirSync || defaultReaddirSync;
+  for (const script of npmCodexScriptCandidates(env, execArgs.command)) {
+    if (!existsSync(script)) continue;
+    for (const nodeExe of nodeExecutableCandidates(env)) {
+      if (existsSync(nodeExe)) {
+        return { command: nodeExe, args: [script, ...execArgs.args] };
+      }
+    }
+  }
+  for (const exe of bundledCodexExeCandidates(env, readdirSync)) {
+    if (existsSync(exe)) return { command: exe, args: execArgs.args };
+  }
+  return execArgs;
+}
+function argValue(args, flag) {
+  const index = args.indexOf(flag);
+  return index >= 0 && index + 1 < args.length ? args[index + 1] : null;
+}
+function redactProcessText(text) {
+  return (text || "").replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, "Bearer [REDACTED]").replace(/sk-[A-Za-z0-9_-]{12,}/g, "sk-[REDACTED]").slice(0, 1200);
+}
+function shortPath(value) {
+  const text = String(value || "").replace(/\\/g, "/").trim();
+  if (!text) return "";
+  const parts = text.split("/").filter(Boolean);
+  return parts.slice(-3).join("/");
+}
+function shortCommand(value) {
+  return redactProcessText(String(value || "").replace(/\s+/g, " ").trim()).slice(0, 160);
+}
+function summarizeCodexJsonEvent(event) {
+  if (!event || typeof event !== "object" || Array.isArray(event)) return null;
+  const value = event;
+  const type = String(value.type || value.event || value.kind || "").trim();
+  if (!type) return null;
+  const lowerType = type.toLowerCase();
+  if (/reasoning|thinking|thought/.test(lowerType)) {
+    return { type, message: "Codex \u6B63\u5728\u63A8\u7406\u2026", elapsedMs: 0 };
+  }
+  if (/file.*read|read.*file/.test(lowerType)) {
+    const path = shortPath(value.path || value.file || value.filename);
+    return { type, message: path ? `\u6B63\u5728\u8BFB\u53D6\u6587\u4EF6\uFF1A${path}` : "Codex \u6B63\u5728\u8BFB\u53D6\u6587\u4EF6\u2026", elapsedMs: 0 };
+  }
+  if (/exec|command|shell|tool/.test(lowerType)) {
+    const command = shortCommand(value.command || value.cmd || value.name || value.tool || value.toolName);
+    return { type, message: command ? `\u6B63\u5728\u6267\u884C\u547D\u4EE4\uFF1A${command}` : "Codex \u6B63\u5728\u4F7F\u7528\u5DE5\u5177\u2026", elapsedMs: 0 };
+  }
+  if (/message|response|answer|final/.test(lowerType)) {
+    return { type, message: /final/.test(lowerType) ? "Codex \u6B63\u5728\u6574\u7406\u6700\u7EC8\u7B54\u6848\u2026" : "Codex \u6B63\u5728\u751F\u6210\u56DE\u7B54\u2026", elapsedMs: 0 };
+  }
+  if (/error|failed|failure/.test(lowerType)) {
+    return { type, message: "Codex \u62A5\u544A\u4E86\u4E00\u4E2A\u8FD0\u884C\u4E8B\u4EF6\uFF0C\u6B63\u5728\u7B49\u5F85\u6700\u7EC8\u7ED3\u679C\u2026", elapsedMs: 0 };
+  }
+  return { type, message: `Codex \u4E8B\u4EF6\uFF1A${type}`, elapsedMs: 0 };
+}
+function emitCodexJsonProgress(line, startedAt, onProgress) {
+  if (!onProgress) return;
+  let parsed;
+  try {
+    parsed = JSON.parse(line);
+  } catch (error) {
+    void error;
+    return;
+  }
+  const summary = summarizeCodexJsonEvent(parsed);
+  if (!summary) return;
+  onProgress({ ...summary, elapsedMs: Math.max(0, Date.now() - startedAt) });
+}
+function runCodexExec(execArgs, options) {
+  const path = loadNodeModule("node:path");
+  const fs = loadNodeModule("node:fs");
+  const childProcess = options.spawn ? { spawn: options.spawn } : loadNodeModule("node:child_process");
+  const resolvedExecArgs = resolveCodexExecArgs(execArgs);
+  const analysisDir = argValue(resolvedExecArgs.args, "--cd");
+  if (!analysisDir) throw new Error("Codex command is missing --cd analysis directory");
+  const outputFileName = options.outputFileName || "codex-output.json";
+  const outputPath = path.join(analysisDir, outputFileName);
+  return new Promise((resolve, reject) => {
+    var _a, _b, _c, _d;
+    let settled = false;
+    let stderr = "";
+    let stdoutBuffer = "";
+    const startedAt = Date.now();
+    const timeoutMs = Math.max(1, options.timeoutMs || 18e5);
+    const child = childProcess.spawn(resolvedExecArgs.command, resolvedExecArgs.args, {
+      cwd: analysisDir,
+      windowsHide: true,
+      shell: false
+    });
+    try {
+      (_a = child.stdin) == null ? void 0 : _a.end();
+    } catch (error) {
+      void error;
+    }
+    let timer;
+    const onAbort = () => {
+      try {
+        child.kill("SIGTERM");
+      } catch (error) {
+        void error;
+      }
+      const abortError = new Error("Codex analysis aborted");
+      abortError.name = "AbortError";
+      finish(() => reject(abortError));
+    };
+    const finish = (callback) => {
+      var _a2;
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      (_a2 = options.signal) == null ? void 0 : _a2.removeEventListener("abort", onAbort);
+      callback();
+    };
+    (_b = options.signal) == null ? void 0 : _b.addEventListener("abort", onAbort);
+    timer = setTimeout(() => {
+      try {
+        child.kill("SIGTERM");
+      } catch (error) {
+        void error;
+      }
+      finish(() => reject(new Error(`Codex analysis timed out after ${timeoutMs}ms`)));
+    }, timeoutMs);
+    (_c = child.stderr) == null ? void 0 : _c.on("data", (chunk) => {
+      stderr += String(chunk || "");
+    });
+    (_d = child.stdout) == null ? void 0 : _d.on("data", (chunk) => {
+      stdoutBuffer += String(chunk || "");
+      const lines = stdoutBuffer.split(/\r?\n/);
+      stdoutBuffer = lines.pop() || "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed) emitCodexJsonProgress(trimmed, startedAt, options.onProgress);
+      }
+    });
+    child.on("error", (error) => {
+      finish(() => reject(new Error("Codex CLI failed to start: " + error.message)));
+    });
+    child.on("close", (code) => {
+      finish(() => {
+        if (stdoutBuffer.trim()) emitCodexJsonProgress(stdoutBuffer.trim(), startedAt, options.onProgress);
+        if (code !== 0) {
+          const detail = redactProcessText(stderr);
+          reject(new Error(`Codex CLI exited with code ${code}${detail ? `: ${detail}` : ""}`));
+          return;
+        }
+        if (!fs.existsSync(outputPath)) {
+          reject(new Error(`Codex CLI finished but did not write ${outputFileName}`));
+          return;
+        }
+        resolve(fs.readFileSync(outputPath, "utf8"));
+      });
+    });
+  });
+}
+function isStringArray(value) {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+function parseCodexAnalysisOutput(raw) {
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error("Invalid Codex analysis output: JSON parse failed");
+  }
+  const value = parsed;
+  if (!value || typeof value !== "object" || value.taskType !== "multi-paper-analysis" || typeof value.question !== "string" || !Array.isArray(value.papers) || !value.comparison || !value.synthesis || typeof value.synthesis.shortAnswer !== "string" || typeof value.synthesis.detailedAnalysisMarkdown !== "string" || !isStringArray(value.synthesis.suggestedNextQuestions) || !isStringArray(value.limitations)) {
+    throw new Error("Invalid Codex analysis output: missing required fields");
+  }
+  return value;
+}
+function parseCodexMarkdownOutput(raw) {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) throw new Error("Invalid Codex analysis output: empty Markdown output");
+  const fenced = trimmed.match(/^```(?:markdown|md)?\s*\r?\n([\s\S]*?)\r?\n```$/i);
+  return (fenced ? fenced[1] : trimmed).trim();
+}
+async function extractCodexMarkdownAnalysis(request) {
+  const paperList = request.papers.map((paper) => `- ${paper.role}: ${paper.name} (${paper.vaultPath})`).join("\n");
+  const raw = await request.llm.chat({
+    modelProfile: request.modelProfile,
+    signal: request.signal,
+    stream: false,
+    temperatureOverride: 0.1,
+    maxTokensOverride: 4e3,
+    messages: [
+      {
+        role: "system",
+        content: [
+          "You extract structured research-analysis data from an existing Codex Markdown answer.",
+          "Use only the supplied question, paper list, and Markdown answer.",
+          "Do not add claims that are absent from the Markdown.",
+          "Use empty arrays for missing comparison evidence and concise limitation strings for missing information.",
+          "Return only valid JSON matching the multi-paper analysis shape."
+        ].join("\n")
+      },
+      {
+        role: "user",
+        content: [
+          "Question:",
+          request.question,
+          "",
+          "Papers:",
+          paperList || "(none)",
+          "",
+          "Codex Markdown answer:",
+          request.markdown
+        ].join("\n")
+      }
+    ]
+  });
+  return parseCodexAnalysisOutput(raw);
+}
+function listBlock(items) {
+  return items.length ? items.map((item) => `- ${item}`).join("\n") : "- \u6682\u65E0";
+}
+function tableCell(value) {
+  return String(value != null ? value : "").replace(/\|/g, "\\|").replace(/\r?\n/g, " ").trim();
+}
+function evidenceTable(output) {
+  const rows = output.papers.flatMap(
+    (paper) => paper.keyEvidence.map((evidence) => ({
+      paper: paper.name,
+      claim: evidence.claim,
+      source: evidence.source,
+      page: typeof evidence.page === "number" ? String(evidence.page) : ""
+    }))
+  );
+  if (!rows.length) return "";
+  return [
+    "### \u8BC1\u636E\u8868",
+    "| \u8BBA\u6587 | \u8BC1\u636E/\u4E3B\u5F20 | \u6765\u6E90 | \u9875\u7801 |",
+    "| --- | --- | --- | --- |",
+    ...rows.map((row) => `| ${tableCell(row.paper)} | ${tableCell(row.claim)} | ${tableCell(row.source)} | ${tableCell(row.page)} |`)
+  ].join("\n");
+}
+function renderCodexAnalysisMarkdown(output) {
+  const evidence = evidenceTable(output);
+  const nextQuestions = output.synthesis.suggestedNextQuestions.length ? `
+
+### \u53EF\u4EE5\u7EE7\u7EED\u8FFD\u95EE
+${listBlock(output.synthesis.suggestedNextQuestions)}` : "";
+  const limitations = output.limitations.length ? `
+
+### \u5C40\u9650
+${listBlock(output.limitations)}` : "";
+  const sections = [
+    `### \u7B80\u77ED\u7ED3\u8BBA
+${output.synthesis.shortAnswer}`,
+    output.synthesis.detailedAnalysisMarkdown
+  ];
+  if (evidence) sections.push(evidence);
+  if (output.comparison.similarities.length) sections.push(`### \u76F8\u4F3C\u70B9
+${listBlock(output.comparison.similarities)}`);
+  if (output.comparison.differences.length) sections.push(`### \u4E0D\u540C\u70B9
+${listBlock(output.comparison.differences)}`);
+  if (output.comparison.complementaryOpportunities.length) {
+    sections.push(`### \u7ED3\u5408\u673A\u4F1A
+${listBlock(output.comparison.complementaryOpportunities)}`);
+  }
+  if (output.comparison.conflictsOrRisks.length) sections.push(`### \u98CE\u9669\u4E0E\u51B2\u7A81
+${listBlock(output.comparison.conflictsOrRisks)}`);
+  return sections.filter((section) => section && section.trim()).join("\n\n") + nextQuestions + limitations;
+}
+
+// src/codex-cli.ts
+function loadNodeModule2(name) {
+  const nodeRequire = typeof require === "function" ? require : null;
+  if (!nodeRequire) throw new Error("Node.js APIs are not available in this Obsidian environment");
+  return nodeRequire(name);
+}
+function resolveCodexPdfLocation(app, vaultPath) {
+  var _a;
+  const adapter = (_a = app == null ? void 0 : app.vault) == null ? void 0 : _a.adapter;
+  if (!adapter || typeof adapter.getFullPath !== "function") {
+    throw new Error("Codex native PDF sessions require the Obsidian desktop file-system adapter");
+  }
+  const path = loadNodeModule2("node:path");
+  const absolutePath = adapter.getFullPath(vaultPath);
+  if (!absolutePath) throw new Error(`Unable to resolve PDF path: ${vaultPath}`);
+  return { absolutePath, workingDirectory: path.dirname(absolutePath) };
+}
+function quotePathForPrompt(file) {
+  const label = file.role === "current" ? "\u5F53\u524D\u8BBA\u6587" : "\u5F15\u7528\u8BBA\u6587";
+  return `- ${label}\uFF08${file.name}\uFF09\uFF1A${file.absolutePath}`;
+}
+function buildCodexTurnPrompt(request) {
+  const question = (request.question || "").trim();
+  const papers = request.papers || [];
+  const selection = (request.selectedContext || "").trim();
+  const sections = [
+    `\u7528\u6237\u95EE\u9898\uFF1A
+${question}`,
+    papers.length ? `\u672C\u8F6E\u53EF\u53C2\u8003\u7684 PDF\uFF1A
+${papers.map(quotePathForPrompt).join("\n")}` : "\u672C\u8F6E\u6CA1\u6709\u9644\u52A0 PDF\u3002"
+  ];
+  if (selection) sections.push(`\u672C\u8F6E\u9009\u533A\u4E0A\u4E0B\u6587\uFF1A
+${selection}`);
+  sections.push(
+    "\u8BF7\u76F4\u63A5\u56DE\u7B54\u7528\u6237\u95EE\u9898\u3002\u53EA\u6709\u95EE\u9898\u786E\u5B9E\u9700\u8981\u8BBA\u6587\u5185\u5BB9\u65F6\u624D\u8BFB\u53D6\u4E0A\u8FF0 PDF\uFF1B\u666E\u901A\u95EE\u5019\u6216\u72B6\u6001\u95EE\u9898\u65E0\u9700\u8BFB\u53D6 PDF\u3002\u5F15\u7528\u8BBA\u6587\u8BC1\u636E\u65F6\u5C3D\u91CF\u7ED9\u51FA\u6587\u4EF6\u540D\u548C PDF \u9875\u7801\u3002\u4E0D\u8981\u8BFB\u53D6\u672A\u5217\u51FA\u7684 PDF\u3002"
+  );
+  return sections.join("\n\n");
+}
+function appendModelOptions(args, request) {
+  if (request.model) args.push("--model", request.model);
+  if (request.reasoningEffort) {
+    args.push("-c", `model_reasoning_effort="${request.reasoningEffort}"`);
+  }
+  if (request.verbosity) args.push("-c", `model_verbosity="${request.verbosity}"`);
+}
+function buildCodexThreadExecArgs(request) {
+  const threadId = (request.threadId || "").trim();
+  const args = threadId ? ["exec", "resume", "--json", "--skip-git-repo-check"] : [
+    "exec",
+    "--json",
+    "--sandbox",
+    "read-only",
+    "--skip-git-repo-check",
+    "--cd",
+    request.workingDirectory
+  ];
+  if (!threadId && request.profile) args.push("--profile", request.profile);
+  appendModelOptions(args, request);
+  if (threadId) args.push(threadId);
+  args.push(request.prompt);
+  return { command: request.command || "codex", args, threadId: threadId || void 0 };
+}
+function eventMessage(event) {
+  switch (event.type) {
+    case "turn.started":
+      return "Codex \u5DF2\u5F00\u59CB\u5904\u7406\u672C\u8F6E\u95EE\u9898";
+    case "turn.completed":
+      return "Codex \u5DF2\u5B8C\u6210\u672C\u8F6E\u56DE\u7B54";
+    case "turn.failed":
+      return "Codex \u672C\u8F6E\u6267\u884C\u5931\u8D25";
+    case "error":
+      return "Codex \u62A5\u544A\u4E86\u6267\u884C\u9519\u8BEF";
+    default:
+      break;
+  }
+  const item = event.item;
+  if (!item || typeof item.type !== "string") return null;
+  if (item.type === "reasoning") return "Codex \u6B63\u5728\u63A8\u7406";
+  if (item.type === "command_execution") return "Codex \u6B63\u5728\u8BFB\u53D6\u8BBA\u6587\u6216\u6267\u884C\u53EA\u8BFB\u547D\u4EE4";
+  if (item.type === "agent_message") return "Codex \u6B63\u5728\u6574\u7406\u56DE\u7B54";
+  return null;
+}
+function redactProcessText2(text) {
+  return (text || "").replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, "Bearer [REDACTED]").replace(/sk-[A-Za-z0-9_-]{12,}/g, "sk-[REDACTED]").slice(0, 1200);
+}
+function isCodexThreadUnavailableError(error) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  return /(session|thread).*(not found|does not exist|missing)|no rollout found|could not find.*(session|thread)/i.test(
+    message
+  );
+}
+function terminateCodexChild(child) {
+  try {
+    child.kill("SIGTERM");
+  } catch (error) {
+    void error;
+  }
+  const pid = Number(child.pid);
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  try {
+    const processModule = loadNodeModule2("node:process");
+    if (processModule.platform !== "win32") return;
+    const childProcess = loadNodeModule2("node:child_process");
+    childProcess.spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
+      windowsHide: true,
+      shell: false,
+      stdio: "ignore"
+    });
+  } catch (error) {
+    void error;
+  }
+}
+function runCodexThreadTurn(execArgs, options) {
+  const childProcess = options.spawn ? { spawn: options.spawn } : loadNodeModule2("node:child_process");
+  const resolved = resolveCodexExecArgs(execArgs);
+  const startedAt = Date.now();
+  const timeoutMs = Math.max(1, options.timeoutMs || 18e5);
+  return new Promise((resolve, reject) => {
+    var _a, _b, _c, _d, _e;
+    let settled = false;
+    let stdoutBuffer = "";
+    let stderr = "";
+    let threadId = execArgs.threadId || "";
+    let finalMarkdown = "";
+    const child = childProcess.spawn(resolved.command, resolved.args, {
+      cwd: options.workingDirectory,
+      windowsHide: true,
+      shell: false
+    });
+    const finish = (callback) => {
+      var _a2;
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      (_a2 = options.signal) == null ? void 0 : _a2.removeEventListener("abort", onAbort);
+      callback();
+    };
+    const onAbort = () => {
+      terminateCodexChild(child);
+      const error = new Error("Codex turn aborted");
+      error.name = "AbortError";
+      finish(() => reject(error));
+    };
+    const emitEvent = (rawLine) => {
+      var _a2, _b2;
+      const line = rawLine.trim();
+      if (!line) return;
+      let event;
+      try {
+        event = JSON.parse(line);
+      } catch (error) {
+        void error;
+        return;
+      }
+      if (event.type === "thread.started" && typeof event.thread_id === "string") {
+        threadId = event.thread_id;
+        void ((_a2 = options.onThreadId) == null ? void 0 : _a2.call(options, threadId));
+      }
+      const item = event.item;
+      if (event.type === "item.completed" && (item == null ? void 0 : item.type) === "agent_message" && typeof item.text === "string" && item.text.trim()) {
+        finalMarkdown = item.text.trim();
+      }
+      const message = eventMessage(event);
+      if (message) {
+        (_b2 = options.onProgress) == null ? void 0 : _b2.call(options, {
+          type: String(event.type || (item == null ? void 0 : item.type) || "progress"),
+          message,
+          elapsedMs: Math.max(0, Date.now() - startedAt)
+        });
+      }
+    };
+    try {
+      (_a = child.stdin) == null ? void 0 : _a.end();
+    } catch (error) {
+      void error;
+    }
+    (_b = child.stdout) == null ? void 0 : _b.on("data", (chunk) => {
+      stdoutBuffer += String(chunk);
+      const lines = stdoutBuffer.split(/\r?\n/);
+      stdoutBuffer = lines.pop() || "";
+      for (const line of lines) emitEvent(line);
+    });
+    (_c = child.stderr) == null ? void 0 : _c.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on("error", (error) => finish(() => reject(error)));
+    child.on("close", (code) => {
+      if (stdoutBuffer.trim()) emitEvent(stdoutBuffer);
+      if (code !== 0) {
+        const detail = redactProcessText2(stderr) || `Codex exited with code ${String(code)}`;
+        finish(() => reject(new Error(detail)));
+        return;
+      }
+      if (!threadId) {
+        finish(() => reject(new Error("Codex did not report a thread id")));
+        return;
+      }
+      if (!finalMarkdown) {
+        finish(() => reject(new Error("Codex returned no final agent message")));
+        return;
+      }
+      finish(() => resolve({ threadId, markdown: finalMarkdown }));
+    });
+    const timer = setTimeout(() => {
+      terminateCodexChild(child);
+      const error = new Error(`Codex turn timed out after ${timeoutMs}ms`);
+      error.name = "TimeoutError";
+      finish(() => reject(error));
+    }, timeoutMs);
+    if ((_d = options.signal) == null ? void 0 : _d.aborted) onAbort();
+    else (_e = options.signal) == null ? void 0 : _e.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+// src/codex-session-manager.ts
+function cloneSnapshot(snapshot) {
+  return { ...snapshot, attachedPdfPaths: [...snapshot.attachedPdfPaths] };
+}
+function isAbortError(error) {
+  return !!error && typeof error === "object" && error.name === "AbortError";
+}
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error || "Unknown Codex error");
+}
+var CodexSessionManager = class {
+  constructor(persistence, runner = runCodexThreadTurn) {
+    this.persistence = persistence;
+    this.runner = runner;
+    __publicField(this, "turns", /* @__PURE__ */ new Map());
+    __publicField(this, "nextRunToken", 1);
+  }
+  managed(sessionId) {
+    var _a, _b;
+    let managed = this.turns.get(sessionId);
+    if (managed) return managed;
+    const session = this.persistence.getSession(sessionId);
+    managed = {
+      snapshot: {
+        sessionId,
+        threadId: (_a = session == null ? void 0 : session.codex) == null ? void 0 : _a.threadId,
+        status: ((_b = session == null ? void 0 : session.codex) == null ? void 0 : _b.lifecycle) === "closed" ? "closed" : "idle",
+        attachedPdfPaths: [...(session == null ? void 0 : session.referencedPdfPaths) || []],
+        selectionChars: 0
+      },
+      listeners: /* @__PURE__ */ new Set(),
+      runToken: 0
+    };
+    this.turns.set(sessionId, managed);
+    return managed;
+  }
+  notify(managed) {
+    const snapshot = cloneSnapshot(managed.snapshot);
+    for (const listener of managed.listeners) listener(snapshot);
+  }
+  getSnapshot(sessionId) {
+    return cloneSnapshot(this.managed(sessionId).snapshot);
+  }
+  subscribe(sessionId, listener) {
+    const managed = this.managed(sessionId);
+    managed.listeners.add(listener);
+    listener(cloneSnapshot(managed.snapshot));
+    return () => managed.listeners.delete(listener);
+  }
+  async startTurn(request) {
+    var _a, _b, _c;
+    const session = this.persistence.getSession(request.sessionId);
+    if (!session) throw new Error(`Conversation session not found: ${request.sessionId}`);
+    if (((_a = session.codex) == null ? void 0 : _a.lifecycle) === "closed") {
+      throw new Error("This Codex session is closed. Use /resume before continuing it.");
+    }
+    const managed = this.managed(request.sessionId);
+    if (managed.snapshot.status === "running") {
+      throw new Error("This Codex session already has a running turn");
+    }
+    const runToken = this.nextRunToken++;
+    const controller = new AbortController();
+    managed.runToken = runToken;
+    managed.controller = controller;
+    managed.snapshot = {
+      sessionId: request.sessionId,
+      threadId: (_b = session.codex) == null ? void 0 : _b.threadId,
+      status: "running",
+      question: request.question,
+      progress: "Codex \u6B63\u5728\u542F\u52A8",
+      startedAt: Date.now(),
+      workingDirectory: request.workingDirectory,
+      attachedPdfPaths: [...request.attachedPdfPaths],
+      selectionChars: request.selectionChars
+    };
+    this.notify(managed);
+    const codexMetadata = () => {
+      var _a2, _b2, _c2, _d, _e;
+      return {
+        model: request.model || ((_a2 = session.codex) == null ? void 0 : _a2.model) || "",
+        reasoningEffort: request.reasoningEffort || ((_b2 = session.codex) == null ? void 0 : _b2.reasoningEffort) || "medium",
+        profile: (_e = (_d = request.profile) != null ? _d : (_c2 = session.codex) == null ? void 0 : _c2.profile) != null ? _e : "",
+        threadId: managed.snapshot.threadId,
+        lifecycle: "active"
+      };
+    };
+    let threadSave = Promise.resolve();
+    const args = buildCodexThreadExecArgs({
+      command: request.command,
+      workingDirectory: request.workingDirectory,
+      threadId: (_c = session.codex) == null ? void 0 : _c.threadId,
+      prompt: request.prompt,
+      profile: request.profile,
+      model: request.model,
+      reasoningEffort: request.reasoningEffort,
+      verbosity: request.verbosity
+    });
+    try {
+      const result = await this.runner(args, {
+        workingDirectory: request.workingDirectory,
+        timeoutMs: request.timeoutMs,
+        signal: controller.signal,
+        onThreadId: (threadId) => {
+          if (managed.runToken !== runToken || managed.snapshot.status === "closed") return;
+          managed.snapshot.threadId = threadId;
+          threadSave = this.persistence.updateSessionMetadata(request.sessionId, {
+            codex: codexMetadata()
+          });
+          this.notify(managed);
+        },
+        onProgress: (progress) => {
+          if (managed.runToken !== runToken || managed.snapshot.status !== "running") return;
+          managed.snapshot.progress = progress.message;
+          this.notify(managed);
+        }
+      });
+      await threadSave;
+      if (managed.runToken !== runToken || managed.snapshot.status === "closed") {
+        return cloneSnapshot(managed.snapshot);
+      }
+      managed.snapshot.threadId = result.threadId;
+      await this.persistence.updateSessionMetadata(request.sessionId, {
+        codex: codexMetadata()
+      });
+      if (managed.runToken !== runToken) return cloneSnapshot(managed.snapshot);
+      await this.persistence.appendSessionTurn(request.sessionId, request.userContent, result.markdown);
+      managed.snapshot.status = "idle";
+      managed.snapshot.progress = "Codex \u5DF2\u5B8C\u6210\u672C\u8F6E\u56DE\u7B54";
+      managed.snapshot.finalMarkdown = result.markdown;
+      managed.snapshot.error = void 0;
+      this.notify(managed);
+    } catch (error) {
+      if (managed.runToken !== runToken || managed.snapshot.status === "closed") {
+        return cloneSnapshot(managed.snapshot);
+      }
+      if (isAbortError(error)) {
+        managed.snapshot.status = "stopped";
+        managed.snapshot.progress = "Codex \u672C\u8F6E\u5DF2\u505C\u6B62\uFF0C\u53EF\u7EE7\u7EED\u4F7F\u7528\u540C\u4E00 thread \u63D0\u95EE";
+      } else {
+        managed.snapshot.status = "failed";
+        managed.snapshot.error = isCodexThreadUnavailableError(error) ? "Codex \u4F1A\u8BDD\u53EF\u80FD\u6765\u81EA\u53E6\u4E00\u53F0\u8BBE\u5907\uFF0C\u6216\u672C\u673A Codex thread \u8BB0\u5F55\u5DF2\u88AB\u5220\u9664\u3002\u8BF7\u7528 /new \u521B\u5EFA\u65B0\u4F1A\u8BDD\u3002" : errorMessage(error);
+        managed.snapshot.progress = managed.snapshot.error;
+      }
+      this.notify(managed);
+    } finally {
+      if (managed.runToken === runToken) managed.controller = void 0;
+    }
+    return cloneSnapshot(managed.snapshot);
+  }
+  stopTurn(sessionId) {
+    const managed = this.turns.get(sessionId);
+    if (!(managed == null ? void 0 : managed.controller) || managed.snapshot.status !== "running") return false;
+    managed.snapshot.progress = "\u6B63\u5728\u505C\u6B62 Codex \u672C\u8F6E\u4EFB\u52A1";
+    this.notify(managed);
+    managed.controller.abort();
+    return true;
+  }
+  async closeSession(sessionId) {
+    var _a;
+    const managed = this.managed(sessionId);
+    managed.snapshot.status = "closed";
+    managed.snapshot.progress = "Codex \u4F1A\u8BDD\u5DF2\u5173\u95ED\uFF0C\u53EF\u901A\u8FC7 /resume \u627E\u56DE";
+    managed.runToken = this.nextRunToken++;
+    (_a = managed.controller) == null ? void 0 : _a.abort();
+    managed.controller = void 0;
+    await this.persistence.closeSession(sessionId);
+    this.notify(managed);
+  }
+  reactivateSession(sessionId) {
+    var _a;
+    const managed = this.managed(sessionId);
+    const session = this.persistence.getSession(sessionId);
+    managed.snapshot = {
+      sessionId,
+      threadId: (_a = session == null ? void 0 : session.codex) == null ? void 0 : _a.threadId,
+      status: "idle",
+      attachedPdfPaths: [...(session == null ? void 0 : session.referencedPdfPaths) || []],
+      selectionChars: 0
+    };
+    this.notify(managed);
+  }
+  dispose() {
+    var _a;
+    for (const managed of this.turns.values()) {
+      managed.runToken = this.nextRunToken++;
+      (_a = managed.controller) == null ? void 0 : _a.abort();
+      managed.controller = void 0;
+      managed.listeners.clear();
+    }
+  }
+};
 
 // src/conversation.ts
 function cleanSelectionText(raw) {
@@ -188,7 +1366,6 @@ function normalizeConversationSessions(saved) {
     const entry = candidate;
     const conversationKey = typeof entry.conversationKey === "string" && entry.conversationKey.trim() ? entry.conversationKey.trim() : "";
     const messages = normalizeConversationMessages(entry.messages);
-    if (!conversationKey || !messages.length) continue;
     const id = normalizeSessionId(entry.id || key, `${conversationKey}:${key}`);
     const createdAt = typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt) ? entry.createdAt : 0;
     const updatedAt = typeof entry.updatedAt === "number" && Number.isFinite(entry.updatedAt) ? entry.updatedAt : createdAt;
@@ -196,8 +1373,11 @@ function normalizeConversationSessions(saved) {
     const codex = codexCandidate && typeof codexCandidate.model === "string" && codexCandidate.model.trim() ? {
       model: codexCandidate.model.trim(),
       reasoningEffort: normalizeReasoningEffort(codexCandidate.reasoningEffort),
-      profile: typeof codexCandidate.profile === "string" ? codexCandidate.profile.trim() : ""
+      profile: typeof codexCandidate.profile === "string" ? codexCandidate.profile.trim() : "",
+      threadId: typeof codexCandidate.threadId === "string" ? codexCandidate.threadId.trim() || void 0 : void 0,
+      lifecycle: codexCandidate.lifecycle === "closed" ? "closed" : "active"
     } : void 0;
+    if (!conversationKey) continue;
     normalized[id] = {
       version: 1,
       id,
@@ -206,6 +1386,7 @@ function normalizeConversationSessions(saved) {
       mode: normalizeSessionMode(entry.mode),
       messages,
       referencedPdfPaths: normalizeStringArray(entry.referencedPdfPaths),
+      includeCurrentPdfInCodex: entry.includeCurrentPdfInCodex !== false,
       codex,
       createdAt,
       updatedAt
@@ -257,7 +1438,8 @@ var ConversationStore = class {
       mode: metadata.mode || "chat",
       messages,
       referencedPdfPaths: normalizeStringArray(metadata.referencedPdfPaths),
-      codex: metadata.codex ? { ...metadata.codex } : void 0,
+      includeCurrentPdfInCodex: metadata.includeCurrentPdfInCodex !== false,
+      codex: metadata.codex ? { ...metadata.codex, lifecycle: metadata.codex.lifecycle || "active" } : void 0,
       createdAt: timestamp,
       updatedAt: timestamp
     };
@@ -266,31 +1448,56 @@ var ConversationStore = class {
     return cloneSession(session);
   }
   applySessionMetadata(session, metadata = {}) {
+    var _a;
     if (metadata.title && metadata.title.trim()) session.title = metadata.title.trim();
     if (metadata.mode) session.mode = metadata.mode;
     if (metadata.referencedPdfPaths) {
       session.referencedPdfPaths = normalizeStringArray(metadata.referencedPdfPaths);
     }
-    if (metadata.codex) session.codex = { ...metadata.codex };
+    if (typeof metadata.includeCurrentPdfInCodex === "boolean") {
+      session.includeCurrentPdfInCodex = metadata.includeCurrentPdfInCodex;
+    }
+    if (metadata.codex) {
+      session.codex = {
+        ...session.codex || {},
+        ...metadata.codex,
+        lifecycle: metadata.codex.lifecycle || ((_a = session.codex) == null ? void 0 : _a.lifecycle) || "active"
+      };
+    }
     return session;
+  }
+  normalizedSessions() {
+    return normalizeConversationSessions(this.ensureContainers().conversationSessions);
+  }
+  sessionsForKey(key) {
+    return Object.values(this.normalizedSessions()).filter((session) => session.conversationKey === key);
   }
   get(key) {
     const active = this.getActiveSession(key);
     if (active) return normalizeConversationMessages(active.messages);
+    if (this.sessionsForKey(key).length) return [];
     const entry = (this.getSettings().conversationHistories || {})[key];
     return entry ? normalizeConversationMessages(entry.messages) : [];
   }
   getActiveSession(key) {
-    var _a;
+    var _a, _b;
     const settings = this.ensureContainers();
     const activeId = (_a = settings.activeConversationSessionIds) == null ? void 0 : _a[key];
     const sessions = normalizeConversationSessions(settings.conversationSessions);
-    if (activeId && sessions[activeId]) return cloneSession(sessions[activeId]);
-    const newest = Object.values(sessions).filter((session) => session.conversationKey === key).sort((left, right) => right.updatedAt - left.updatedAt)[0];
+    if (activeId && sessions[activeId]) {
+      const active = sessions[activeId];
+      if (((_b = active.codex) == null ? void 0 : _b.lifecycle) !== "closed") return cloneSession(active);
+      delete settings.activeConversationSessionIds[key];
+    }
+    const newest = Object.values(sessions).filter((session) => {
+      var _a2;
+      return session.conversationKey === key && ((_a2 = session.codex) == null ? void 0 : _a2.lifecycle) !== "closed";
+    }).sort((left, right) => right.updatedAt - left.updatedAt)[0];
     if (newest) {
       settings.activeConversationSessionIds[key] = newest.id;
       return cloneSession(newest);
     }
+    if (Object.values(sessions).some((session) => session.conversationKey === key)) return null;
     return this.createSessionFromHistory(key);
   }
   ensureSession(key, metadata = {}) {
@@ -316,7 +1523,8 @@ var ConversationStore = class {
       mode: metadata.mode || "chat",
       messages: [],
       referencedPdfPaths: normalizeStringArray(metadata.referencedPdfPaths),
-      codex: metadata.codex ? { ...metadata.codex } : void 0,
+      includeCurrentPdfInCodex: metadata.includeCurrentPdfInCodex !== false,
+      codex: metadata.codex ? { ...metadata.codex, lifecycle: metadata.codex.lifecycle || "active" } : void 0,
       createdAt: timestamp,
       updatedAt: timestamp
     };
@@ -331,6 +1539,15 @@ var ConversationStore = class {
     const timestamp = this.now();
     if (!normalizedMessages.length) {
       const activeId = (_a = settings.activeConversationSessionIds) == null ? void 0 : _a[key];
+      const active = activeId ? this.getSession(activeId) : null;
+      const mergedCodex = metadata.codex || (active == null ? void 0 : active.codex);
+      if (active && (mergedCodex == null ? void 0 : mergedCodex.threadId)) {
+        const session2 = this.applySessionMetadata(active, metadata);
+        session2.updatedAt = timestamp;
+        settings.conversationSessions[session2.id] = cloneSession(session2);
+        await this.persistSettings();
+        return;
+      }
       if (activeId) delete settings.conversationSessions[activeId];
       delete settings.activeConversationSessionIds[key];
       delete settings.conversationHistories[key];
@@ -349,11 +1566,62 @@ var ConversationStore = class {
     };
     await this.persistSettings();
   }
+  getSession(id) {
+    const session = this.normalizedSessions()[id];
+    return session ? cloneSession(session) : null;
+  }
+  async saveSessionById(id, messages, metadata = {}) {
+    var _a;
+    const settings = this.ensureContainers();
+    const existing = this.getSession(id);
+    if (!existing) throw new Error(`Conversation session not found: ${id}`);
+    const session = this.applySessionMetadata(existing, metadata);
+    session.messages = normalizeConversationMessages(messages);
+    session.updatedAt = this.now();
+    settings.conversationSessions[id] = cloneSession(session);
+    if (((_a = settings.activeConversationSessionIds) == null ? void 0 : _a[session.conversationKey]) === id && session.messages.length) {
+      settings.conversationHistories[session.conversationKey] = {
+        version: 1,
+        updatedAt: session.updatedAt,
+        messages: normalizeConversationMessages(session.messages)
+      };
+    }
+    await this.persistSettings();
+  }
+  async appendSessionTurn(id, userContent, assistantContent) {
+    const session = this.getSession(id);
+    if (!session) throw new Error(`Conversation session not found: ${id}`);
+    const messages = [
+      ...session.messages,
+      { role: "user", content: userContent, status: "complete" },
+      { role: "assistant", content: assistantContent, status: "complete" }
+    ];
+    await this.saveSessionById(id, messages);
+  }
+  async updateSessionMetadata(id, metadata) {
+    const session = this.getSession(id);
+    if (!session) throw new Error(`Conversation session not found: ${id}`);
+    await this.saveSessionById(id, session.messages, metadata);
+  }
+  async closeSession(id) {
+    var _a;
+    const settings = this.ensureContainers();
+    const session = this.getSession(id);
+    if (!session) return;
+    if (session.codex) session.codex = { ...session.codex, lifecycle: "closed" };
+    session.updatedAt = this.now();
+    settings.conversationSessions[id] = cloneSession(session);
+    if (((_a = settings.activeConversationSessionIds) == null ? void 0 : _a[session.conversationKey]) === id) {
+      delete settings.activeConversationSessionIds[session.conversationKey];
+    }
+    await this.persistSettings();
+  }
   resumeSession(id) {
     const settings = this.ensureContainers();
     const sessions = normalizeConversationSessions(settings.conversationSessions);
     const session = sessions[id];
     if (!session) return null;
+    if (session.codex) session.codex = { ...session.codex, lifecycle: "active" };
     settings.activeConversationSessionIds[session.conversationKey] = session.id;
     settings.conversationSessions[session.id] = cloneSession(session);
     return cloneSession(session);
@@ -384,7 +1652,7 @@ var ConversationStore = class {
 };
 
 // src/llm-transport.ts
-var import_obsidian = require("obsidian");
+var import_obsidian2 = require("obsidian");
 function getDefaultFetchRequest() {
   const fetchRequest = typeof globalThis !== "undefined" ? globalThis.fetch : void 0;
   if (typeof fetchRequest !== "function") {
@@ -396,7 +1664,7 @@ function asCompletionPayload(value) {
   return value && typeof value === "object" ? value : null;
 }
 var OpenAICompatibleTransport = class {
-  constructor(getSettings, getModelProfile, request = import_obsidian.requestUrl, fetchRequest = getDefaultFetchRequest()) {
+  constructor(getSettings, getModelProfile, request = import_obsidian2.requestUrl, fetchRequest = getDefaultFetchRequest()) {
     this.getSettings = getSettings;
     this.getModelProfile = getModelProfile;
     this.request = request;
@@ -604,16 +1872,20 @@ var DEFAULT_SETTINGS = {
     enabled: false,
     command: "codex",
     profile: "",
-    model: "gpt-5.6-sol",
-    reasoningEffort: "xhigh",
-    verbosity: "high",
+    model: "gpt-5.5",
+    reasoningEffort: "medium",
+    verbosity: "medium",
+    inputMode: "pdf-only",
+    outputMode: "markdown",
     modelPresets: [
-      { model: "gpt-5.6-sol", reasoningEffort: "xhigh", label: "gpt-5.6-sol \xB7 xhigh" },
-      { model: "gpt-5.6-sol", reasoningEffort: "high", label: "gpt-5.6-sol \xB7 high" },
-      { model: "gpt-5.6-sol", reasoningEffort: "medium", label: "gpt-5.6-sol \xB7 medium" }
+      { model: "gpt-5.5", reasoningEffort: "medium", label: "gpt-5.5 \xB7 medium" },
+      { model: "gpt-5.5", reasoningEffort: "high", label: "gpt-5.5 \xB7 high" },
+      { model: "gpt-5.6-sol", reasoningEffort: "medium", label: "gpt-5.6-sol \xB7 medium" },
+      { model: "gpt-5.6-sol", reasoningEffort: "xhigh", label: "gpt-5.6-sol \xB7 xhigh" }
     ],
-    timeoutMs: 6e5,
-    keepTempFiles: false
+    timeoutMs: 18e5,
+    keepTempFiles: false,
+    includeSelectionContext: true
   },
   // 全文摘要(浓缩上下文)相关设置:先用一个快速/便宜的模型把整篇 PDF 浓缩成摘要,
   // 缓存下来,回答局部选段问题时可以选择性地附带这份摘要作为背景,
@@ -1128,7 +2400,8 @@ function createPDFChatModalServices(plugin, overrides = {}) {
       resolveContinueId: () => plugin.resolveContinueModelId()
     },
     actions: plugin.actionRegistry || createResearchActionRegistry(),
-    translations: plugin.translationService || new TranslationService(llm)
+    translations: plugin.translationService || new TranslationService(llm),
+    codex: plugin.codexSessionManager
   };
   return {
     ...compatibility,
@@ -1143,356 +2416,13 @@ function createPDFChatModalServices(plugin, overrides = {}) {
         var _a;
         return ((_a = overrides.translations) == null ? void 0 : _a.translate) ? overrides.translations.translate(request) : compatibility.translations.translate(request);
       }
-    }
+    },
+    codex: overrides.codex || compatibility.codex
   };
 }
 
 // src/pdf-chat-modal.ts
 var import_obsidian3 = require("obsidian");
-
-// src/multi-paper.ts
-var import_obsidian2 = require("obsidian");
-function loadNodeModule(name) {
-  const nodeRequire = typeof require === "function" ? require : null;
-  if (!nodeRequire) throw new Error("Node.js APIs are not available in this Obsidian environment");
-  return nodeRequire(name);
-}
-function isPdfFile(file) {
-  const extension = String(file.extension || "").toLowerCase();
-  if (extension) return extension === "pdf";
-  return /\.pdf$/i.test(file.path || file.name || "");
-}
-function searchPdfFiles(app, query, options = {}) {
-  var _a;
-  const files = ((_a = app == null ? void 0 : app.vault) == null ? void 0 : _a.getFiles) ? app.vault.getFiles() : [];
-  const normalizedQuery = (query || "").trim();
-  const matcher = normalizedQuery && typeof import_obsidian2.prepareFuzzySearch === "function" ? (0, import_obsidian2.prepareFuzzySearch)(normalizedQuery) : null;
-  const fallbackQuery = normalizedQuery.toLowerCase();
-  const candidates = files.filter(isPdfFile).filter((file) => {
-    var _a2;
-    return !((_a2 = options.excludePaths) == null ? void 0 : _a2.has(file.path));
-  }).map((file) => {
-    var _a2;
-    const target = `${file.name || ""} ${file.path || ""}`;
-    const match = matcher ? matcher(target) : fallbackQuery ? target.toLowerCase().includes(fallbackQuery) ? { score: fallbackQuery.length, matches: [] } : null : { score: 1, matches: [] };
-    if (!match) return null;
-    return {
-      path: file.path,
-      name: file.name || file.path.split(/[\\/]/).pop() || file.path,
-      score: typeof match.score === "number" ? match.score : normalizedQuery.length || 1,
-      cached: Boolean((_a2 = options.cachedPaths) == null ? void 0 : _a2.has(file.path))
-    };
-  }).filter((candidate) => Boolean(candidate)).sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
-  return candidates.slice(0, options.limit || 8);
-}
-function safePaperId(input, fallback) {
-  const base = (input || fallback || "paper").replace(/\\/g, "/").split("/").pop().replace(/\.pdf$/i, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  return base || fallback || "paper";
-}
-function writeJson(fs, file, value) {
-  fs.writeFileSync(file, JSON.stringify(value, null, 2), "utf8");
-}
-function pageFileName(page) {
-  return `page-${String(page).padStart(3, "0")}.md`;
-}
-function compactWhitespace(text) {
-  return String(text || "").replace(/\s+/g, " ").trim();
-}
-function buildCodexPaperBrief(paper, maxChars = 250) {
-  const source = compactWhitespace(paper.summary) || compactWhitespace(paper.pages.map((page) => page.text).join(" "));
-  if (!source) return `${paper.name || paper.vaultPath}: no brief available.`;
-  if (source.length <= maxChars) return source;
-  return source.slice(0, Math.max(0, maxChars - 1)).trimEnd() + "\u2026";
-}
-function createCodexAnalysisTempDir(taskId) {
-  const fs = loadNodeModule("node:fs");
-  const os = loadNodeModule("node:os");
-  const path = loadNodeModule("node:path");
-  return fs.mkdtempSync(path.join(os.tmpdir(), `pdf-chat-analysis-${taskId}-`));
-}
-function removeCodexAnalysisTempDir(analysisDir) {
-  if (!analysisDir) return;
-  const fs = loadNodeModule("node:fs");
-  fs.rmSync(analysisDir, { recursive: true, force: true });
-}
-function codexAnalysisOutputSchema() {
-  return {
-    type: "object",
-    additionalProperties: false,
-    required: ["taskType", "question", "papers", "comparison", "synthesis", "limitations"],
-    properties: {
-      taskType: { const: "multi-paper-analysis" },
-      question: { type: "string" },
-      papers: {
-        type: "array",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          required: ["id", "name", "role", "oneSentenceTakeaway", "coreMethod", "keyEvidence"],
-          properties: {
-            id: { type: "string" },
-            name: { type: "string" },
-            role: { enum: ["current", "referenced"] },
-            oneSentenceTakeaway: { type: "string" },
-            coreMethod: { type: "string" },
-            keyEvidence: {
-              type: "array",
-              items: {
-                type: "object",
-                additionalProperties: false,
-                required: ["claim", "source"],
-                properties: {
-                  claim: { type: "string" },
-                  source: { type: "string" },
-                  page: { type: "number" }
-                }
-              }
-            }
-          }
-        }
-      },
-      comparison: {
-        type: "object",
-        additionalProperties: false,
-        required: ["similarities", "differences", "complementaryOpportunities", "conflictsOrRisks"],
-        properties: {
-          similarities: { type: "array", items: { type: "string" } },
-          differences: { type: "array", items: { type: "string" } },
-          complementaryOpportunities: { type: "array", items: { type: "string" } },
-          conflictsOrRisks: { type: "array", items: { type: "string" } }
-        }
-      },
-      synthesis: {
-        type: "object",
-        additionalProperties: false,
-        required: ["shortAnswer", "detailedAnalysisMarkdown", "suggestedNextQuestions"],
-        properties: {
-          shortAnswer: { type: "string" },
-          detailedAnalysisMarkdown: { type: "string" },
-          suggestedNextQuestions: { type: "array", items: { type: "string" } }
-        }
-      },
-      limitations: { type: "array", items: { type: "string" } }
-    }
-  };
-}
-async function writeCodexAnalysisPackage(request) {
-  const fs = loadNodeModule("node:fs");
-  const path = loadNodeModule("node:path");
-  const analysisDir = request.baseDir;
-  fs.mkdirSync(path.join(analysisDir, "papers"), { recursive: true });
-  const manifestPapers = [];
-  for (const [index, paper] of request.papers.entries()) {
-    const id = safePaperId(paper.id || paper.vaultPath || paper.name, `paper-${index + 1}`);
-    const paperDir = path.join(analysisDir, "papers", id);
-    const pagesDir = path.join(paperDir, "pages");
-    fs.mkdirSync(pagesDir, { recursive: true });
-    const metadataPath = path.join("papers", id, "metadata.json");
-    const briefPath = path.join("papers", id, "brief.md");
-    const summaryPath = path.join("papers", id, "summary.md");
-    const fullTextPath = path.join("papers", id, "full_text.md");
-    const chunksPath = path.join("papers", id, "chunks.json");
-    const relativePagesDir = path.join("papers", id, "pages").replace(/\\/g, "/");
-    writeJson(fs, path.join(analysisDir, metadataPath), {
-      id,
-      name: paper.name,
-      role: paper.role,
-      vaultPath: paper.vaultPath,
-      mtime: paper.mtime,
-      pageCount: paper.pages.length,
-      fullTextLength: paper.pages.reduce((total, page) => total + (page.text || "").length, 0),
-      chunkCount: paper.chunks.length
-    });
-    fs.writeFileSync(path.join(analysisDir, briefPath), buildCodexPaperBrief(paper), "utf8");
-    fs.writeFileSync(path.join(analysisDir, summaryPath), paper.summary || "(no summary)", "utf8");
-    fs.writeFileSync(
-      path.join(analysisDir, fullTextPath),
-      paper.pages.map((page) => `[Page ${page.page}]
-${page.text}`).join("\n\n"),
-      "utf8"
-    );
-    writeJson(fs, path.join(analysisDir, chunksPath), paper.chunks);
-    for (const page of paper.pages) {
-      fs.writeFileSync(path.join(pagesDir, pageFileName(page.page)), page.text || "", "utf8");
-    }
-    manifestPapers.push({
-      id,
-      role: paper.role,
-      name: paper.name,
-      vaultPath: paper.vaultPath,
-      metadataPath: metadataPath.replace(/\\/g, "/"),
-      briefPath: briefPath.replace(/\\/g, "/"),
-      summaryPath: summaryPath.replace(/\\/g, "/"),
-      fullTextPath: fullTextPath.replace(/\\/g, "/"),
-      chunksPath: chunksPath.replace(/\\/g, "/"),
-      pagesDir: relativePagesDir
-    });
-  }
-  const manifest = {
-    version: 1,
-    taskId: request.taskId,
-    createdAt: request.createdAt,
-    question: request.question,
-    papers: manifestPapers
-  };
-  const manifestPath = path.join(analysisDir, "manifest.json");
-  const questionPath = path.join(analysisDir, "question.md");
-  const outputSchemaPath = path.join(analysisDir, "output.schema.json");
-  writeJson(fs, manifestPath, manifest);
-  fs.writeFileSync(questionPath, request.question, "utf8");
-  writeJson(fs, outputSchemaPath, codexAnalysisOutputSchema());
-  return { analysisDir, manifestPath, questionPath, outputSchemaPath };
-}
-function buildCodexDeepAnalysisPrompt() {
-  return [
-    "You are a careful research assistant performing multi-paper analysis.",
-    "Read manifest.json and question.md first.",
-    "For each paper: read brief.md first for orientation, then summary.md, then full_text.md, and use pages/ or chunks.json for evidence.",
-    "The prompt intentionally does not include the full paper text. Open the files listed in manifest.json inside this read-only analysis directory.",
-    "Extract each paper's research problem, core method, assumptions, experiments, conclusions, and limitations.",
-    "Then compare similarities, differences, complementary opportunities, and conflicts or risks.",
-    "Every important claim must cite the paper name and page or chunk/source location when available.",
-    "Return only JSON that matches output.schema.json. Do not include markdown fences."
-  ].join("\n");
-}
-function buildCodexExecArgs(request) {
-  const args = [
-    "exec",
-    "--sandbox",
-    "read-only",
-    "--skip-git-repo-check",
-    "--ephemeral",
-    "--cd",
-    request.analysisDir,
-    "--output-schema",
-    "output.schema.json",
-    "--output-last-message",
-    "codex-output.json"
-  ];
-  if (request.profile) args.push("--profile", request.profile);
-  if (request.model) args.push("--model", request.model);
-  if (request.reasoningEffort) args.push("-c", `model_reasoning_effort="${request.reasoningEffort}"`);
-  if (request.verbosity) args.push("-c", `model_verbosity="${request.verbosity}"`);
-  args.push(request.prompt);
-  return { command: request.command || "codex", args };
-}
-function argValue(args, flag) {
-  const index = args.indexOf(flag);
-  return index >= 0 && index + 1 < args.length ? args[index + 1] : null;
-}
-function redactProcessText(text) {
-  return (text || "").replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, "Bearer [REDACTED]").replace(/sk-[A-Za-z0-9_-]{12,}/g, "sk-[REDACTED]").slice(0, 1200);
-}
-function runCodexExec(execArgs, options) {
-  const path = loadNodeModule("node:path");
-  const fs = loadNodeModule("node:fs");
-  const childProcess = options.spawn ? { spawn: options.spawn } : loadNodeModule("node:child_process");
-  const analysisDir = argValue(execArgs.args, "--cd");
-  if (!analysisDir) throw new Error("Codex command is missing --cd analysis directory");
-  const outputFileName = options.outputFileName || "codex-output.json";
-  const outputPath = path.join(analysisDir, outputFileName);
-  return new Promise((resolve, reject) => {
-    var _a, _b;
-    let settled = false;
-    let stderr = "";
-    const timeoutMs = Math.max(1, options.timeoutMs || 6e5);
-    const child = childProcess.spawn(execArgs.command, execArgs.args, {
-      cwd: analysisDir,
-      windowsHide: true,
-      shell: false
-    });
-    let timer;
-    const onAbort = () => {
-      try {
-        child.kill("SIGTERM");
-      } catch (error) {
-        void error;
-      }
-      const abortError = new Error("Codex analysis aborted");
-      abortError.name = "AbortError";
-      finish(() => reject(abortError));
-    };
-    const finish = (callback) => {
-      var _a2;
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      (_a2 = options.signal) == null ? void 0 : _a2.removeEventListener("abort", onAbort);
-      callback();
-    };
-    (_a = options.signal) == null ? void 0 : _a.addEventListener("abort", onAbort);
-    timer = setTimeout(() => {
-      try {
-        child.kill("SIGTERM");
-      } catch (error) {
-        void error;
-      }
-      finish(() => reject(new Error(`Codex analysis timed out after ${timeoutMs}ms`)));
-    }, timeoutMs);
-    (_b = child.stderr) == null ? void 0 : _b.on("data", (chunk) => {
-      stderr += String(chunk || "");
-    });
-    child.on("error", (error) => {
-      finish(() => reject(new Error("Codex CLI failed to start: " + error.message)));
-    });
-    child.on("close", (code) => {
-      finish(() => {
-        if (code !== 0) {
-          const detail = redactProcessText(stderr);
-          reject(new Error(`Codex CLI exited with code ${code}${detail ? `: ${detail}` : ""}`));
-          return;
-        }
-        if (!fs.existsSync(outputPath)) {
-          reject(new Error("Codex CLI finished but did not write codex-output.json"));
-          return;
-        }
-        resolve(fs.readFileSync(outputPath, "utf8"));
-      });
-    });
-  });
-}
-function isStringArray(value) {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
-}
-function parseCodexAnalysisOutput(raw) {
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    throw new Error("Invalid Codex analysis output: JSON parse failed");
-  }
-  const value = parsed;
-  if (!value || typeof value !== "object" || value.taskType !== "multi-paper-analysis" || typeof value.question !== "string" || !Array.isArray(value.papers) || !value.comparison || !value.synthesis || typeof value.synthesis.shortAnswer !== "string" || typeof value.synthesis.detailedAnalysisMarkdown !== "string" || !isStringArray(value.synthesis.suggestedNextQuestions) || !isStringArray(value.limitations)) {
-    throw new Error("Invalid Codex analysis output: missing required fields");
-  }
-  return value;
-}
-function listBlock(items) {
-  return items.length ? items.map((item) => `- ${item}`).join("\n") : "- \u6682\u65E0";
-}
-function renderCodexAnalysisMarkdown(output) {
-  const nextQuestions = output.synthesis.suggestedNextQuestions.length ? `
-
-### \u53EF\u4EE5\u7EE7\u7EED\u8FFD\u95EE
-${listBlock(output.synthesis.suggestedNextQuestions)}` : "";
-  const limitations = output.limitations.length ? `
-
-### \u5C40\u9650
-${listBlock(output.limitations)}` : "";
-  return [
-    `### \u7B80\u77ED\u7ED3\u8BBA
-${output.synthesis.shortAnswer}`,
-    output.synthesis.detailedAnalysisMarkdown,
-    `### \u76F8\u4F3C\u70B9
-${listBlock(output.comparison.similarities)}`,
-    `### \u4E0D\u540C\u70B9
-${listBlock(output.comparison.differences)}`,
-    `### \u7ED3\u5408\u673A\u4F1A
-${listBlock(output.comparison.complementaryOpportunities)}`,
-    `### \u98CE\u9669\u4E0E\u51B2\u7A81
-${listBlock(output.comparison.conflictsOrRisks)}`
-  ].join("\n\n") + nextQuestions + limitations;
-}
 
 // src/modal-ui.ts
 var controlId = 0;
@@ -1729,11 +2659,22 @@ function buildComposer(parent) {
     }
   });
   const footer = card.createDiv({ cls: "pdf-chat-composer-footer" });
-  const status = footer.createDiv({
+  const statusGroup = footer.createDiv({ cls: "pdf-chat-composer-status-group" });
+  const status = statusGroup.createDiv({
     text: "\u5F53\u524D\u9009\u533A\u4E0A\u4E0B\u6587\u5DF2\u542F\u7528",
     cls: "pdf-chat-composer-status"
   });
+  const references = statusGroup.createDiv({
+    cls: "pdf-chat-reference-chips",
+    attr: { role: "list", "aria-label": "\u5DF2\u5F15\u7528 PDF" }
+  });
   const actions = footer.createDiv({ cls: "pdf-chat-composer-actions" });
+  const contextToggle = actions.createEl("button", {
+    text: "\u9644\u9009\u533A",
+    cls: "pdf-chat-codex-context-toggle",
+    attr: { type: "button" }
+  });
+  setElementLabel(contextToggle, "\u5207\u6362\u662F\u5426\u628A\u5F53\u524D\u9009\u533A\u4F5C\u4E3A Codex \u4E0A\u4E0B\u6587");
   const hint = actions.createDiv({
     cls: "pdf-chat-hint",
     text: "Enter \u53D1\u9001 \xB7 Shift+Enter \u6362\u884C"
@@ -1745,7 +2686,7 @@ function buildComposer(parent) {
   });
   setElementLabel(sendButton, "\u53D1\u9001\u95EE\u9898");
   input.addEventListener("input", () => resizeComposerTextarea(input));
-  return { root, card, status, input, actions, sendButton, hint };
+  return { root, card, status, references, input, actions, contextToggle, sendButton, hint };
 }
 function buildFollowupSuggestions(parent, suggestions) {
   var _a;
@@ -1790,18 +2731,36 @@ function formatAssistantDisplayMarkdown(raw) {
 }
 
 // src/pdf-chat-modal.ts
-function errorMessage(error) {
+function errorMessage2(error) {
   if (error && typeof error === "object" && "message" in error) {
     return String(error.message);
   }
   return String(error);
 }
-function isAbortError(error) {
+function isAbortError2(error) {
   return !!error && typeof error === "object" && "name" in error && error.name === "AbortError";
 }
 function isCodexUnavailableError(error) {
-  const message = errorMessage(error);
+  const message = errorMessage2(error);
   return /failed to start|not available|ENOENT|not recognized|cannot find/i.test(message);
+}
+function isCodexTimeoutError(error) {
+  return /timed out after \d+ms/i.test(errorMessage2(error));
+}
+function formatCodexElapsed(ms) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1e3));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor(totalSeconds % 3600 / 60);
+  const seconds = totalSeconds % 60;
+  const two = (value) => String(value).padStart(2, "0");
+  return hours ? `${hours}:${two(minutes)}:${two(seconds)}` : `${two(minutes)}:${two(seconds)}`;
+}
+function codexProgressBubbleText(elapsedMs, detail) {
+  return [
+    `Codex \u5DF2\u8FD0\u884C ${formatCodexElapsed(elapsedMs)}`,
+    detail || "\u7B49\u5F85 Codex CLI \u4E8B\u4EF6\u2026",
+    "xhigh \u6DF1\u5EA6\u5206\u6790\u53EF\u80FD\u9700\u8981 10\u201330 \u5206\u949F\uFF1B\u5982\u679C\u4E0D\u60F3\u7EE7\u7EED\uFF0C\u53EF\u4EE5\u70B9\u51FB\u201C\u505C\u6B62\u201D\u3002"
+  ].join("\n");
 }
 async function renderMarkdownInto(app, component, el, text) {
   el.empty();
@@ -1849,7 +2808,7 @@ function canCreateBubbleChildren(parent) {
 async function renderMarkdownIntoBubble(app, component, bubble, text) {
   await renderMarkdownInto(app, component, getBubbleContentEl(bubble), formatAssistantDisplayMarkdown(text));
 }
-var PDFChatModal = class extends import_obsidian3.Modal {
+var PDFChatModal = class _PDFChatModal extends import_obsidian3.Modal {
   constructor(app, plugin, contextText, pdfFile, startFresh, services, autoTranslateOnOpen) {
     var _a, _b, _c;
     super(app);
@@ -1881,11 +2840,22 @@ var PDFChatModal = class extends import_obsidian3.Modal {
     __publicField(this, "runtimeMode", "api");
     __publicField(this, "currentSessionId");
     __publicField(this, "isSending", false);
+    __publicField(this, "isCodexRunning", false);
+    __publicField(this, "codexCloseIntent", "suspend");
+    __publicField(this, "includeCurrentPdfInCodex", true);
+    __publicField(this, "includeSelectionContextInCodex", true);
     __publicField(this, "abortController", null);
+    __publicField(this, "codexUnsubscribe");
+    __publicField(this, "codexTaskBubble");
+    __publicField(this, "codexTaskQuestion");
+    __publicField(this, "codexProgressTimer");
+    __publicField(this, "lastCodexSnapshot");
     __publicField(this, "promptHistoryCursor", null);
     __publicField(this, "zoomOutBtn");
     __publicField(this, "zoomLabel");
     __publicField(this, "zoomInBtn");
+    __publicField(this, "moreButton");
+    __publicField(this, "moreMenu");
     __publicField(this, "modeBadgeEl");
     __publicField(this, "modelSelect");
     __publicField(this, "modeSelect");
@@ -1901,7 +2871,9 @@ var PDFChatModal = class extends import_obsidian3.Modal {
     __publicField(this, "emptyStateEl");
     __publicField(this, "suggestionsEl");
     __publicField(this, "composerStatusEl");
+    __publicField(this, "referencedPdfsEl");
     __publicField(this, "composerCardEl");
+    __publicField(this, "codexContextToggleBtn");
     __publicField(this, "composerMentionSuggestionsEl");
     __publicField(this, "composerMentionRange");
     __publicField(this, "commandMenuEl");
@@ -1917,6 +2889,7 @@ var PDFChatModal = class extends import_obsidian3.Modal {
     } : contextText;
     this.paperContext = paperContext;
     this.contextText = paperContext.selectedText;
+    this.includeSelectionContextInCodex = this.contextText.trim() ? true : this.plugin.settings.codexDeepAnalysis.includeSelectionContext === true;
     this.pdfFile = paperContext.file || null;
     this.startFresh = !!startFresh;
     this.autoTranslateOnOpen = !!autoTranslateOnOpen;
@@ -1949,6 +2922,7 @@ var PDFChatModal = class extends import_obsidian3.Modal {
     if ((_c = activeSession == null ? void 0 : activeSession.referencedPdfPaths) == null ? void 0 : _c.length) {
       this.referencedPdfFiles = activeSession.referencedPdfPaths.map((path) => this.findPdfFileByPath(path)).filter((file) => !!file);
     }
+    this.includeCurrentPdfInCodex = (activeSession == null ? void 0 : activeSession.includeCurrentPdfInCodex) !== false;
     const existingTranscript = (activeSession == null ? void 0 : activeSession.messages) || this.services.conversations.get(this.conversationKey);
     this.hadExistingHistory = existingTranscript.length > 0;
     this.transcript = this.startFresh ? [] : existingTranscript;
@@ -1987,6 +2961,8 @@ ${this.contextText}`;
     this.zoomOutBtn = header.zoomOutButton;
     this.zoomLabel = header.zoomResetButton;
     this.zoomInBtn = header.zoomInButton;
+    this.moreButton = header.moreButton;
+    this.moreMenu = header.moreMenu;
     this.setupDragging(header.root);
     header.clearButton.addEventListener("click", () => void this.resetConversation());
     this.modelSelect.addEventListener("change", () => this.applyModel(this.modelSelect.value));
@@ -2016,9 +2992,12 @@ ${this.contextText}`;
     const composer = buildComposer(contentEl);
     this.composerCardEl = composer.card;
     this.composerStatusEl = composer.status;
+    this.referencedPdfsEl = composer.references;
+    this.codexContextToggleBtn = composer.contextToggle;
     this.inputEl = composer.input;
     this.sendBtn = composer.sendButton;
     this.updateComposerContextStatus();
+    this.codexContextToggleBtn.addEventListener("click", () => this.toggleCodexSelectionContext());
     const submit = () => this.handleSubmit();
     this.sendBtn.addEventListener("click", () => {
       if (this.isSending) {
@@ -2039,18 +3018,56 @@ ${this.contextText}`;
       this.updateComposerMentionSuggestions();
     });
     this.inputEl.addEventListener("keydown", (evt) => {
-      if (evt.key === "Escape") this.hideComposerMentionSuggestions();
+      if (evt.key === "Escape" && this.composerMentionSuggestionsEl) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this.hideComposerMentionSuggestions();
+      }
     });
+    this.setupCloseIntentHandling();
     if (restoringHistory) {
-      this.restoreConversationHistory().catch((err) => {
+      void this.restoreConversationHistory().catch((err) => {
         this.setHistoryLiveMode("polite");
-        new import_obsidian3.Notice("\u6062\u590D\u4E0A\u6B21\u5BF9\u8BDD\u663E\u793A\u5931\u8D25: " + errorMessage(err));
+        new import_obsidian3.Notice("\u6062\u590D\u4E0A\u6B21\u5BF9\u8BDD\u663E\u793A\u5931\u8D25: " + errorMessage2(err));
+      }).finally(() => {
+        if (this.currentSessionId) this.attachCodexRuntime(this.currentSessionId);
       });
     } else if (this.startFresh && this.hadExistingHistory) {
       new import_obsidian3.Notice("\u5DF2\u5F00\u59CB\u65B0\u5BF9\u8BDD(\u53D1\u51FA\u7B2C\u4E00\u6761\u6D88\u606F\u540E\u4F1A\u66FF\u6362\u6389\u4E0A\u6B21\u4FDD\u5B58\u7684\u8BB0\u5F55)");
+    } else if (this.currentSessionId) {
+      this.attachCodexRuntime(this.currentSessionId);
     }
     if (this.autoTranslateOnOpen) this.handleTranslate();
     else this.inputEl.focus();
+  }
+  setupCloseIntentHandling() {
+    var _a, _b, _c, _d, _e;
+    const closeButton = ((_b = (_a = this.modalEl).querySelector) == null ? void 0 : _b.call(_a, ".modal-close-button")) || ((_d = (_c = this.containerEl) == null ? void 0 : _c.querySelector) == null ? void 0 : _d.call(_c, ".modal-close-button"));
+    closeButton == null ? void 0 : closeButton.addEventListener(
+      "click",
+      () => {
+        this.codexCloseIntent = "terminate";
+      },
+      { capture: true }
+    );
+    (_e = this.scope) == null ? void 0 : _e.register([], "Escape", () => {
+      var _a2;
+      if (this.composerMentionSuggestionsEl) {
+        this.hideComposerMentionSuggestions();
+        return false;
+      }
+      if (this.commandMenuEl) {
+        this.hideCommandMenu();
+        return false;
+      }
+      if (this.moreMenu && !this.moreMenu.hasClass("is-hidden")) {
+        (_a2 = this.moreButton) == null ? void 0 : _a2.click();
+        return false;
+      }
+      this.codexCloseIntent = "suspend";
+      this.close();
+      return false;
+    });
   }
   getDocumentName() {
     if (!this.pdfFile) return "\u9009\u533A\u5BF9\u8BDD";
@@ -2065,18 +3082,95 @@ ${this.contextText}`;
   getCodexVerbosity() {
     return this.plugin.settings.codexDeepAnalysis.verbosity || DEFAULT_SETTINGS.codexDeepAnalysis.verbosity;
   }
+  getCodexInputMode() {
+    const value = this.plugin.settings.codexDeepAnalysis.inputMode;
+    return value === "debug-full" ? "debug-full" : "pdf-only";
+  }
+  codexInputModeLabel() {
+    const mode = this.getCodexInputMode();
+    if (mode === "debug-full") return "Debug full";
+    return "PDF-only";
+  }
+  getCodexOutputMode() {
+    const value = this.plugin.settings.codexDeepAnalysis.outputMode;
+    return value === "json-schema" ? "json-schema" : "markdown";
+  }
+  codexOutputModeLabel() {
+    return this.getCodexOutputMode() === "json-schema" ? "JSON schema" : "Markdown";
+  }
   codexMetaText(fallback = false) {
     if (fallback) return "Codex CLI \u4E0D\u53EF\u7528\u6216\u5931\u8D25\uFF0C\u5DF2\u6539\u7528\u5F53\u524D API \u6A21\u578B";
     const profile = this.plugin.settings.codexDeepAnalysis.profile || "default profile";
-    return `requested model: ${this.getCodexModel()} \xB7 effort: ${this.getCodexReasoningEffort()} \xB7 profile: ${profile}`;
+    const context = this.shouldAttachSelectionContext() ? "selection context on" : "selection context off";
+    return `requested model: ${this.getCodexModel()} \xB7 effort: ${this.getCodexReasoningEffort()} \xB7 input: ${this.codexInputModeLabel()} \xB7 ${context} \xB7 output: ${this.codexOutputModeLabel()} \xB7 profile: ${profile}`;
+  }
+  hasSelectionContext() {
+    return !!(this.contextText || "").trim();
+  }
+  shouldAttachSelectionContext() {
+    return this.includeSelectionContextInCodex && this.hasSelectionContext();
+  }
+  setCodexSelectionContextEnabled(value) {
+    this.includeSelectionContextInCodex = value;
+    this.plugin.settings.codexDeepAnalysis.includeSelectionContext = value;
+    this.saveSettingsInBackground();
+    this.updateComposerContextStatus();
+  }
+  toggleCodexSelectionContext() {
+    if (!this.hasSelectionContext()) {
+      new import_obsidian3.Notice("\u5F53\u524D\u6CA1\u6709\u53EF\u9644\u5E26\u7684\u9009\u533A\u4E0A\u4E0B\u6587\u3002");
+      this.updateComposerContextStatus();
+      return;
+    }
+    this.setCodexSelectionContextEnabled(!this.includeSelectionContextInCodex);
+  }
+  applyContextCommand(args) {
+    const value = args.trim().toLowerCase();
+    if (!this.hasSelectionContext()) {
+      new import_obsidian3.Notice("\u5F53\u524D\u6CA1\u6709\u53EF\u9644\u5E26\u7684\u9009\u533A\u4E0A\u4E0B\u6587\u3002");
+      this.updateComposerContextStatus();
+      return;
+    }
+    if (!value) {
+      this.toggleCodexSelectionContext();
+      return;
+    }
+    if (["on", "true", "yes", "1", "with"].includes(value)) {
+      this.setCodexSelectionContextEnabled(true);
+      return;
+    }
+    if (["off", "false", "no", "0", "without"].includes(value)) {
+      this.setCodexSelectionContextEnabled(false);
+      return;
+    }
+    new import_obsidian3.Notice("\u7528\u6CD5\uFF1A/context\u3001/context on \u6216 /context off");
+  }
+  updateCodexContextToggle() {
+    if (!this.codexContextToggleBtn) return;
+    const hasContext = this.hasSelectionContext();
+    const enabled = this.includeSelectionContextInCodex;
+    this.codexContextToggleBtn.disabled = !hasContext;
+    this.codexContextToggleBtn.toggleClass("is-enabled", hasContext && enabled);
+    this.codexContextToggleBtn.toggleClass("is-disabled", !hasContext || !enabled);
+    const text = !hasContext ? "\u65E0\u9009\u533A" : enabled ? "\u9644\u9009\u533A" : "\u4E0D\u9644\u9009\u533A";
+    this.codexContextToggleBtn.setText(text);
+    labelControl(
+      this.codexContextToggleBtn,
+      !hasContext ? "\u5F53\u524D\u6CA1\u6709\u53EF\u9644\u5E26\u7684\u9009\u533A\u4E0A\u4E0B\u6587" : enabled ? "Codex \u4F1A\u9644\u5E26\u5F53\u524D\u9009\u533A\u4E0A\u4E0B\u6587\uFF0C\u70B9\u51FB\u5173\u95ED" : "Codex \u4E0D\u9644\u5E26\u5F53\u524D\u9009\u533A\u4E0A\u4E0B\u6587\uFF0C\u70B9\u51FB\u5F00\u542F"
+    );
   }
   updateRuntimeModeUi() {
+    var _a, _b, _c, _d;
     const codexMode = this.runtimeMode === "codex";
     this.contentEl.toggleClass("is-codex-mode", codexMode);
     this.modalEl.toggleClass("is-codex-mode", codexMode);
     if (this.modeBadgeEl) {
+      const snapshot = this.lastCodexSnapshot;
+      const persistedThread = this.currentSessionId ? (_d = (_c = (_b = (_a = this.services.conversations).getSession) == null ? void 0 : _b.call(_a, this.currentSessionId)) == null ? void 0 : _c.codex) == null ? void 0 : _d.threadId : void 0;
+      const threadId = (snapshot == null ? void 0 : snapshot.threadId) || persistedThread;
+      const running = (snapshot == null ? void 0 : snapshot.status) === "running" && snapshot.startedAt ? ` \xB7 Running ${formatCodexElapsed(Date.now() - snapshot.startedAt)}` : "";
       this.modeBadgeEl.setText(
-        codexMode ? `CODEX MODE \xB7 ${this.getCodexModel()} \xB7 ${this.getCodexReasoningEffort()}` : "API MODE"
+        codexMode ? `CODEX MODE \xB7 ${this.getCodexModel()} \xB7 ${this.getCodexReasoningEffort()}${threadId ? ` \xB7 Thread ${threadId.slice(0, 8)}\u2026` : " \xB7 New thread"}${running}` : "API MODE"
       );
     }
     this.updateComposerContextStatus();
@@ -2087,10 +3181,12 @@ ${this.contextText}`;
     this.plugin.settings.codexDeepAnalysis.enabled = true;
     this.saveSettingsInBackground();
     this.updateRuntimeModeUi();
+    this.saveSessionMetadataInBackground();
   }
   exitCodexMode() {
     this.runtimeMode = "api";
     this.updateRuntimeModeUi();
+    this.saveSessionMetadataInBackground();
   }
   clearComposerInput() {
     if (!this.inputEl) return;
@@ -2108,6 +3204,27 @@ ${this.contextText}`;
   }
   saveSettingsInBackground() {
     Promise.resolve(this.plugin.saveSettings()).catch(() => void 0);
+  }
+  saveSessionMetadataInBackground() {
+    if (this.transcript.length && this.services.conversations.saveActiveSession) {
+      Promise.resolve(
+        this.services.conversations.saveActiveSession(
+          this.conversationKey,
+          this.transcript,
+          this.sessionMetadata()
+        )
+      ).catch(() => void 0);
+      return;
+    }
+    if (this.services.conversations.ensureSession) {
+      try {
+        const session = this.services.conversations.ensureSession(this.conversationKey, this.sessionMetadata());
+        this.currentSessionId = (session == null ? void 0 : session.id) || this.currentSessionId;
+        this.saveSettingsInBackground();
+      } catch (error) {
+        void error;
+      }
+    }
   }
   handlePromptHistoryKey(event) {
     if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return false;
@@ -2183,6 +3300,7 @@ ${this.contextText}`;
     this.plugin.settings.codexDeepAnalysis.reasoningEffort = normalizedEffort;
     this.saveSettingsInBackground();
     this.updateRuntimeModeUi();
+    this.saveSessionMetadataInBackground();
     new import_obsidian3.Notice(`Codex \u6A21\u578B\u5DF2\u5207\u6362\u5230 ${normalizedModel} \xB7 ${normalizedEffort}`);
     return true;
   }
@@ -2233,46 +3351,83 @@ ${this.contextText}`;
     this.applyModel(match.id);
   }
   sessionMetadata(title) {
-    var _a;
+    var _a, _b, _c, _d;
     const fallbackTitle = title || ((_a = this.transcript.find((message) => message.role === "user")) == null ? void 0 : _a.content) || this.getDocumentName();
+    const existingCodex = this.currentSessionId ? (_d = (_c = (_b = this.services.conversations).getSession) == null ? void 0 : _c.call(_b, this.currentSessionId)) == null ? void 0 : _d.codex : void 0;
     return {
       title: fallbackTitle.slice(0, 80),
       mode: this.runtimeMode === "codex" ? "codex" : "chat",
       referencedPdfPaths: this.referencedPdfFiles.map((file) => file.path).filter(Boolean),
+      includeCurrentPdfInCodex: this.includeCurrentPdfInCodex,
       codex: this.runtimeMode === "codex" ? {
         model: this.getCodexModel(),
         reasoningEffort: this.getCodexReasoningEffort(),
-        profile: this.plugin.settings.codexDeepAnalysis.profile || ""
+        profile: this.plugin.settings.codexDeepAnalysis.profile || "",
+        threadId: existingCodex == null ? void 0 : existingCodex.threadId,
+        lifecycle: (existingCodex == null ? void 0 : existingCodex.lifecycle) || "active"
       } : void 0
     };
   }
   async startNewSession() {
-    var _a, _b;
-    const session = (_b = (_a = this.services.conversations).startSession) == null ? void 0 : _b.call(
-      _a,
+    var _a, _b, _c;
+    (_a = this.codexUnsubscribe) == null ? void 0 : _a.call(this);
+    this.codexUnsubscribe = void 0;
+    const metadata = this.sessionMetadata(this.getDocumentName());
+    if (metadata.codex) {
+      metadata.codex = {
+        model: metadata.codex.model,
+        reasoningEffort: metadata.codex.reasoningEffort,
+        profile: metadata.codex.profile,
+        lifecycle: "active"
+      };
+    }
+    const session = (_c = (_b = this.services.conversations).startSession) == null ? void 0 : _c.call(
+      _b,
       this.conversationKey,
-      this.sessionMetadata(this.getDocumentName())
+      metadata
     );
     this.currentSessionId = session == null ? void 0 : session.id;
     this.transcript = [];
     this.messages = [this.buildSystemMessage()];
     this.activeComposerKind = "chat";
     this.fullTextAttached = false;
+    this.includeCurrentPdfInCodex = true;
     this.historyEl.empty();
     this.hideFollowupSuggestions();
     this.emptyStateEl = void 0;
     this.showEmptyState();
+    if (this.currentSessionId) this.attachCodexRuntime(this.currentSessionId);
     await this.plugin.saveSettings();
     new import_obsidian3.Notice("\u5DF2\u65B0\u5EFA\u8BA8\u8BBA\uFF0C\u65E7\u8BA8\u8BBA\u53EF\u7528 /resume \u627E\u56DE\u3002");
   }
   async resumeConversationSession(sessionId) {
-    var _a, _b;
+    var _a, _b, _c;
     const session = (_b = (_a = this.services.conversations).resumeSession) == null ? void 0 : _b.call(_a, sessionId);
     if (!session) {
       new import_obsidian3.Notice("\u6CA1\u6709\u627E\u5230\u8FD9\u6BB5\u5386\u53F2\u8BA8\u8BBA\u3002");
       return;
     }
     this.currentSessionId = session.id;
+    (_c = this.services.codex) == null ? void 0 : _c.reactivateSession(session.id);
+    if (session.conversationKey !== this.conversationKey && session.conversationKey.startsWith("pdf:")) {
+      const targetPath = session.conversationKey.slice("pdf:".length);
+      const targetFile = this.findPdfFileByPath(targetPath);
+      if (!targetFile) {
+        new import_obsidian3.Notice("\u8FD9\u6BB5\u4F1A\u8BDD\u5BF9\u5E94\u7684 PDF \u5DF2\u79FB\u52A8\u6216\u4E0D\u5B58\u5728\uFF1B\u804A\u5929\u8BB0\u5F55\u4ECD\u4FDD\u7559\u3002");
+        return;
+      }
+      await this.app.workspace.getLeaf(false).openFile(targetFile);
+      this.codexCloseIntent = "suspend";
+      this.close();
+      const paperContext = {
+        app: this.app,
+        file: targetFile,
+        selectedText: "",
+        conversationKey: session.conversationKey
+      };
+      new _PDFChatModal(this.app, this.plugin, paperContext, null, false, this.services).open();
+      return;
+    }
     this.runtimeMode = session.mode === "codex" ? "codex" : "api";
     if (session.codex) {
       this.plugin.settings.codexDeepAnalysis.model = session.codex.model;
@@ -2280,6 +3435,7 @@ ${this.contextText}`;
       this.plugin.settings.codexDeepAnalysis.profile = session.codex.profile || "";
     }
     this.referencedPdfFiles = (session.referencedPdfPaths || []).map((path) => this.findPdfFileByPath(path)).filter((file) => !!file);
+    this.includeCurrentPdfInCodex = session.includeCurrentPdfInCodex !== false;
     this.transcript = session.messages || [];
     this.messages = [
       this.buildSystemMessage(),
@@ -2288,6 +3444,7 @@ ${this.contextText}`;
     this.historyEl.empty();
     this.emptyStateEl = void 0;
     this.updateRuntimeModeUi();
+    this.attachCodexRuntime(session.id);
     await this.plugin.saveSettings();
     await this.restoreConversationHistory();
   }
@@ -2309,14 +3466,20 @@ ${this.contextText}`;
     );
   }
   showStatusMessage() {
-    var _a;
+    var _a, _b, _c, _d, _e;
     const refs = this.referencedPdfFiles.length ? this.referencedPdfFiles.map((file) => file.name || file.path).join("\u3001") : "\u65E0";
+    const codexSnapshot = this.currentSessionId ? (_a = this.services.codex) == null ? void 0 : _a.getSnapshot(this.currentSessionId) : void 0;
+    const session = this.currentSessionId ? (_c = (_b = this.services.conversations).getSession) == null ? void 0 : _c.call(_b, this.currentSessionId) : void 0;
     const lines = [
       `\u5F53\u524D\u6A21\u5F0F\uFF1A${this.runtimeMode === "codex" ? "Codex CLI" : "PDF Chat API"}`,
-      `API \u6A21\u578B\uFF1A${((_a = this.plugin.settings.models.find((model) => model.id === this.currentModelId)) == null ? void 0 : _a.name) || this.currentModelId}`,
+      `API \u6A21\u578B\uFF1A${((_d = this.plugin.settings.models.find((model) => model.id === this.currentModelId)) == null ? void 0 : _d.name) || this.currentModelId}`,
       `Codex\uFF1A${this.getCodexModel()} \xB7 ${this.getCodexReasoningEffort()} \xB7 ${this.plugin.settings.codexDeepAnalysis.profile || "default profile"}`,
       `\u5F15\u7528 PDF\uFF1A${refs}`,
-      `Session\uFF1A${this.currentSessionId || "\u672A\u521B\u5EFA"}`
+      `\u9009\u533A\u4E0A\u4E0B\u6587\uFF1A${this.shouldAttachSelectionContext() ? `\u4E0B\u4E00\u8F6E\u76F4\u63A5\u9644\u5E26 ${this.contextText.length} \u5B57` : "\u4E0D\u9644\u5E26"}`,
+      `Session\uFF1A${this.currentSessionId || "\u672A\u521B\u5EFA"}`,
+      `Codex Thread\uFF1A${(codexSnapshot == null ? void 0 : codexSnapshot.threadId) || ((_e = session == null ? void 0 : session.codex) == null ? void 0 : _e.threadId) || "\u5C1A\u672A\u521B\u5EFA"}`,
+      `Codex \u72B6\u6001\uFF1A${(codexSnapshot == null ? void 0 : codexSnapshot.status) || "idle"}`,
+      `\u5DE5\u4F5C\u76EE\u5F55\uFF1A${(codexSnapshot == null ? void 0 : codexSnapshot.workingDirectory) || (this.pdfFile ? "\u5F53\u524D PDF \u6240\u5728\u6587\u4EF6\u5939" : "vault \u6839\u76EE\u5F55")}`
     ];
     this.addBubble("assistant", lines.join("\n"), {
       assistantAuthor: this.runtimeMode === "codex" ? "Codex Mode" : "PDF Chat",
@@ -2332,10 +3495,16 @@ ${this.contextText}`;
         "- /codex\uFF1A\u8FDB\u5165 Codex \u6A21\u5F0F",
         "- /codex <\u95EE\u9898>\uFF1A\u8FDB\u5165 Codex \u6A21\u5F0F\u5E76\u7ACB\u5373\u8BA9 Codex \u8BFB\u53D6\u5F53\u524D/\u5F15\u7528 PDF",
         "- /exit\uFF1A\u56DE\u5230\u666E\u901A API \u804A\u5929",
+        "- /stop\uFF1A\u505C\u6B62\u5F53\u524D Codex turn\uFF0C\u4F46\u4FDD\u7559 thread",
         "- /model\uFF1A\u9009\u62E9\u5F53\u524D\u6A21\u5F0F\u4E0B\u7684\u6A21\u578B",
         "- /model <model> <effort>\uFF1A\u5207\u6362 Codex \u6A21\u578B\u548C\u63A8\u7406\u5F3A\u5EA6",
         "- /new\uFF1A\u65B0\u5EFA\u8BA8\u8BBA\uFF0C\u4E0D\u5220\u9664\u65E7\u8BA8\u8BBA",
         "- /resume\uFF1A\u6062\u590D\u5386\u53F2\u8BA8\u8BBA",
+        "- /refs\uFF1A\u67E5\u770B\u5E76\u79FB\u9664\u5F53\u524D\u5F15\u7528\u7684 PDF",
+        "- /unref <\u5E8F\u53F7\u6216\u540D\u79F0>\uFF1A\u79FB\u9664\u67D0\u7BC7\u5F15\u7528 PDF",
+        "- /clearrefs\uFF1A\u6E05\u7A7A\u5F53\u524D\u8BA8\u8BBA\u5F15\u7528\u7684 PDF",
+        "- /context\uFF1A\u5207\u6362\u662F\u5426\u628A\u5F53\u524D\u9009\u533A\u4F5C\u4E3A Codex \u4E0A\u4E0B\u6587",
+        "- /context on|off\uFF1A\u5F00\u542F\u6216\u5173\u95ED Codex \u9009\u533A\u4E0A\u4E0B\u6587",
         "- /status\uFF1A\u67E5\u770B\u5F53\u524D\u6A21\u5F0F\u3001\u6A21\u578B\u3001\u5F15\u7528 PDF \u548C session"
       ].join("\n"),
       {
@@ -2345,6 +3514,7 @@ ${this.contextText}`;
     );
   }
   async handleSlashCommand(question, usingOverride) {
+    var _a;
     if (usingOverride || !question.startsWith("/")) return false;
     const match = /^\/([A-Za-z][\w-]*)(?:\s+([\s\S]*))?$/.exec(question.trim());
     if (!match) return false;
@@ -2360,6 +3530,14 @@ ${this.contextText}`;
         this.exitCodexMode();
         this.clearComposerInput();
         new import_obsidian3.Notice("\u5DF2\u9000\u51FA Codex \u6A21\u5F0F\uFF0C\u56DE\u5230 PDF Chat API\u3002");
+        return true;
+      case "stop":
+        this.clearComposerInput();
+        if (this.runtimeMode === "codex" && this.currentSessionId && ((_a = this.services.codex) == null ? void 0 : _a.stopTurn(this.currentSessionId))) {
+          new import_obsidian3.Notice("\u6B63\u5728\u505C\u6B62\u5F53\u524D Codex turn\uFF1Bthread \u4F1A\u4FDD\u7559\uFF0C\u53EF\u7EE7\u7EED\u8FFD\u95EE\u3002");
+        } else {
+          new import_obsidian3.Notice("\u5F53\u524D\u6CA1\u6709\u6B63\u5728\u8FD0\u884C\u7684 Codex turn\u3002");
+        }
         return true;
       case "status":
         this.clearComposerInput();
@@ -2380,6 +3558,23 @@ ${this.contextText}`;
       case "resume":
         this.clearComposerInput();
         this.showResumeMenu();
+        return true;
+      case "refs":
+        this.clearComposerInput();
+        this.showReferencesMenu();
+        return true;
+      case "unref":
+        this.clearComposerInput();
+        this.applyUnrefCommand(args);
+        return true;
+      case "clearrefs":
+        this.clearComposerInput();
+        if (this.clearReferencedPdfs()) new import_obsidian3.Notice("\u5DF2\u6E05\u7A7A\u5F53\u524D\u8BA8\u8BBA\u5F15\u7528\u7684 PDF\u3002");
+        else new import_obsidian3.Notice("\u5F53\u524D\u6CA1\u6709\u5F15\u7528 PDF\u3002");
+        return true;
+      case "context":
+        this.clearComposerInput();
+        this.applyContextCommand(args);
         return true;
       default:
         if (this.runtimeMode === "codex") {
@@ -2502,6 +3697,117 @@ ${this.contextText}`;
     }
     this.referencedPdfFiles.push(file);
     this.updateComposerContextStatus();
+    this.saveSessionMetadataInBackground();
+  }
+  removeReferencedPdfByPath(path) {
+    const before = this.referencedPdfFiles.length;
+    this.referencedPdfFiles = this.referencedPdfFiles.filter((file) => file.path !== path);
+    if (this.referencedPdfFiles.length === before) return false;
+    this.updateComposerContextStatus();
+    this.saveSessionMetadataInBackground();
+    return true;
+  }
+  clearReferencedPdfs() {
+    if (!this.referencedPdfFiles.length) return false;
+    this.referencedPdfFiles = [];
+    this.updateComposerContextStatus();
+    this.saveSessionMetadataInBackground();
+    return true;
+  }
+  setCurrentPdfCodexAttachment(enabled) {
+    if (!this.pdfFile) return;
+    this.includeCurrentPdfInCodex = enabled;
+    this.updateComposerContextStatus();
+    this.saveSessionMetadataInBackground();
+  }
+  findReferencedPdf(query) {
+    const trimmed = query.trim();
+    if (!trimmed) return null;
+    const index = Number.parseInt(trimmed, 10);
+    if (Number.isFinite(index) && String(index) === trimmed && index >= 1) {
+      return this.referencedPdfFiles[index - 1] || null;
+    }
+    const lower = trimmed.toLowerCase();
+    return this.referencedPdfFiles.find(
+      (file) => [file.name, file.path].some((value) => String(value || "").toLowerCase().includes(lower))
+    ) || null;
+  }
+  renderReferencedPdfChips() {
+    if (!this.referencedPdfsEl) return;
+    this.referencedPdfsEl.empty();
+    const showCurrentPdfChip = this.runtimeMode === "codex" && !!this.pdfFile;
+    this.referencedPdfsEl.toggleClass("is-empty", !showCurrentPdfChip && !this.referencedPdfFiles.length);
+    if (showCurrentPdfChip && this.pdfFile) {
+      const currentChip = this.referencedPdfsEl.createDiv({
+        cls: `pdf-chat-reference-chip pdf-chat-current-pdf-chip${this.includeCurrentPdfInCodex ? "" : " is-detached"}`,
+        attr: { role: "listitem" }
+      });
+      currentChip.createEl("span", {
+        text: `${this.includeCurrentPdfInCodex ? "\u5F53\u524D PDF" : "\u672A\u9644\u5F53\u524D PDF"} \xB7 ${this.pdfFile.name || this.pdfFile.path}`,
+        cls: "pdf-chat-reference-chip-label pdf-chat-current-pdf-label"
+      });
+      const currentButton = currentChip.createEl("button", {
+        text: this.includeCurrentPdfInCodex ? "\xD7" : "\u9644\u4E0A",
+        cls: this.includeCurrentPdfInCodex ? "pdf-chat-reference-chip-remove pdf-chat-current-pdf-remove" : "pdf-chat-reference-chip-restore pdf-chat-current-pdf-restore",
+        attr: { type: "button" }
+      });
+      labelControl(
+        currentButton,
+        this.includeCurrentPdfInCodex ? "\u672C\u8F6E Codex \u4E0D\u518D\u9644\u5E26\u5F53\u524D PDF" : "\u91CD\u65B0\u628A\u5F53\u524D PDF \u9644\u7ED9 Codex"
+      );
+      currentButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.setCurrentPdfCodexAttachment(!this.includeCurrentPdfInCodex);
+      });
+    }
+    for (const [index, file] of this.referencedPdfFiles.entries()) {
+      const chip = this.referencedPdfsEl.createDiv({
+        cls: "pdf-chat-reference-chip",
+        attr: { role: "listitem" }
+      });
+      chip.createEl("span", {
+        text: file.name || file.path || `PDF ${index + 1}`,
+        cls: "pdf-chat-reference-chip-label"
+      });
+      const removeButton = chip.createEl("button", {
+        text: "\xD7",
+        cls: "pdf-chat-reference-chip-remove",
+        attr: { type: "button" }
+      });
+      labelControl(removeButton, `\u79FB\u9664\u5F15\u7528 PDF\uFF1A${file.name || file.path}`);
+      removeButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.removeReferencedPdfByPath(file.path);
+      });
+    }
+  }
+  showReferencesMenu() {
+    this.showCommandMenu(
+      "\u7BA1\u7406\u5F15\u7528 PDF",
+      this.referencedPdfFiles.map((file, index) => ({
+        label: `${index + 1}. ${file.name || file.path}`,
+        detail: "\u70B9\u51FB\u79FB\u9664\u8FD9\u4E2A\u5F15\u7528",
+        run: () => {
+          this.removeReferencedPdfByPath(file.path);
+        }
+      }))
+    );
+  }
+  applyUnrefCommand(args) {
+    const trimmed = args.trim();
+    if (!trimmed) {
+      this.showReferencesMenu();
+      return;
+    }
+    const match = this.findReferencedPdf(trimmed);
+    if (!match) {
+      new import_obsidian3.Notice("\u6CA1\u6709\u627E\u5230\u5339\u914D\u7684\u5F15\u7528 PDF\u3002\u8F93\u5165 /refs \u53EF\u67E5\u770B\u5F53\u524D\u5F15\u7528\u3002");
+      return;
+    }
+    this.removeReferencedPdfByPath(match.path);
+    new import_obsidian3.Notice(`\u5DF2\u79FB\u9664\u5F15\u7528\uFF1A${match.name || match.path}`);
   }
   getComposerMentionRange() {
     if (!this.inputEl) return null;
@@ -2600,7 +3906,7 @@ ${this.contextText}`;
       });
       labelControl(button, action.name);
       button.addEventListener("click", () => {
-        void this.services.actions.execute(action.id, { translate: () => this.runTranslation() }).catch((error) => new import_obsidian3.Notice("\u7814\u7A76\u64CD\u4F5C\u5931\u8D25: " + errorMessage(error)));
+        void this.services.actions.execute(action.id, { translate: () => this.runTranslation() }).catch((error) => new import_obsidian3.Notice("\u7814\u7A76\u64CD\u4F5C\u5931\u8D25: " + errorMessage2(error)));
       });
     }
   }
@@ -2627,20 +3933,23 @@ ${this.contextText}`;
   }
   updateComposerContextStatus() {
     if (!this.composerStatusEl) return;
+    this.renderReferencedPdfChips();
+    this.updateCodexContextToggle();
     const modePrefix = this.runtimeMode === "codex" ? "CODEX MODE \xB7 " : "";
     const referenceSuffix = this.referencedPdfFiles.length ? ` \xB7 \u5DF2\u5F15\u7528 ${this.referencedPdfFiles.length} \u7BC7\u8BBA\u6587` : "";
+    const selectionSuffix = this.runtimeMode === "codex" && this.hasSelectionContext() ? this.shouldAttachSelectionContext() ? " \xB7 \u9644\u9009\u533A" : " \xB7 \u4E0D\u9644\u9009\u533A" : "";
     if (!this.pdfFile) {
-      this.composerStatusEl.setText(modePrefix + "\u9009\u533A\u4E0A\u4E0B\u6587\u5DF2\u542F\u7528" + referenceSuffix);
+      this.composerStatusEl.setText(modePrefix + "\u9009\u533A\u4E0A\u4E0B\u6587\u5DF2\u542F\u7528" + referenceSuffix + selectionSuffix);
       return;
     }
     if (this.useRag && this.useFullTextMode) {
-      this.composerStatusEl.setText(modePrefix + "\u5168\u6587\u4E0A\u4E0B\u6587\u5DF2\u542F\u7528" + referenceSuffix);
+      this.composerStatusEl.setText(modePrefix + "\u5168\u6587\u4E0A\u4E0B\u6587\u5DF2\u542F\u7528" + referenceSuffix + selectionSuffix);
     } else if (this.useRag) {
-      this.composerStatusEl.setText(modePrefix + "RAG \u68C0\u7D22\u5DF2\u542F\u7528" + referenceSuffix);
+      this.composerStatusEl.setText(modePrefix + "RAG \u68C0\u7D22\u5DF2\u542F\u7528" + referenceSuffix + selectionSuffix);
     } else if (this.useDocSummary) {
-      this.composerStatusEl.setText(modePrefix + "\u6458\u8981\u80CC\u666F\u5DF2\u542F\u7528" + referenceSuffix);
+      this.composerStatusEl.setText(modePrefix + "\u6458\u8981\u80CC\u666F\u5DF2\u542F\u7528" + referenceSuffix + selectionSuffix);
     } else {
-      this.composerStatusEl.setText(modePrefix + "\u5F53\u524D\u9009\u533A\u4E0A\u4E0B\u6587\u5DF2\u542F\u7528" + referenceSuffix);
+      this.composerStatusEl.setText(modePrefix + "\u5F53\u524D\u9009\u533A\u4E0A\u4E0B\u6587\u5DF2\u542F\u7528" + referenceSuffix + selectionSuffix);
     }
   }
   followupSuggestions() {
@@ -2723,7 +4032,7 @@ ${this.contextText}`;
       }
       return true;
     } catch (err) {
-      new import_obsidian3.Notice("\u4FDD\u5B58\u5BF9\u8BDD\u5931\u8D25: " + errorMessage(err));
+      new import_obsidian3.Notice("\u4FDD\u5B58\u5BF9\u8BDD\u5931\u8D25: " + errorMessage2(err));
       return false;
     }
   }
@@ -2735,7 +4044,7 @@ ${this.contextText}`;
       );
       return true;
     } catch (err) {
-      new import_obsidian3.Notice("\u4FDD\u5B58\u7FFB\u8BD1\u8BB0\u5F55\u5931\u8D25: " + errorMessage(err));
+      new import_obsidian3.Notice("\u4FDD\u5B58\u7FFB\u8BD1\u8BB0\u5F55\u5931\u8D25: " + errorMessage2(err));
       return false;
     }
   }
@@ -2774,7 +4083,7 @@ ${this.contextText}`;
       await this.services.conversations.clear(this.conversationKey);
       new import_obsidian3.Notice("\u5BF9\u8BDD\u5DF2\u6E05\u7A7A,\u539F\u6587\u4E0A\u4E0B\u6587\u4FDD\u7559");
     } catch (err) {
-      new import_obsidian3.Notice("\u754C\u9762\u5DF2\u6E05\u7A7A,\u4F46\u5220\u9664\u5DF2\u4FDD\u5B58\u5BF9\u8BDD\u5931\u8D25: " + errorMessage(err));
+      new import_obsidian3.Notice("\u754C\u9762\u5DF2\u6E05\u7A7A,\u4F46\u5220\u9664\u5DF2\u4FDD\u5B58\u5BF9\u8BDD\u5931\u8D25: " + errorMessage2(err));
     }
   }
   applyPreset(id) {
@@ -2854,7 +4163,7 @@ ${this.contextText}`;
       new import_obsidian3.Notice("\u5168\u6587\u6458\u8981\u5DF2\u751F\u6210/\u66F4\u65B0");
     } catch (err) {
       notice.hide();
-      new import_obsidian3.Notice("\u751F\u6210\u6458\u8981\u5931\u8D25: " + errorMessage(err));
+      new import_obsidian3.Notice("\u751F\u6210\u6458\u8981\u5931\u8D25: " + errorMessage2(err));
       if (this.summaryCheckbox) this.summaryCheckbox.checked = false;
       this.useDocSummary = false;
     } finally {
@@ -2918,7 +4227,7 @@ ${this.contextText}`;
       this.docChunksEntry = await this.services.papers.getOrCreateDocChunks(this.pdfFile, forceRefresh);
       this.refreshRagStatus();
     } catch (err) {
-      new import_obsidian3.Notice("\u5EFA\u7ACB\u68C0\u7D22\u7D22\u5F15\u5931\u8D25: " + errorMessage(err));
+      new import_obsidian3.Notice("\u5EFA\u7ACB\u68C0\u7D22\u7D22\u5F15\u5931\u8D25: " + errorMessage2(err));
       if (this.ragCheckbox) this.ragCheckbox.checked = false;
       this.useRag = false;
     } finally {
@@ -2933,7 +4242,7 @@ ${this.contextText}`;
   }
   selectedPaperFiles() {
     const papers = [];
-    if (this.pdfFile) papers.push({ file: this.pdfFile, role: "current" });
+    if (this.pdfFile && this.includeCurrentPdfInCodex) papers.push({ file: this.pdfFile, role: "current" });
     for (const file of this.referencedPdfFiles) papers.push({ file, role: "referenced" });
     return papers;
   }
@@ -3044,15 +4353,36 @@ ${chunk.text}`;
     this.showFollowupSuggestions("chat");
     (_b = this.multiPaperStatusEl) == null ? void 0 : _b.setText("\u5DF2\u6539\u7528\u5F53\u524D\u6A21\u578B\u57FA\u4E8E\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u56DE\u7B54\u3002");
   }
-  async prepareCodexPapers(progress) {
+  async prepareCodexPdfFiles(progress) {
+    const prepared = [];
+    const usedIds = /* @__PURE__ */ new Map();
+    for (const { file, role } of this.selectedPaperFiles()) {
+      progress == null ? void 0 : progress(`\u6B63\u5728\u590D\u5236 ${file.name || file.path} \u5230 Codex \u4E34\u65F6\u76EE\u5F55\u2026`);
+      const originalPdfBuffer = await this.app.vault.readBinary(file);
+      const baseId = file.path || file.name || `paper-${prepared.length + 1}`;
+      const seen = usedIds.get(baseId) || 0;
+      usedIds.set(baseId, seen + 1);
+      prepared.push({
+        id: seen ? `${baseId}-${seen + 1}` : baseId,
+        role,
+        name: file.name || file.path,
+        vaultPath: file.path,
+        mtime: file.stat && file.stat.mtime,
+        originalPdfData: new Uint8Array(originalPdfBuffer)
+      });
+    }
+    return prepared;
+  }
+  async prepareCodexTextAssets(progress) {
     const prepared = [];
     const usedIds = /* @__PURE__ */ new Map();
     for (const { file, role } of this.selectedPaperFiles()) {
       progress == null ? void 0 : progress(`\u6B63\u5728\u62BD\u53D6 ${file.name || file.path} \u7684\u5168\u6587\u3001\u5206\u9875\u6587\u672C\u548C\u7F13\u5B58\u8D44\u4EA7\u2026`);
-      const [pages, summary, chunksEntry] = await Promise.all([
+      const [pages, summary, chunksEntry, originalPdfBuffer] = await Promise.all([
         this.services.papers.extractPages(file),
         this.services.papers.getOrCreateDocSummary(file, false),
-        this.services.papers.getOrCreateDocChunks(file, false)
+        this.services.papers.getOrCreateDocChunks(file, false),
+        this.app.vault.readBinary(file)
       ]);
       const baseId = file.path || file.name || `paper-${prepared.length + 1}`;
       const seen = usedIds.get(baseId) || 0;
@@ -3065,43 +4395,77 @@ ${chunk.text}`;
         mtime: file.stat && file.stat.mtime,
         summary: summary.summary || "",
         chunks: chunksEntry.chunks || [],
-        pages
+        pages,
+        originalPdfData: new Uint8Array(originalPdfBuffer)
       });
     }
     return prepared;
   }
-  async runOrdinaryMultiPaperCompare() {
-    var _a, _b;
-    if (!this.pdfFile) {
-      new import_obsidian3.Notice("\u591A\u8BBA\u6587\u9605\u8BFB\u9700\u8981\u4ECE PDF \u89C6\u56FE\u6253\u5F00\u3002");
-      return;
-    }
-    if (!this.referencedPdfFiles.length) {
-      new import_obsidian3.Notice("\u8BF7\u5148 @ \u5F15\u7528\u81F3\u5C11\u4E00\u7BC7\u5176\u4ED6 PDF\u3002");
+  async runCodexDeepAnalysis(questionOverride) {
+    var _a, _b, _c, _d;
+    if (!this.plugin.settings.codexDeepAnalysis.enabled) {
+      new import_obsidian3.Notice("\u9700\u8981\u5148\u5728 PDF Chat \u8BBE\u7F6E\u4E2D\u542F\u7528 Codex CLI\u3002");
       return;
     }
     if (this.isSending) return;
-    const question = this.getMultiPaperQuestion();
-    const loadingNotice = new import_obsidian3.Notice("\u6B63\u5728\u51C6\u5907\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u2026", 0);
-    try {
-      const outgoing = await this.buildApiMultiPaperContext(question, (message) => {
-        var _a2;
-        (_a2 = this.multiPaperStatusEl) == null ? void 0 : _a2.setText(message);
-      });
-      loadingNotice.hide();
-      await this.handleSubmit({
-        question: this.multiPaperUserLabel(question),
-        outgoingContentOverride: outgoing,
-        skipContextAugmentation: true
-      });
-      (_a = this.multiPaperStatusEl) == null ? void 0 : _a.setText("\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u56DE\u7B54\u5DF2\u5B8C\u6210\uFF0C\u53EF\u7EE7\u7EED\u8FFD\u95EE\u3002");
-    } catch (error) {
-      loadingNotice.hide();
-      new import_obsidian3.Notice("\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u51C6\u5907\u5931\u8D25: " + errorMessage(error));
-      (_b = this.multiPaperStatusEl) == null ? void 0 : _b.setText("\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u51C6\u5907\u5931\u8D25\u3002");
+    if (this.getCodexInputMode() === "debug-full") {
+      await this.runLegacyCodexDebugAnalysis(questionOverride);
+      return;
     }
+    const runtime = this.services.codex;
+    if (!runtime) {
+      new import_obsidian3.Notice("Codex \u4F1A\u8BDD\u7BA1\u7406\u5668\u4E0D\u53EF\u7528\uFF0C\u8BF7\u91CD\u65B0\u52A0\u8F7D\u63D2\u4EF6\u3002");
+      return;
+    }
+    const question = questionOverride && questionOverride.trim() || this.getMultiPaperQuestion();
+    this.enterCodexMode();
+    const session = (_b = (_a = this.services.conversations).ensureSession) == null ? void 0 : _b.call(
+      _a,
+      this.conversationKey,
+      this.sessionMetadata(this.getDocumentName())
+    );
+    this.currentSessionId = (session == null ? void 0 : session.id) || this.currentSessionId;
+    if (!this.currentSessionId) {
+      new import_obsidian3.Notice("\u65E0\u6CD5\u521B\u5EFA Codex \u4F1A\u8BDD\uFF0C\u8BF7\u91CD\u65B0\u6253\u5F00 PDF Chat\u3002");
+      return;
+    }
+    const papers = this.selectedPaperFiles().map(({ file, role }) => {
+      const location = resolveCodexPdfLocation(this.app, file.path);
+      return {
+        role,
+        name: file.name || file.path,
+        absolutePath: location.absolutePath
+      };
+    });
+    const currentLocation = this.pdfFile ? resolveCodexPdfLocation(this.app, this.pdfFile.path) : null;
+    const adapter = (_c = this.app.vault) == null ? void 0 : _c.adapter;
+    const workingDirectory = (currentLocation == null ? void 0 : currentLocation.workingDirectory) || ((_d = adapter == null ? void 0 : adapter.getBasePath) == null ? void 0 : _d.call(adapter)) || ".";
+    const selectedContext = this.shouldAttachSelectionContext() ? this.contextText : "";
+    const prompt = buildCodexTurnPrompt({ question, papers, selectedContext });
+    this.activeComposerKind = "chat";
+    this.hideFollowupSuggestions();
+    this.clearComposerInput();
+    this.rememberPromptHistory(question);
+    this.attachCodexRuntime(this.currentSessionId);
+    void runtime.startTurn({
+      sessionId: this.currentSessionId,
+      question,
+      userContent: question,
+      prompt,
+      command: this.plugin.settings.codexDeepAnalysis.command || DEFAULT_SETTINGS.codexDeepAnalysis.command,
+      workingDirectory,
+      attachedPdfPaths: this.selectedPaperFiles().map(({ file }) => file.path),
+      selectionChars: selectedContext.length,
+      profile: this.plugin.settings.codexDeepAnalysis.profile || "",
+      model: this.getCodexModel(),
+      reasoningEffort: this.getCodexReasoningEffort(),
+      verbosity: this.plugin.settings.codexDeepAnalysis.verbosity || DEFAULT_SETTINGS.codexDeepAnalysis.verbosity,
+      timeoutMs: this.plugin.settings.codexDeepAnalysis.timeoutMs || DEFAULT_SETTINGS.codexDeepAnalysis.timeoutMs
+    }).catch((error) => {
+      new import_obsidian3.Notice("Codex \u542F\u52A8\u5931\u8D25: " + errorMessage2(error));
+    });
   }
-  async runCodexDeepAnalysis(questionOverride) {
+  async runLegacyCodexDebugAnalysis(questionOverride) {
     var _a, _b, _c, _d, _e, _f, _g;
     if (!this.pdfFile) {
       new import_obsidian3.Notice("Codex \u6DF1\u5EA6\u5206\u6790\u9700\u8981\u4ECE PDF \u89C6\u56FE\u6253\u5F00\u3002");
@@ -3121,7 +4485,9 @@ ${chunk.text}`;
     this.inputEl.value = "";
     if (this.inputEl.style) this.inputEl.style.height = "";
     this.setSendingState(true);
-    const loadingBubble = this.addBubble("assistant", "\u6B63\u5728\u51C6\u5907 Codex \u591A\u8BBA\u6587\u5206\u6790\u5305\u2026", {
+    this.isCodexRunning = true;
+    const inputMode = this.getCodexInputMode();
+    const loadingBubble = this.addBubble("assistant", `\u6B63\u5728\u51C6\u5907 Codex ${this.codexInputModeLabel()} \u5206\u6790\u5305\u2026`, {
       loading: true,
       assistantAuthor: "Codex CLI",
       assistantContext: this.codexMetaText(),
@@ -3129,22 +4495,56 @@ ${chunk.text}`;
     });
     this.abortController = new AbortController();
     let analysisDir = "";
+    let codexTimeoutMs = DEFAULT_SETTINGS.codexDeepAnalysis.timeoutMs;
+    let codexProgressTimer = null;
+    const codexStartedAt = Date.now();
+    let codexProgressDetail = `\u6B63\u5728\u51C6\u5907 Codex ${this.codexInputModeLabel()} \u5206\u6790\u5305\u2026`;
+    const stopCodexProgressTimer = () => {
+      if (!codexProgressTimer) return;
+      clearInterval(codexProgressTimer);
+      codexProgressTimer = null;
+    };
+    const updateCodexProgress = (detail) => {
+      var _a2;
+      if (detail) codexProgressDetail = detail;
+      const elapsedMs = Date.now() - codexStartedAt;
+      const bubbleText = codexProgressBubbleText(elapsedMs, codexProgressDetail);
+      setBubbleText(loadingBubble, bubbleText);
+      (_a2 = this.multiPaperStatusEl) == null ? void 0 : _a2.setText(`Codex \u5DF2\u8FD0\u884C ${formatCodexElapsed(elapsedMs)} \xB7 ${codexProgressDetail}`);
+    };
     try {
       const taskId = String(Date.now());
-      const papers = await this.prepareCodexPapers((message) => {
+      const papers = inputMode === "debug-full" ? await this.prepareCodexTextAssets((message) => {
+        var _a2;
+        (_a2 = this.multiPaperStatusEl) == null ? void 0 : _a2.setText(message);
+        setBubbleText(loadingBubble, message);
+      }) : await this.prepareCodexPdfFiles((message) => {
         var _a2;
         (_a2 = this.multiPaperStatusEl) == null ? void 0 : _a2.setText(message);
         setBubbleText(loadingBubble, message);
       });
       analysisDir = createCodexAnalysisTempDir(taskId);
-      await writeCodexAnalysisPackage({
+      const packageRequest = {
         baseDir: analysisDir,
         taskId,
         createdAt: (/* @__PURE__ */ new Date()).toISOString(),
         question,
-        papers
-      });
+        papers,
+        selectedContext: this.shouldAttachSelectionContext() ? this.contextText : ""
+      };
+      let selectedContextPath;
+      if (inputMode === "debug-full") {
+        const codexPackage = await writeCodexDebugFullPackage(packageRequest);
+        selectedContextPath = codexPackage.selectedContextPath;
+      } else {
+        const codexPackage = await writeCodexAnalysisPackage(packageRequest);
+        selectedContextPath = codexPackage.selectedContextPath;
+      }
       const settings = this.plugin.settings.codexDeepAnalysis;
+      codexTimeoutMs = settings.timeoutMs || DEFAULT_SETTINGS.codexDeepAnalysis.timeoutMs;
+      const outputMode = this.getCodexOutputMode();
+      if (outputMode === "json-schema" && inputMode !== "debug-full") writeCodexOutputSchema(analysisDir);
+      const outputFileName = outputMode === "json-schema" ? "codex-output.json" : "codex-output.md";
       const execArgs = buildCodexExecArgs({
         analysisDir,
         command: settings.command || DEFAULT_SETTINGS.codexDeepAnalysis.command,
@@ -3152,48 +4552,64 @@ ${chunk.text}`;
         model: settings.model || DEFAULT_SETTINGS.codexDeepAnalysis.model,
         reasoningEffort: settings.reasoningEffort || DEFAULT_SETTINGS.codexDeepAnalysis.reasoningEffort,
         verbosity: settings.verbosity || DEFAULT_SETTINGS.codexDeepAnalysis.verbosity,
-        prompt: buildCodexDeepAnalysisPrompt()
+        outputMode,
+        outputFileName,
+        prompt: outputMode === "json-schema" ? inputMode === "debug-full" ? buildCodexDebugFullPrompt() : buildCodexPdfOnlyPrompt(question, papers, { selectedContextPath }) : inputMode === "debug-full" ? buildCodexDebugFullMarkdownPrompt() : buildCodexMarkdownPrompt(question, papers, { selectedContextPath })
       });
-      const runningMessage = `Codex \u6B63\u5728\u9605\u8BFB ${papers.length} \u7BC7\u8BBA\u6587\u2026`;
-      (_b = this.multiPaperStatusEl) == null ? void 0 : _b.setText(runningMessage);
-      setBubbleText(loadingBubble, runningMessage);
+      const runningMessage = `Codex \u6B63\u5728\u8BFB\u53D6 ${papers.length} \u7BC7 PDF${selectedContextPath ? " + \u9009\u533A\u4E0A\u4E0B\u6587" : ""} \xB7 ${this.codexInputModeLabel()} \xB7 ${this.codexOutputModeLabel()}\u2026`;
+      updateCodexProgress(runningMessage);
+      codexProgressTimer = setInterval(() => updateCodexProgress(), 1e3);
       const raw = await runCodexExec(execArgs, {
-        timeoutMs: settings.timeoutMs || DEFAULT_SETTINGS.codexDeepAnalysis.timeoutMs,
-        signal: this.abortController.signal
+        timeoutMs: codexTimeoutMs,
+        outputFileName,
+        signal: this.abortController.signal,
+        onProgress: (progress) => {
+          updateCodexProgress(progress.message);
+        }
       });
-      const output = parseCodexAnalysisOutput(raw);
-      const markdown = renderCodexAnalysisMarkdown(output);
+      stopCodexProgressTimer();
+      const markdown = outputMode === "json-schema" ? renderCodexAnalysisMarkdown(parseCodexAnalysisOutput(raw)) : parseCodexMarkdownOutput(raw);
       loadingBubble.removeClass("is-loading");
       loadingBubble.addClass("is-rendered");
       await renderMarkdownIntoBubble(this.app, this.plugin, loadingBubble, markdown);
       this.messages.push({ role: "user", content: userLabel }, { role: "assistant", content: markdown });
       await this.recordTranscriptTurn(userLabel, markdown, "complete");
       this.showFollowupSuggestions("chat");
-      (_c = this.multiPaperStatusEl) == null ? void 0 : _c.setText("Codex \u6DF1\u5EA6\u5206\u6790\u5DF2\u5B8C\u6210\u3002");
+      (_b = this.multiPaperStatusEl) == null ? void 0 : _b.setText("Codex \u6DF1\u5EA6\u5206\u6790\u5DF2\u5B8C\u6210\u3002");
     } catch (error) {
+      stopCodexProgressTimer();
       loadingBubble.removeClass("is-loading");
-      if (isAbortError(error)) {
+      if (isAbortError2(error)) {
         loadingBubble.addClass("is-stopped");
         setBubbleText(loadingBubble, "Codex \u6DF1\u5EA6\u5206\u6790\u5DF2\u505C\u6B62\u3002");
-        (_d = this.multiPaperStatusEl) == null ? void 0 : _d.setText("Codex \u6DF1\u5EA6\u5206\u6790\u5DF2\u505C\u6B62\u3002");
+        (_c = this.multiPaperStatusEl) == null ? void 0 : _c.setText("Codex \u6DF1\u5EA6\u5206\u6790\u5DF2\u505C\u6B62\u3002");
       } else if (isCodexUnavailableError(error)) {
         this.setAssistantBubbleMeta(loadingBubble, "PDF Chat API", this.codexMetaText(true));
         setBubbleText(loadingBubble, "Codex CLI \u4E0D\u53EF\u7528\uFF0C\u6B63\u5728\u6539\u7528\u5F53\u524D\u6A21\u578B\u57FA\u4E8E\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u56DE\u7B54\u2026");
-        (_e = this.multiPaperStatusEl) == null ? void 0 : _e.setText("Codex \u4E0D\u53EF\u7528\uFF0C\u6539\u7528\u5F53\u524D\u6A21\u578B\u56DE\u7B54\u3002");
+        (_d = this.multiPaperStatusEl) == null ? void 0 : _d.setText("Codex \u4E0D\u53EF\u7528\uFF0C\u6539\u7528\u5F53\u524D\u6A21\u578B\u56DE\u7B54\u3002");
         try {
           await this.completeApiMultiPaperAnswer(question, userLabel, loadingBubble);
         } catch (fallbackError) {
           loadingBubble.removeClass("is-loading");
           loadingBubble.addClass("is-error");
-          setBubbleText(loadingBubble, "\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u56DE\u7B54\u4E5F\u5931\u8D25: " + errorMessage(fallbackError));
-          (_f = this.multiPaperStatusEl) == null ? void 0 : _f.setText("\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u56DE\u7B54\u5931\u8D25\u3002");
+          setBubbleText(loadingBubble, "\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u56DE\u7B54\u4E5F\u5931\u8D25: " + errorMessage2(fallbackError));
+          (_e = this.multiPaperStatusEl) == null ? void 0 : _e.setText("\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u56DE\u7B54\u5931\u8D25\u3002");
         }
+      } else if (isCodexTimeoutError(error)) {
+        loadingBubble.addClass("is-error");
+        setBubbleText(
+          loadingBubble,
+          `Codex \u6DF1\u5EA6\u5206\u6790\u8D85\u8FC7 ${formatCodexElapsed(codexTimeoutMs)} \u540E\u5DF2\u505C\u6B62\u3002
+\u53EF\u80FD\u662F Codex \u8BFB\u53D6 PDF \u6216\u9AD8\u5F3A\u5EA6\u63A8\u7406\u8017\u65F6\u8FC7\u957F\u3002\u53EF\u4EE5\u5207\u6362\u5230 /model gpt-5.5 medium\uFF0C\u51CF\u5C11\u5F15\u7528 PDF\uFF0C\u6216\u91CD\u8BD5\u3002`
+        );
+        (_f = this.multiPaperStatusEl) == null ? void 0 : _f.setText(`Codex \u8D85\u8FC7 ${formatCodexElapsed(codexTimeoutMs)} \u540E\u505C\u6B62\u3002`);
       } else {
         loadingBubble.addClass("is-error");
-        setBubbleText(loadingBubble, "Codex \u6DF1\u5EA6\u5206\u6790\u5931\u8D25: " + errorMessage(error));
+        setBubbleText(loadingBubble, "Codex \u6DF1\u5EA6\u5206\u6790\u5931\u8D25: " + errorMessage2(error));
         (_g = this.multiPaperStatusEl) == null ? void 0 : _g.setText("Codex \u6DF1\u5EA6\u5206\u6790\u5931\u8D25\uFF0C\u53EF\u6539\u7528\u5F53\u524D\u6A21\u578B\u56DE\u7B54\u3002");
       }
     } finally {
+      stopCodexProgressTimer();
       const keep = this.plugin.settings.codexDeepAnalysis.keepTempFiles;
       if (analysisDir && !keep) {
         try {
@@ -3203,6 +4619,7 @@ ${chunk.text}`;
         }
       }
       this.setSendingState(false);
+      this.isCodexRunning = false;
       this.abortController = null;
       this.inputEl.focus();
     }
@@ -3238,6 +4655,10 @@ ${chunk.text}`;
     });
   }
   stopGenerating() {
+    var _a;
+    if (this.isCodexRunning && this.currentSessionId && ((_a = this.services.codex) == null ? void 0 : _a.stopTurn(this.currentSessionId))) {
+      return;
+    }
     if (this.abortController) {
       this.abortController.abort();
     }
@@ -3248,6 +4669,120 @@ ${chunk.text}`;
     this.sendBtn.setText(sending ? "\u505C\u6B62" : "\u2191");
     this.sendBtn.toggleClass("is-stop", sending);
     labelControl(this.sendBtn, sending ? "\u505C\u6B62\u751F\u6210" : "\u53D1\u9001\u95EE\u9898");
+  }
+  stopCodexUiTimer() {
+    if (!this.codexProgressTimer) return;
+    clearInterval(this.codexProgressTimer);
+    this.codexProgressTimer = void 0;
+  }
+  updateCodexProgressBubble(snapshot) {
+    var _a;
+    if (!this.codexTaskBubble || snapshot.status !== "running") return;
+    const elapsed = snapshot.startedAt ? Date.now() - snapshot.startedAt : 0;
+    setBubbleText(
+      this.codexTaskBubble,
+      `Codex \u6B63\u5728\u8FD0\u884C ${formatCodexElapsed(elapsed)}
+${snapshot.progress || "\u6B63\u5728\u7B49\u5F85 Codex CLI \u4E8B\u4EF6\u2026"}`
+    );
+    this.setAssistantBubbleMeta(
+      this.codexTaskBubble,
+      "Codex CLI",
+      `${this.getCodexModel()} \xB7 ${this.getCodexReasoningEffort()} \xB7 Thread ${snapshot.threadId || "starting"}`
+    );
+    (_a = this.multiPaperStatusEl) == null ? void 0 : _a.setText(
+      `Codex ${snapshot.threadId ? `Thread ${snapshot.threadId.slice(0, 8)}\u2026` : "\u6B63\u5728\u542F\u52A8"} \xB7 ${formatCodexElapsed(elapsed)}`
+    );
+    if (this.modeBadgeEl) {
+      this.modeBadgeEl.setText(
+        `CODEX MODE \xB7 ${this.getCodexModel()} \xB7 ${this.getCodexReasoningEffort()} \xB7 ${snapshot.threadId ? `Thread ${snapshot.threadId.slice(0, 8)}\u2026` : "New thread"} \xB7 Running ${formatCodexElapsed(elapsed)}`
+      );
+    }
+  }
+  async applyCodexSnapshot(snapshot) {
+    var _a, _b, _c, _d, _e, _f, _g, _h;
+    if (snapshot.sessionId !== this.currentSessionId) return;
+    this.lastCodexSnapshot = snapshot;
+    if (snapshot.status === "running") {
+      this.isCodexRunning = true;
+      this.setSendingState(true);
+      this.hideFollowupSuggestions();
+      if (!this.codexTaskBubble || this.codexTaskQuestion !== snapshot.question) {
+        (_a = this.emptyStateEl) == null ? void 0 : _a.remove();
+        this.emptyStateEl = void 0;
+        if (snapshot.question) this.addBubble("user", snapshot.question);
+        this.codexTaskQuestion = snapshot.question;
+        this.codexTaskBubble = this.addBubble("assistant", "Codex \u6B63\u5728\u542F\u52A8\u2026", {
+          loading: true,
+          assistantAuthor: "Codex CLI",
+          assistantContext: this.codexMetaText(),
+          assistantClass: "is-codex-response"
+        });
+      }
+      this.updateCodexProgressBubble(snapshot);
+      if (!this.codexProgressTimer) {
+        this.codexProgressTimer = setInterval(() => {
+          if (this.lastCodexSnapshot) this.updateCodexProgressBubble(this.lastCodexSnapshot);
+        }, 1e3);
+      }
+      return;
+    }
+    this.stopCodexUiTimer();
+    this.isCodexRunning = false;
+    this.setSendingState(false);
+    this.updateRuntimeModeUi();
+    if (snapshot.finalMarkdown) {
+      const session = (_c = (_b = this.services.conversations).getSession) == null ? void 0 : _c.call(_b, snapshot.sessionId);
+      if (session) {
+        this.transcript = [...session.messages];
+        this.messages = [
+          this.buildSystemMessage(),
+          ...this.transcript.map((message) => ({ role: message.role, content: message.content }))
+        ];
+      }
+      const alreadyVisible = !this.codexTaskBubble && ((_d = this.transcript[this.transcript.length - 1]) == null ? void 0 : _d.role) === "assistant" && ((_e = this.transcript[this.transcript.length - 1]) == null ? void 0 : _e.content) === snapshot.finalMarkdown;
+      if (!alreadyVisible) {
+        const bubble = this.codexTaskBubble || this.addBubble("assistant", "", {
+          assistantAuthor: "Codex CLI",
+          assistantContext: this.codexMetaText(),
+          assistantClass: "is-codex-response"
+        });
+        bubble.removeClass("is-loading", "is-error", "is-stopped");
+        bubble.addClass("is-rendered");
+        this.setAssistantBubbleMeta(
+          bubble,
+          "Codex CLI",
+          `${this.getCodexModel()} \xB7 ${this.getCodexReasoningEffort()} \xB7 Thread ${snapshot.threadId || "unknown"}`
+        );
+        await renderMarkdownIntoBubble(this.app, this.plugin, bubble, snapshot.finalMarkdown);
+      }
+      (_f = this.multiPaperStatusEl) == null ? void 0 : _f.setText("Codex \u672C\u8F6E\u56DE\u7B54\u5DF2\u5B8C\u6210\u3002");
+      this.showFollowupSuggestions("chat");
+    } else if (snapshot.status === "failed" || snapshot.status === "stopped") {
+      const bubble = this.codexTaskBubble || this.addBubble("assistant", "", {
+        assistantAuthor: "Codex CLI",
+        assistantContext: this.codexMetaText(),
+        assistantClass: "is-codex-response"
+      });
+      bubble.removeClass("is-loading");
+      bubble.addClass(snapshot.status === "failed" ? "is-error" : "is-stopped");
+      setBubbleText(
+        bubble,
+        snapshot.status === "failed" ? `Codex \u672C\u8F6E\u5931\u8D25\uFF1A${snapshot.error || snapshot.progress || "\u672A\u77E5\u9519\u8BEF"}` : snapshot.progress || "Codex \u672C\u8F6E\u5DF2\u505C\u6B62\uFF0C\u53EF\u7EE7\u7EED\u4F7F\u7528\u540C\u4E00 thread \u63D0\u95EE\u3002"
+      );
+      (_g = this.multiPaperStatusEl) == null ? void 0 : _g.setText(snapshot.progress || "Codex \u672C\u8F6E\u5DF2\u505C\u6B62\u3002");
+    }
+    this.codexTaskBubble = void 0;
+    this.codexTaskQuestion = void 0;
+    (_h = this.inputEl) == null ? void 0 : _h.focus();
+  }
+  attachCodexRuntime(sessionId) {
+    var _a;
+    const runtime = this.services.codex;
+    if (!runtime) return;
+    (_a = this.codexUnsubscribe) == null ? void 0 : _a.call(this);
+    this.codexUnsubscribe = runtime.subscribe(sessionId, (snapshot) => {
+      void this.applyCodexSnapshot(snapshot);
+    });
   }
   handleTranslate() {
     void this.services.actions.execute("translate", {
@@ -3304,7 +4839,7 @@ ${chunk.text}`;
       if (!isPartial) this.showFollowupSuggestions("translate");
     } catch (err) {
       loadingBubble.removeClass("is-loading");
-      if (isAbortError(err) && fullText.trim()) {
+      if (isAbortError2(err) && fullText.trim()) {
         loadingBubble.addClass("is-stopped");
         setBubbleText(loadingBubble, fullText + "\n\n[\u5DF2\u505C\u6B62\u751F\u6210]");
         await this.recordTranslateTurn(friendlyLabel, fullText, "stopped");
@@ -3362,13 +4897,13 @@ ${chunk.text}`;
       this.showFollowupSuggestions("translate");
     } catch (err) {
       loadingBubble.removeClass("is-loading");
-      if (isAbortError(err)) {
+      if (isAbortError2(err)) {
         loadingBubble.addClass("is-stopped");
         setBubbleText(loadingBubble, (fullText || "") + "\n\n[\u5DF2\u505C\u6B62\u751F\u6210]");
         if (fullText) await this.recordTranslateTurn(question, fullText, "stopped");
       } else {
         loadingBubble.addClass("is-error");
-        setBubbleText(loadingBubble, "\u8BF7\u6C42\u5931\u8D25: " + errorMessage(err));
+        setBubbleText(loadingBubble, "\u8BF7\u6C42\u5931\u8D25: " + errorMessage2(err));
       }
     } finally {
       this.setSendingState(false);
@@ -3381,12 +4916,12 @@ ${chunk.text}`;
     const usingOverride = typeof opts.question === "string";
     const question = typeof opts.question === "string" ? opts.question.trim() : this.inputEl.value.trim();
     if (!question) return;
-    if (this.isSending) {
-      new import_obsidian3.Notice("\u4E0A\u4E00\u4E2A\u95EE\u9898\u8FD8\u5728\u751F\u6210\u4E2D,\u8BF7\u7A0D\u5019\u6216\u70B9\u51FB\u505C\u6B62");
-      return;
-    }
     if (!usingOverride) this.rememberPromptHistory(question);
     if (await this.handleSlashCommand(question, usingOverride)) {
+      return;
+    }
+    if (this.isSending) {
+      new import_obsidian3.Notice("\u4E0A\u4E00\u4E2A\u95EE\u9898\u8FD8\u5728\u751F\u6210\u4E2D,\u8BF7\u7A0D\u5019\u6216\u70B9\u51FB\u505C\u6B62");
       return;
     }
     if (!usingOverride && this.runtimeMode === "codex") {
@@ -3422,7 +4957,7 @@ ${chunk.text}`;
           setBubbleText(loadingBubble, message);
         });
       } catch (err) {
-        new import_obsidian3.Notice("\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u51C6\u5907\u5931\u8D25\uFF0C\u5DF2\u9000\u56DE\u5F53\u524D\u95EE\u9898: " + errorMessage(err));
+        new import_obsidian3.Notice("\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u51C6\u5907\u5931\u8D25\uFF0C\u5DF2\u9000\u56DE\u5F53\u524D\u95EE\u9898: " + errorMessage2(err));
         outgoingContent = question;
       }
       setBubbleText(loadingBubble, "\u601D\u8003\u4E2D\u2026");
@@ -3487,7 +5022,7 @@ ${c.text}`).join("\n\n---\n\n");
       this.showFollowupSuggestions("chat");
     } catch (err) {
       loadingBubble.removeClass("is-loading");
-      if (isAbortError(err)) {
+      if (isAbortError2(err)) {
         loadingBubble.addClass("is-stopped");
         setBubbleText(loadingBubble, (fullText || "") + "\n\n[\u5DF2\u505C\u6B62\u751F\u6210]");
         if (fullText) {
@@ -3498,7 +5033,7 @@ ${c.text}`).join("\n\n---\n\n");
         }
       } else {
         loadingBubble.addClass("is-error");
-        setBubbleText(loadingBubble, "\u8BF7\u6C42\u5931\u8D25: " + errorMessage(err));
+        setBubbleText(loadingBubble, "\u8BF7\u6C42\u5931\u8D25: " + errorMessage2(err));
         this.messages.pop();
       }
     } finally {
@@ -3554,8 +5089,20 @@ ${c.text}`).join("\n\n---\n\n");
     return bubble;
   }
   onClose() {
-    this.stopGenerating();
-    if (this.transcript.length) {
+    var _a, _b;
+    (_a = this.codexUnsubscribe) == null ? void 0 : _a.call(this);
+    this.codexUnsubscribe = void 0;
+    this.stopCodexUiTimer();
+    const terminateCodex = this.codexCloseIntent === "terminate" && this.runtimeMode === "codex" && !!this.currentSessionId;
+    if (terminateCodex && this.currentSessionId) {
+      void ((_b = this.services.codex) == null ? void 0 : _b.closeSession(this.currentSessionId));
+      new import_obsidian3.Notice("Codex \u4F1A\u8BDD\u5DF2\u5173\u95ED\uFF1B\u5386\u53F2\u4E0E thread \u5DF2\u4FDD\u7559\uFF0C\u53EF\u901A\u8FC7 /resume \u627E\u56DE\u3002");
+    } else if (this.isCodexRunning) {
+      new import_obsidian3.Notice("Codex \u4ECD\u5728\u540E\u53F0\u8FD0\u884C\uFF0C\u5B8C\u6210\u540E\u4F1A\u4FDD\u5B58\u5230\u5F53\u524D\u4F1A\u8BDD\uFF1B\u7A0D\u540E\u91CD\u65B0\u6253\u5F00\u5373\u53EF\u67E5\u770B\u7ED3\u679C\u3002");
+    } else {
+      this.stopGenerating();
+    }
+    if (this.transcript.length && !terminateCodex && !this.isCodexRunning) {
       void this.persistConversation();
     }
     if (this.translateTranscript.length) {
@@ -3740,6 +5287,14 @@ function normalizeReasoningEffort2(value) {
 function normalizeVerbosity(value) {
   return value === "low" || value === "medium" || value === "high" ? value : DEFAULT_SETTINGS.codexDeepAnalysis.verbosity;
 }
+function normalizeCodexInputMode(value) {
+  if (value === "debug-full" || value === "text-fallback") return "debug-full";
+  return value === "pdf-only" ? "pdf-only" : DEFAULT_SETTINGS.codexDeepAnalysis.inputMode;
+}
+function normalizeCodexOutputMode(value) {
+  return value === "json-schema" ? "json-schema" : DEFAULT_SETTINGS.codexDeepAnalysis.outputMode;
+}
+var LEGACY_CODEX_TIMEOUT_MS = 6e5;
 function legacySessionFromHistory(key, history) {
   const messages = normalizeConversationMessages(history.messages);
   if (!messages.length) return null;
@@ -3753,6 +5308,7 @@ function legacySessionFromHistory(key, history) {
     mode: "chat",
     messages,
     referencedPdfPaths: [],
+    includeCurrentPdfInCodex: true,
     createdAt: timestamp,
     updatedAt: timestamp
   };
@@ -3817,6 +5373,9 @@ function migrateSettings(savedValue, now = Date.now) {
     needsSave = true;
   }
   const savedCodex = saved && saved.codexDeepAnalysis && typeof saved.codexDeepAnalysis === "object" && !Array.isArray(saved.codexDeepAnalysis) ? saved.codexDeepAnalysis : {};
+  const savedCodexTimeout = typeof savedCodex.timeoutMs === "number" && Number.isFinite(savedCodex.timeoutMs) && savedCodex.timeoutMs >= 3e4 ? Math.floor(savedCodex.timeoutMs) : null;
+  const normalizedCodexTimeout = savedCodexTimeout === null || savedCodexTimeout === LEGACY_CODEX_TIMEOUT_MS ? DEFAULT_SETTINGS.codexDeepAnalysis.timeoutMs : savedCodexTimeout;
+  if (savedCodexTimeout !== normalizedCodexTimeout) needsSave = true;
   settings.codexDeepAnalysis = {
     ...DEFAULT_SETTINGS.codexDeepAnalysis,
     ...savedCodex,
@@ -3826,6 +5385,8 @@ function migrateSettings(savedValue, now = Date.now) {
     model: typeof savedCodex.model === "string" && savedCodex.model.trim() ? savedCodex.model.trim() : DEFAULT_SETTINGS.codexDeepAnalysis.model,
     reasoningEffort: normalizeReasoningEffort2(savedCodex.reasoningEffort),
     verbosity: normalizeVerbosity(savedCodex.verbosity),
+    inputMode: normalizeCodexInputMode(savedCodex.inputMode),
+    outputMode: normalizeCodexOutputMode(savedCodex.outputMode),
     modelPresets: Array.isArray(savedCodex.modelPresets) && savedCodex.modelPresets.length ? savedCodex.modelPresets.filter(
       (preset) => !!preset && typeof preset === "object" && typeof preset.model === "string" && !!preset.model.trim()
     ).map((preset) => ({
@@ -3833,8 +5394,9 @@ function migrateSettings(savedValue, now = Date.now) {
       reasoningEffort: normalizeReasoningEffort2(preset.reasoningEffort),
       label: typeof preset.label === "string" && preset.label.trim() ? preset.label.trim() : `${preset.model.trim()} \xB7 ${normalizeReasoningEffort2(preset.reasoningEffort)}`
     })) : DEFAULT_SETTINGS.codexDeepAnalysis.modelPresets.map((preset) => ({ ...preset })),
-    timeoutMs: typeof savedCodex.timeoutMs === "number" && Number.isFinite(savedCodex.timeoutMs) && savedCodex.timeoutMs >= 3e4 ? Math.floor(savedCodex.timeoutMs) : DEFAULT_SETTINGS.codexDeepAnalysis.timeoutMs,
-    keepTempFiles: savedCodex.keepTempFiles === true
+    timeoutMs: normalizedCodexTimeout,
+    keepTempFiles: savedCodex.keepTempFiles === true,
+    includeSelectionContext: typeof savedCodex.includeSelectionContext === "boolean" ? savedCodex.includeSelectionContext : DEFAULT_SETTINGS.codexDeepAnalysis.includeSelectionContext
   };
   if (saved && (saved.endpoint || saved.apiKey || saved.model) && !(saved.models && saved.models.length)) {
     const migrated = {
@@ -3920,12 +5482,12 @@ var PDFChatSettingTab = class extends import_obsidian4.PluginSettingTab {
   }
   renderModelSection(containerEl) {
     containerEl.createEl("p", {
-      text: "\u53EF\u4EE5\u6DFB\u52A0\u591A\u5957 OpenAI \u517C\u5BB9\u6A21\u578B\u914D\u7F6E\u3002\u5F39\u7A97\u4F1A\u5217\u51FA\u5168\u90E8\u6761\u76EE\uFF0C\u6807\u4E3A\u9ED8\u8BA4\u7684\u6761\u76EE\u7528\u4E8E\u65B0\u5BF9\u8BDD\u3002",
+      text: "\u65E5\u5E38\u53EA\u9700\u8981\u7EF4\u62A4\u4E3B\u8981 API \u6A21\u578B\uFF1B\u591A\u6A21\u578B\u914D\u7F6E\u4ECD\u7136\u4FDD\u7559\u5728\u4E0B\u65B9\u9AD8\u7EA7\u6298\u53E0\u533A\u3002",
       cls: "setting-item-description"
     });
-    this.plugin.settings.models.forEach((model, index) => {
+    const renderModelConfig = (targetEl, model, index) => {
       const isActive = model.id === this.plugin.settings.activeModelId;
-      const header = new import_obsidian4.Setting(containerEl).setName(`\u6A21\u578B ${index + 1}${isActive ? " \xB7 \u9ED8\u8BA4" : ""}`);
+      const header = new import_obsidian4.Setting(targetEl).setName(`\u6A21\u578B ${index + 1}${isActive ? " \xB7 \u9ED8\u8BA4" : ""}`);
       header.addText(
         (text) => text.setPlaceholder("\u540D\u79F0").setValue(model.name).onChange(async (value) => {
           model.name = value;
@@ -3957,28 +5519,43 @@ var PDFChatSettingTab = class extends import_obsidian4.PluginSettingTab {
           this.display();
         });
       });
-      new import_obsidian4.Setting(containerEl).setName("Endpoint").addText(
+      new import_obsidian4.Setting(targetEl).setName("Endpoint").addText(
         (text) => text.setPlaceholder("OpenAI \u517C\u5BB9\u7684 chat/completions \u63A5\u53E3\u5730\u5740").setValue(model.endpoint).onChange(async (value) => {
           model.endpoint = value.trim();
           await this.plugin.saveSettings();
         })
       );
-      new import_obsidian4.Setting(containerEl).setName("API Key").addText((text) => {
+      new import_obsidian4.Setting(targetEl).setName("API Key").addText((text) => {
         text.inputEl.type = "password";
         text.setValue(model.apiKey).onChange(async (value) => {
           model.apiKey = value.trim();
           await this.plugin.saveSettings();
         });
       });
-      new import_obsidian4.Setting(containerEl).setName("\u6A21\u578B\u540D(model \u5B57\u6BB5)").addText(
+      new import_obsidian4.Setting(targetEl).setName("\u6A21\u578B\u540D(model \u5B57\u6BB5)").addText(
         (text) => text.setValue(model.model).onChange(async (value) => {
           model.model = value.trim();
           await this.plugin.saveSettings();
         })
       );
-      containerEl.createEl("hr");
+      targetEl.createEl("hr");
+    };
+    const activeIndex = Math.max(
+      0,
+      this.plugin.settings.models.findIndex((model) => model.id === this.plugin.settings.activeModelId)
+    );
+    const activeModel = this.plugin.settings.models[activeIndex] || this.plugin.settings.models[0];
+    if (activeModel) renderModelConfig(containerEl, activeModel, activeIndex);
+    const maybeAdvancedEl = containerEl.createEl("details", { cls: "pdf-chat-settings-advanced-models" });
+    const advancedEl = maybeAdvancedEl && typeof maybeAdvancedEl.createEl === "function" ? maybeAdvancedEl : containerEl;
+    if (advancedEl !== containerEl) {
+      advancedEl.createEl("summary", { text: "\u9AD8\u7EA7\u6A21\u578B\u914D\u7F6E" });
+    }
+    this.plugin.settings.models.forEach((model, index) => {
+      if (index === activeIndex) return;
+      renderModelConfig(advancedEl, model, index);
     });
-    new import_obsidian4.Setting(containerEl).addButton(
+    new import_obsidian4.Setting(advancedEl).addButton(
       (button) => button.setButtonText("+ \u6DFB\u52A0\u6A21\u578B").setCta().onClick(async () => {
         this.plugin.settings.models.push({
           id: "model-" + Date.now(),
@@ -4213,13 +5790,13 @@ var PDFChatSettingTab = class extends import_obsidian4.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian4.Setting(containerEl).setName("Codex model").setDesc("\u5BF9\u5E94 codex exec --model\u3002\u9ED8\u8BA4 gpt-5.6-sol\uFF1B\u4E5F\u53EF\u4EE5\u5728\u804A\u5929\u6846\u7528 /model \u5207\u6362\u3002").addText(
+    new import_obsidian4.Setting(containerEl).setName("Codex model").setDesc("\u5BF9\u5E94 codex exec --model\u3002\u9ED8\u8BA4 gpt-5.5\uFF1B\u4E5F\u53EF\u4EE5\u5728\u804A\u5929\u6846\u7528 /model \u5207\u6362\u3002").addText(
       (text) => text.setValue(this.plugin.settings.codexDeepAnalysis.model).onChange(async (value) => {
         this.plugin.settings.codexDeepAnalysis.model = value.trim() || DEFAULT_SETTINGS.codexDeepAnalysis.model;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian4.Setting(containerEl).setName("Codex reasoning effort").setDesc("\u5BF9\u5E94 -c model_reasoning_effort\u3002\u9ED8\u8BA4 xhigh\uFF1B\u5982\u679C\u8D26\u6237\u6216\u6A21\u578B\u4E0D\u652F\u6301\uFF0C\u53EF\u964D\u5230 high/medium\u3002").addDropdown((dropdown) => {
+    new import_obsidian4.Setting(containerEl).setName("Codex reasoning effort").setDesc("\u5BF9\u5E94 -c model_reasoning_effort\u3002\u9ED8\u8BA4 medium\uFF1B\u6DF1\u5EA6\u4EFB\u52A1\u53EF\u5347\u5230 high/xhigh\u3002").addDropdown((dropdown) => {
       for (const effort of ["minimal", "low", "medium", "high", "xhigh"]) {
         dropdown.addOption(effort, effort);
       }
@@ -4228,14 +5805,38 @@ var PDFChatSettingTab = class extends import_obsidian4.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian4.Setting(containerEl).setName("Codex verbosity").setDesc("\u5BF9\u5E94 -c model_verbosity\u3002\u9ED8\u8BA4 high\uFF0C\u8BA9\u6DF1\u5EA6\u9605\u8BFB\u8F93\u51FA\u66F4\u5145\u5206\u3002").addDropdown((dropdown) => {
+    new import_obsidian4.Setting(containerEl).setName("Codex verbosity").setDesc("\u5BF9\u5E94 -c model_verbosity\u3002\u9ED8\u8BA4 medium\uFF0C\u9700\u8981\u66F4\u5145\u5206\u65F6\u53EF\u6539 high\u3002").addDropdown((dropdown) => {
       for (const verbosity of ["low", "medium", "high"]) dropdown.addOption(verbosity, verbosity);
       dropdown.setValue(this.plugin.settings.codexDeepAnalysis.verbosity).onChange(async (value) => {
         this.plugin.settings.codexDeepAnalysis.verbosity = value === "low" || value === "medium" || value === "high" ? value : DEFAULT_SETTINGS.codexDeepAnalysis.verbosity;
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian4.Setting(containerEl).setName("Codex \u8D85\u65F6\u6BEB\u79D2").setDesc("\u9ED8\u8BA4 600000\uFF0C\u5373 10 \u5206\u949F\uFF1B\u8D85\u65F6\u540E\u4F1A\u7EC8\u6B62 Codex \u8FDB\u7A0B\u3002").addText(
+    new import_obsidian4.Setting(containerEl).setName("Codex input mode").setDesc("\u9ED8\u8BA4 PDF-only\uFF1A\u53EA\u628A\u6240\u9009 PDF \u548C\u95EE\u9898\u653E\u8FDB\u4E34\u65F6\u76EE\u5F55\uFF1BDebug full \u4EC5\u7528\u4E8E\u6392\u67E5 PDF \u8BFB\u53D6\u95EE\u9898\u3002").addDropdown((dropdown) => {
+      dropdown.addOption("pdf-only", "PDF-only");
+      dropdown.addOption("debug-full", "Debug full");
+      dropdown.setValue(this.plugin.settings.codexDeepAnalysis.inputMode || DEFAULT_SETTINGS.codexDeepAnalysis.inputMode);
+      dropdown.onChange(async (value) => {
+        this.plugin.settings.codexDeepAnalysis.inputMode = value === "debug-full" ? value : "pdf-only";
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian4.Setting(containerEl).setName("Codex output mode").setDesc("\u9ED8\u8BA4 Markdown\uFF1A\u8BA9 Codex \u81EA\u7136\u56DE\u7B54\uFF1BJSON schema \u4EC5\u7528\u4E8E\u7ED3\u6784\u5316\u517C\u5BB9\u6216\u8C03\u8BD5\u3002").addDropdown((dropdown) => {
+      dropdown.addOption("markdown", "Markdown (natural)");
+      dropdown.addOption("json-schema", "JSON schema (structured/debug)");
+      dropdown.setValue(this.plugin.settings.codexDeepAnalysis.outputMode || DEFAULT_SETTINGS.codexDeepAnalysis.outputMode);
+      dropdown.onChange(async (value) => {
+        this.plugin.settings.codexDeepAnalysis.outputMode = value === "json-schema" ? "json-schema" : "markdown";
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian4.Setting(containerEl).setName("Codex \u9ED8\u8BA4\u9644\u5E26\u9009\u533A\u4E0A\u4E0B\u6587").setDesc("\u5F00\u542F\u540E\uFF0CPDF Chat \u4F1A\u628A\u5F53\u524D\u5212\u9009\u6BB5\u843D\u5199\u5165 selected-context.md\uFF1B\u5F39\u7A97\u5185\u4E5F\u53EF\u7528\u201C\u9644\u9009\u533A\u201D\u6309\u94AE\u6216 /context \u4E34\u65F6\u5207\u6362\u3002").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.codexDeepAnalysis.includeSelectionContext).onChange(async (value) => {
+        this.plugin.settings.codexDeepAnalysis.includeSelectionContext = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian4.Setting(containerEl).setName("Codex \u8D85\u65F6\u6BEB\u79D2").setDesc("\u9ED8\u8BA4 1800000\uFF0C\u5373 30 \u5206\u949F\uFF1BPDF \u8BFB\u53D6\u6216\u9AD8\u5F3A\u5EA6\u63A8\u7406\u53EF\u80FD\u8F83\u6162\uFF0C\u8D85\u65F6\u540E\u4F1A\u7EC8\u6B62 Codex \u8FDB\u7A0B\u3002").addText(
       (text) => text.setValue(String(this.plugin.settings.codexDeepAnalysis.timeoutMs)).onChange(async (value) => {
         const parsed = Number(value.trim());
         this.plugin.settings.codexDeepAnalysis.timeoutMs = Number.isFinite(parsed) && parsed >= 3e4 ? Math.floor(parsed) : DEFAULT_SETTINGS.codexDeepAnalysis.timeoutMs;
@@ -4331,6 +5932,7 @@ var PDFChatPlugin = class extends import_obsidian5.Plugin {
     __publicField(this, "actionRegistry");
     __publicField(this, "modalServices");
     __publicField(this, "quickTranslateMarker");
+    __publicField(this, "codexSessionManager");
   }
   async onload() {
     var _a;
@@ -4340,6 +5942,7 @@ var PDFChatPlugin = class extends import_obsidian5.Plugin {
       () => this.settings,
       () => this.saveSettings()
     );
+    this.codexSessionManager = new CodexSessionManager(this.conversationStore);
     this.llmTransport = new OpenAICompatibleTransport(
       () => this.settings,
       (id) => this.getModelProfile(id)
@@ -4363,6 +5966,11 @@ var PDFChatPlugin = class extends import_obsidian5.Plugin {
         ensureSession: (key, metadata) => this.conversationStore.ensureSession(key, metadata),
         startSession: (key, metadata) => this.conversationStore.startSession(key, metadata),
         saveActiveSession: (key, messages, metadata) => this.conversationStore.saveActiveSession(key, messages, metadata),
+        getSession: (id) => this.conversationStore.getSession(id),
+        saveSessionById: (id, messages, metadata) => this.conversationStore.saveSessionById(id, messages, metadata),
+        appendSessionTurn: (id, userContent, assistantContent) => this.conversationStore.appendSessionTurn(id, userContent, assistantContent),
+        updateSessionMetadata: (id, metadata) => this.conversationStore.updateSessionMetadata(id, metadata),
+        closeSession: (id) => this.conversationStore.closeSession(id),
         resumeSession: (id) => this.conversationStore.resumeSession(id),
         listSessions: (query) => this.conversationStore.listSessions(query)
       },
@@ -4381,7 +5989,8 @@ var PDFChatPlugin = class extends import_obsidian5.Plugin {
         resolveContinueId: () => this.resolveContinueModelId()
       },
       actions: this.actionRegistry,
-      translations: this.translationService
+      translations: this.translationService,
+      codex: this.codexSessionManager
     });
     this.addSettingTab(new PDFChatSettingTab(this.app, this));
     this.addCommand({
@@ -4413,8 +6022,10 @@ var PDFChatPlugin = class extends import_obsidian5.Plugin {
     });
   }
   onunload() {
-    var _a;
-    (_a = this.quickTranslateMarker) == null ? void 0 : _a.destroy();
+    var _a, _b;
+    (_a = this.codexSessionManager) == null ? void 0 : _a.dispose();
+    this.codexSessionManager = void 0;
+    (_b = this.quickTranslateMarker) == null ? void 0 : _b.destroy();
     this.quickTranslateMarker = void 0;
   }
   // startFresh=true: 新开一份对话,不加载这个 PDF(或选区)之前保存的记录;
@@ -4424,11 +6035,11 @@ var PDFChatPlugin = class extends import_obsidian5.Plugin {
     const sel = win.getSelection ? win.getSelection() : null;
     const raw = sel ? sel.toString() : "";
     const text = cleanSelectionText(raw || "");
-    if (!text) {
+    const pdfFile = getActivePdfFile(this.app);
+    if (!text && !pdfFile) {
       new import_obsidian5.Notice("\u6CA1\u6709\u68C0\u6D4B\u5230\u9009\u4E2D\u7684\u6587\u5B57,\u8BF7\u5148\u5212\u9009\u4E00\u6BB5\u5185\u5BB9\u518D\u6309\u5FEB\u6377\u952E");
       return;
     }
-    const pdfFile = getActivePdfFile(this.app);
     const paperContext = this.paperContextService.createContext(
       pdfFile,
       text,

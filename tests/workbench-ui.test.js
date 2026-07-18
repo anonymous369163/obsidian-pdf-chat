@@ -217,6 +217,23 @@ function loadBundle(options = {}) {
       this.app = app;
       this.contentEl = new MiniElement("div");
       this.modalEl = new MiniElement("div");
+      this.scope = {
+        handlers: [],
+        register: (modifiers, key, handler) => {
+          this.scope.handlers.push({ modifiers, key, handler });
+          return handler;
+        },
+      };
+      this.close = () => {
+        this.closed = true;
+        this.onClose?.();
+      };
+    }
+
+    open() {
+      this.opened = true;
+      this.onOpen?.();
+      return this;
     }
   }
 
@@ -332,6 +349,7 @@ function loadBundle(options = {}) {
     Element: MiniElement,
     TextDecoder,
     URL,
+    clearInterval,
     clearTimeout,
     console,
     fetch: async () => {
@@ -340,9 +358,11 @@ function loadBundle(options = {}) {
     module: { exports: {} },
     require(request) {
       if (request === "obsidian") return obsidian;
+      if (request === "node:path" || request === "path") return require("node:path");
       throw new Error(`Unexpected require: ${request}`);
     },
     setTimeout,
+    setInterval,
     confirm: options.confirm || (() => false),
     window: {
       confirm: options.confirm || (() => false),
@@ -365,6 +385,7 @@ function createModalHarness({
   confirm,
   settingsPatch = {},
   conversations = {},
+  codex,
 } = {}) {
   const { bundle } = loadBundle({ markdownRenderer, confirm });
   const settings = JSON.parse(JSON.stringify(bundle.DEFAULT_SETTINGS));
@@ -416,6 +437,7 @@ function createModalHarness({
           failedChunkIndexes: [],
         })),
     },
+    codex,
   };
   const pdfFile = { name: "demo.pdf", path: "papers/demo.pdf", stat: { mtime: 1 } };
   const modal = new bundle.PDFChatModal(
@@ -532,6 +554,7 @@ test("modal builds the accessible research-workbench regions and interactions", 
   assert.equal(byClass(composer, "pdf-chat-composer-footer").length, 1);
   assert.match(byClass(composer, "pdf-chat-composer-status")[0].textContent, /选区上下文|当前选区/);
   assert.equal(byClass(composer, "pdf-chat-hint").length, 1);
+  assert.equal(byClass(composer, "pdf-chat-codex-context-toggle").length, 1);
   assert.equal(byClass(composer, "pdf-chat-translate-btn").length, 0);
   assert.equal(byClass(modal.contentEl, "pdf-chat-multi-paper").length, 0);
   assert.equal(byClass(modal.contentEl, "pdf-chat-multi-paper-bar").length, 0);
@@ -601,7 +624,89 @@ test("multi-paper references are added only from composer @ mentions and capped 
 
   assert.equal(modal.referencedPdfFiles.length, 3);
   assert.match(byClass(modal.contentEl, "pdf-chat-composer-status")[0].textContent, /已引用 3 篇论文/);
-  assert.equal(byClass(modal.contentEl, "pdf-chat-reference-chip").length, 0);
+  assert.equal(byClass(modal.contentEl, "pdf-chat-reference-chip").length, 3);
+});
+
+test("referenced PDF chips can remove restored session references", async () => {
+  const files = [
+    { name: "demo.pdf", path: "papers/demo.pdf", extension: "pdf", stat: { mtime: 1 } },
+    { name: "Alpha Paper.pdf", path: "papers/Alpha Paper.pdf", extension: "pdf", stat: { mtime: 2 } },
+    { name: "Beta Paper.pdf", path: "papers/Beta Paper.pdf", extension: "pdf", stat: { mtime: 3 } },
+  ];
+  let savedMetadata = null;
+  const app = {
+    vault: {
+      getFiles: () => files,
+      getAbstractFileByPath: (target) => files.find((file) => file.path === target) || null,
+    },
+  };
+  const { modal } = createModalHarness({
+    app,
+    conversations: {
+      getActiveSession: () => ({
+        version: 1,
+        id: "discussion-restored",
+        ["conversation" + "Key"]: "pdf:papers/demo.pdf",
+        title: "Restored",
+        mode: "chat",
+        messages: [{ role: "user", content: "previous question", status: "complete" }],
+        referencedPdfPaths: ["papers/Alpha Paper.pdf", "papers/Beta Paper.pdf"],
+        createdAt: 1,
+        updatedAt: 2,
+      }),
+      saveActiveSession: async (_key, _messages, metadata) => {
+        savedMetadata = metadata;
+      },
+    },
+  });
+
+  assert.equal(modal.referencedPdfFiles.length, 2);
+  assert.equal(byClass(modal.contentEl, "pdf-chat-reference-chip").length, 2);
+
+  modal.inputEl.value = "half-written prompt";
+  byClass(modal.contentEl, "pdf-chat-reference-chip-remove")[0].dispatch("click");
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(modal.referencedPdfFiles.map((file) => file.path), ["papers/Beta Paper.pdf"]);
+  assert.equal(modal.inputEl.value, "half-written prompt");
+  assert.match(byClass(modal.contentEl, "pdf-chat-composer-status")[0].textContent, /已引用 1 篇论文/);
+  assert.deepEqual(savedMetadata.referencedPdfPaths, ["papers/Beta Paper.pdf"]);
+});
+
+test("Codex mode lets the current PDF be detached and restored without clearing the prompt", async () => {
+  let savedMetadata = null;
+  const { modal } = createModalHarness({
+    conversations: {
+      ensureSession: (_key, metadata) => {
+        savedMetadata = metadata;
+        return { id: "session-current-toggle", messages: [], referencedPdfPaths: [], ...metadata };
+      },
+    },
+  });
+
+  modal.inputEl.value = "/codex";
+  await modal.handleSubmit();
+
+  assert.equal(modal.includeCurrentPdfInCodex, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(modal.selectedPaperFiles().map((entry) => entry.file.path))), ["papers/demo.pdf"]);
+  assert.equal(byClass(modal.contentEl, "pdf-chat-current-pdf-chip").length, 1);
+
+  modal.inputEl.value = "half-written Codex prompt";
+  byClass(modal.contentEl, "pdf-chat-current-pdf-remove")[0].dispatch("click");
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(modal.inputEl.value, "half-written Codex prompt");
+  assert.equal(modal.includeCurrentPdfInCodex, false);
+  assert.deepEqual(JSON.parse(JSON.stringify(modal.selectedPaperFiles())), []);
+  assert.equal(byClass(modal.contentEl, "pdf-chat-current-pdf-restore").length, 1);
+  assert.equal(savedMetadata.includeCurrentPdfInCodex, false);
+
+  byClass(modal.contentEl, "pdf-chat-current-pdf-restore")[0].dispatch("click");
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(modal.includeCurrentPdfInCodex, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(modal.selectedPaperFiles().map((entry) => entry.file.path))), ["papers/demo.pdf"]);
+  assert.equal(savedMetadata.includeCurrentPdfInCodex, true);
 });
 
 test("multi-paper compare actions are not persistent toolbar buttons", () => {
@@ -777,6 +882,296 @@ test("/codex enters a visible Codex terminal mode and subsequent input stays in 
   assert.equal(modal.contentEl.hasClass("is-codex-mode"), false);
 });
 
+test("Codex mode sends every prompt through the PDF workspace instead of lightweight routing or API fallback", async () => {
+  const deepCalls = [];
+  const lightweightCalls = [];
+  const { modal } = createModalHarness({
+    llmChat: async () => {
+      throw new Error("Unexpected API fallback for Codex mode");
+    },
+  });
+  modal.runCodexDeepAnalysis = async (question) => {
+    deepCalls.push(question);
+  };
+  modal.runCodexLightweightChat = async (question) => {
+    lightweightCalls.push(question);
+    modal.inputEl.value = "";
+  };
+
+  modal.inputEl.value = "/codex";
+  await modal.handleSubmit();
+
+  modal.inputEl.value = "hello";
+  await modal.handleSubmit();
+
+  assert.deepEqual(lightweightCalls, []);
+  assert.deepEqual(deepCalls, ["hello"]);
+  assert.match(byClass(modal.contentEl, "pdf-chat-mode-badge")[0].textContent, /CODEX MODE/);
+});
+
+test("Codex native mode sends direct PDF paths and the current selection through the session manager", async () => {
+  const started = [];
+  const session = {
+    version: 1,
+    id: "plugin-session-1",
+    ["conversation" + "Key"]: "pdf:papers/demo.pdf",
+    title: "demo.pdf",
+    mode: "codex",
+    messages: [],
+    referencedPdfPaths: [],
+    includeCurrentPdfInCodex: true,
+    codex: { model: "gpt-5.5", reasoningEffort: "medium", lifecycle: "active" },
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const codex = {
+    subscribe: () => () => {},
+    getSnapshot: () => ({
+      sessionId: session.id,
+      status: "idle",
+      attachedPdfPaths: [],
+      selectionChars: 0,
+    }),
+    async startTurn(request) {
+      started.push(request);
+      return {
+        sessionId: request.sessionId,
+        threadId: "native-thread-1",
+        status: "idle",
+        attachedPdfPaths: request.attachedPdfPaths,
+        selectionChars: request.selectionChars,
+        finalMarkdown: "Answer",
+      };
+    },
+    stopTurn: () => false,
+    closeSession: async () => {},
+    reactivateSession: () => {},
+  };
+  const { modal, plugin } = createModalHarness({
+    app: {
+      vault: {
+        adapter: { getFullPath: (vaultPath) => `D:/vault/${vaultPath}` },
+      },
+    },
+    codex,
+    conversations: {
+      getActiveSession: () => session,
+      getSession: () => session,
+      ensureSession: () => session,
+    },
+  });
+  plugin.settings.codexDeepAnalysis.enabled = true;
+
+  await modal.runCodexDeepAnalysis("hello");
+
+  assert.equal(started.length, 1);
+  assert.equal(started[0].sessionId, "plugin-session-1");
+  assert.equal(started[0].workingDirectory.replace(/\\/g, "/"), "D:/vault/papers");
+  assert.deepEqual(Array.from(started[0].attachedPdfPaths), ["papers/demo.pdf"]);
+  assert.match(started[0].prompt, /D:\/vault\/papers\/demo\.pdf/);
+  assert.match(started[0].prompt, /Selected source/);
+  assert.match(started[0].prompt, /普通问候.*无需读取|greeting.*without reading/i);
+});
+
+test("Esc suspends a running Codex modal while an explicit X close terminates its session", async () => {
+  const closedSessions = [];
+  const session = {
+    version: 1,
+    id: "plugin-session-close",
+    ["conversation" + "Key"]: "pdf:papers/demo.pdf",
+    title: "demo.pdf",
+    mode: "codex",
+    messages: [],
+    referencedPdfPaths: [],
+    includeCurrentPdfInCodex: true,
+    codex: { model: "gpt-5.5", reasoningEffort: "medium", lifecycle: "active" },
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const codex = {
+    subscribe: () => () => {},
+    getSnapshot: () => ({ sessionId: session.id, status: "running", attachedPdfPaths: [], selectionChars: 0 }),
+    startTurn: async () => {},
+    stopTurn: () => true,
+    closeSession: async (id) => { closedSessions.push(id); },
+    reactivateSession: () => {},
+  };
+  const conversations = {
+    getActiveSession: () => session,
+    getSession: () => session,
+    ensureSession: () => session,
+  };
+  const { modal: suspended } = createModalHarness({ codex, conversations });
+  suspended.runtimeMode = "codex";
+  suspended.codexCloseIntent = "suspend";
+  suspended.onClose();
+  assert.deepEqual(closedSessions, []);
+
+  const { modal: terminated } = createModalHarness({ codex, conversations });
+  terminated.runtimeMode = "codex";
+  terminated.codexCloseIntent = "terminate";
+  terminated.onClose();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(closedSessions, ["plugin-session-close"]);
+});
+
+test("reopening a running Codex session reconstructs its progress and renders the background result", async () => {
+  let listener;
+  const session = {
+    version: 1,
+    id: "plugin-session-running",
+    ["conversation" + "Key"]: "pdf:papers/demo.pdf",
+    title: "Running",
+    mode: "codex",
+    messages: [],
+    referencedPdfPaths: [],
+    includeCurrentPdfInCodex: true,
+    codex: {
+      model: "gpt-5.5",
+      reasoningEffort: "medium",
+      threadId: "native-thread-running",
+      lifecycle: "active",
+    },
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const codex = {
+    subscribe: (_id, next) => {
+      listener = next;
+      next({
+        sessionId: session.id,
+        threadId: "native-thread-running",
+        status: "running",
+        question: "Explain the result",
+        progress: "Codex 正在推理",
+        startedAt: Date.now() - 2000,
+        workingDirectory: "D:/vault/papers",
+        attachedPdfPaths: ["papers/demo.pdf"],
+        selectionChars: 0,
+      });
+      return () => {};
+    },
+    getSnapshot: () => ({}),
+    startTurn: async () => {},
+    stopTurn: () => true,
+    closeSession: async () => {},
+    reactivateSession: () => {},
+  };
+  const { modal } = createModalHarness({
+    codex,
+    conversations: {
+      getActiveSession: () => session,
+      getSession: () => session,
+    },
+  });
+
+  assert.equal(modal.isCodexRunning, true);
+  assert.match(
+    descendants(byClass(modal.historyEl, "pdf-chat-bubble")[0]).map((item) => item.textContent).join(" "),
+    /Explain the result/
+  );
+  assert.match(byClass(modal.contentEl, "pdf-chat-mode-badge")[0].textContent, /Running/);
+
+  session.messages = [
+    { role: "user", content: "Explain the result", status: "complete" },
+    { role: "assistant", content: "# Background result", status: "complete" },
+  ];
+  listener({
+    sessionId: session.id,
+    threadId: "native-thread-running",
+    status: "idle",
+    attachedPdfPaths: ["papers/demo.pdf"],
+    selectionChars: 0,
+    finalMarkdown: "# Background result",
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(modal.isCodexRunning, false);
+  assert.match(byClass(modal.historyEl, "pdf-chat-message-content").at(-1).textContent, /Background result/);
+});
+
+test("closing a Codex-mode modal keeps the Codex process running in the background", () => {
+  const { modal } = createModalHarness();
+  let aborted = false;
+  modal.runtimeMode = "codex";
+  modal.isSending = true;
+  modal.isCodexRunning = true;
+  modal.abortController = {
+    abort() {
+      aborted = true;
+    },
+  };
+
+  modal.onClose();
+
+  assert.equal(aborted, false);
+});
+
+test("closing a normal sending modal still aborts the active API request", () => {
+  const { modal } = createModalHarness();
+  let aborted = false;
+  modal.runtimeMode = "codex";
+  modal.isSending = true;
+  modal.isCodexRunning = false;
+  modal.abortController = {
+    abort() {
+      aborted = true;
+    },
+  };
+
+  modal.onClose();
+
+  assert.equal(aborted, true);
+});
+
+test("Codex selected-context toggle and slash command control whether the selection is attached", async () => {
+  const { modal, plugin } = createModalHarness();
+  const toggle = byClass(modal.contentEl, "pdf-chat-codex-context-toggle")[0];
+
+  assert.ok(toggle);
+  assert.equal(plugin.settings.codexDeepAnalysis.includeSelectionContext, true);
+  assert.match(toggle.textContent, /附选区/);
+  assert.equal(toggle.disabled, false);
+
+  toggle.dispatch("click");
+  assert.equal(plugin.settings.codexDeepAnalysis.includeSelectionContext, false);
+  assert.match(toggle.textContent, /不附选区/);
+
+  modal.inputEl.value = "/context";
+  await modal.handleSubmit();
+  assert.equal(plugin.settings.codexDeepAnalysis.includeSelectionContext, true);
+  assert.match(toggle.textContent, /附选区/);
+
+  modal.inputEl.value = "/context off";
+  await modal.handleSubmit();
+  assert.equal(plugin.settings.codexDeepAnalysis.includeSelectionContext, false);
+  assert.match(toggle.textContent, /不附选区/);
+});
+
+test("slash commands can remove referenced PDFs without deleting the conversation", async () => {
+  const alpha = { name: "Alpha Paper.pdf", path: "papers/Alpha Paper.pdf", extension: "pdf", stat: { mtime: 2 } };
+  const beta = { name: "Beta Paper.pdf", path: "papers/Beta Paper.pdf", extension: "pdf", stat: { mtime: 3 } };
+  const { modal } = createModalHarness();
+  modal.referencedPdfFiles = [alpha, beta];
+  modal.updateComposerContextStatus();
+
+  modal.inputEl.value = "/refs";
+  await modal.handleSubmit();
+  assert.equal(byClass(modal.contentEl, "pdf-chat-command-menu").length, 1);
+  assert.equal(byClass(modal.contentEl, "pdf-chat-command-option").length, 2);
+
+  modal.inputEl.value = "/unref Alpha";
+  await modal.handleSubmit();
+  assert.deepEqual(modal.referencedPdfFiles.map((file) => file.path), ["papers/Beta Paper.pdf"]);
+  assert.match(byClass(modal.contentEl, "pdf-chat-composer-status")[0].textContent, /已引用 1 篇论文/);
+
+  modal.inputEl.value = "/clearrefs";
+  await modal.handleSubmit();
+  assert.equal(modal.referencedPdfFiles.length, 0);
+  assert.doesNotMatch(byClass(modal.contentEl, "pdf-chat-composer-status")[0].textContent, /已引用/);
+  assert.equal(modal.transcript.length, 0);
+});
+
 test("terminal prompt history restores previous prompts with arrow keys unless @ suggestions are open", async () => {
   const { modal, plugin } = createModalHarness({
     settingsPatch: { promptHistory: ["first prompt", "second prompt"] },
@@ -865,6 +1260,93 @@ test("/new preserves old sessions and /resume restores a selected session", asyn
   assert.equal(activeSession, "session-old");
   assert.match(byClass(modal.contentEl, "pdf-chat-mode-badge")[0].textContent, /CODEX MODE/);
   assert.equal(byClass(modal.historyEl, "pdf-chat-bubble").length, 2);
+});
+
+test("/new in Codex mode starts a plugin session without inheriting the old native thread", async () => {
+  let startedMetadata;
+  const oldSession = {
+    version: 1,
+    id: "old-codex-session",
+    ["conversation" + "Key"]: "pdf:papers/demo.pdf",
+    title: "Old Codex",
+    mode: "codex",
+    messages: [],
+    referencedPdfPaths: [],
+    includeCurrentPdfInCodex: true,
+    codex: {
+      model: "gpt-5.5",
+      reasoningEffort: "medium",
+      threadId: "native-thread-old",
+      lifecycle: "active",
+    },
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const { modal } = createModalHarness({
+    conversations: {
+      getActiveSession: () => oldSession,
+      getSession: () => oldSession,
+      startSession: (_key, metadata) => {
+        startedMetadata = metadata;
+        return { ...oldSession, id: "new-codex-session", codex: metadata.codex };
+      },
+    },
+  });
+
+  modal.inputEl.value = "/new";
+  await modal.handleSubmit();
+
+  assert.equal(startedMetadata.codex.threadId, undefined);
+  assert.equal(startedMetadata.codex.lifecycle, "active");
+  assert.equal(modal.currentSessionId, "new-codex-session");
+});
+
+test("resuming a session from another PDF opens that PDF before creating its modal", async () => {
+  const current = { name: "demo.pdf", path: "papers/demo.pdf", extension: "pdf", stat: { mtime: 1 } };
+  const target = { name: "other.pdf", path: "papers/other.pdf", extension: "pdf", stat: { mtime: 2 } };
+  const opened = [];
+  const targetSession = {
+    version: 1,
+    id: "other-session",
+    ["conversation" + "Key"]: "pdf:papers/other.pdf",
+    title: "Other paper",
+    mode: "codex",
+    messages: [],
+    referencedPdfPaths: [],
+    includeCurrentPdfInCodex: true,
+    codex: { model: "gpt-5.5", reasoningEffort: "medium", lifecycle: "closed" },
+    createdAt: 1,
+    updatedAt: 2,
+  };
+  const app = {
+    vault: {
+      getFiles: () => [current, target],
+      getAbstractFileByPath: (filePath) => [current, target].find((file) => file.path === filePath) || null,
+    },
+    workspace: {
+      getLeaf: () => ({
+        async openFile(file) {
+          opened.push(file.path);
+        },
+      }),
+    },
+  };
+  const { modal } = createModalHarness({
+    app,
+    conversations: {
+      getActiveSession: (key) => (key === targetSession.conversationKey ? targetSession : null),
+      getSession: () => targetSession,
+      resumeSession: () => ({
+        ...targetSession,
+        codex: { ...targetSession.codex, lifecycle: "active" },
+      }),
+    },
+  });
+
+  await modal.resumeConversationSession("other-session");
+
+  assert.deepEqual(opened, ["papers/other.pdf"]);
+  assert.equal(modal.closed, true);
 });
 
 test("restored history keeps the live region off until every Markdown render settles", async () => {
@@ -1053,6 +1535,9 @@ test("settings preserve every legacy control in the correct ordered section and 
       "Codex model",
       "Codex reasoning effort",
       "Codex verbosity",
+      "Codex input mode",
+      "Codex output mode",
+      "Codex 默认附带选区上下文",
       "Codex 超时毫秒",
       "保留 Codex 临时分析包",
       ...plugin.settings.promptPresets.map((_preset, index) => `预设 ${index + 1}`),
@@ -1163,6 +1648,9 @@ test("settings preserve every legacy control in the correct ordered section and 
   const codexCommand = controlFor(sections[4], "Codex 命令", "input");
   codexCommand.value = "  C:/Tools/codex.exe  ";
   codexCommand.dispatch("change");
+  const codexInputMode = controlFor(sections[4], "Codex input mode", "select");
+  codexInputMode.value = "debug-full";
+  codexInputMode.dispatch("change");
   const codexTimeout = controlFor(sections[4], "Codex 超时毫秒", "input");
   codexTimeout.value = "120000";
   codexTimeout.dispatch("change");
@@ -1182,6 +1670,7 @@ test("settings preserve every legacy control in the correct ordered section and 
   assert.equal(plugin.settings.ragChunkSize, 50);
   assert.equal(plugin.settings.ragChunkOverlap, 49);
   assert.equal(plugin.settings.codexDeepAnalysis.command, "C:/Tools/codex.exe");
+  assert.equal(plugin.settings.codexDeepAnalysis.inputMode, "debug-full");
   assert.equal(plugin.settings.codexDeepAnalysis.timeoutMs, 120000);
   assert.equal(plugin.settings.promptPresets[0].name, "Updated preset");
 });

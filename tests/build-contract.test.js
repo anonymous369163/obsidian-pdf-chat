@@ -38,7 +38,8 @@ test("TypeScript sources build the Obsidian-compatible root bundle through expli
   assert.match(buildConfig, /format:\s*['"]cjs['"]/);
 
   const bundle = fs.readFileSync(path.join(projectRoot, "main.js"), "utf8");
-  assert.match(bundle, /^\/\/ PDF Chat 0\.7\.1$/m);
+  const escapedVersion = pkg.version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  assert.match(bundle, new RegExp(`^// PDF Chat ${escapedVersion}$`, "m"));
   assert.match(bundle, /require\(["']obsidian["']\)/);
   assert.doesNotMatch(bundle, /require\(["']typescript["']\)/);
 });

@@ -58,6 +58,7 @@ export function createPDFChatModalServices(
     },
     actions: plugin.actionRegistry || createResearchActionRegistry(),
     translations: plugin.translationService || new TranslationService(llm),
+    codex: plugin.codexSessionManager,
   };
   return {
     ...compatibility,
@@ -73,5 +74,6 @@ export function createPDFChatModalServices(
           ? overrides.translations.translate(request)
           : compatibility.translations.translate(request),
     },
+    codex: overrides.codex || compatibility.codex,
   };
 }

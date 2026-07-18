@@ -245,6 +245,111 @@ test("migrates legacy conversation histories into resumable sessions without del
   assert.equal(saves, 1);
 });
 
+test("keeps an empty Codex session once a native thread id has been recorded", () => {
+  const PluginClass = loadPluginModule();
+  const normalize = PluginClass.__test.normalizeConversationSessions;
+  const sessions = normalize({
+    "session-native": {
+      version: 1,
+      id: "session-native",
+      ["conversation" + "Key"]: "pdf:papers/demo.pdf",
+      title: "demo.pdf",
+      mode: "codex",
+      messages: [],
+      referencedPdfPaths: [],
+      includeCurrentPdfInCodex: true,
+      codex: {
+        model: "gpt-5.5",
+        reasoningEffort: "medium",
+        threadId: "thread-123",
+        lifecycle: "active",
+      },
+      createdAt: 1,
+      updatedAt: 2,
+    },
+  });
+
+  assert.equal(sessions["session-native"].codex.threadId, "thread-123");
+  assert.equal(sessions["session-native"].codex.lifecycle, "active");
+  assert.deepEqual(plain(sessions["session-native"].messages), []);
+});
+
+test("background Codex completion writes to its original session id after another session becomes active", async () => {
+  const PluginClass = loadPluginModule();
+  const { ConversationStore } = PluginClass.__test;
+  const settings = {
+    conversationHistories: {},
+    conversationSessions: {},
+    activeConversationSessionIds: {},
+  };
+  let saves = 0;
+  let now = 100;
+  const store = new ConversationStore(
+    () => settings,
+    async () => { saves += 1; },
+    () => now++
+  );
+  const first = store.startSession("pdf:papers/demo.pdf", {
+    title: "First",
+    mode: "codex",
+    codex: { model: "gpt-5.5", reasoningEffort: "medium" },
+  });
+  const second = store.startSession("pdf:papers/demo.pdf", {
+    title: "Second",
+    mode: "codex",
+    codex: { model: "gpt-5.5", reasoningEffort: "medium" },
+  });
+
+  await store.updateSessionMetadata(first.id, {
+    codex: {
+      model: "gpt-5.5",
+      reasoningEffort: "medium",
+      threadId: "thread-first",
+      lifecycle: "active",
+    },
+  });
+  await store.appendSessionTurn(first.id, "Question in first", "Answer in first");
+
+  assert.equal(store.getActiveSession("pdf:papers/demo.pdf").id, second.id);
+  assert.deepEqual(plain(store.getSession(first.id).messages).map((message) => message.content), [
+    "Question in first",
+    "Answer in first",
+  ]);
+  assert.deepEqual(plain(store.getSession(second.id).messages), []);
+  assert.equal(saves, 2);
+});
+
+test("closing a Codex session removes it from automatic continuation but resume reactivates it", async () => {
+  const PluginClass = loadPluginModule();
+  const { ConversationStore } = PluginClass.__test;
+  const settings = {
+    conversationHistories: {},
+    conversationSessions: {},
+    activeConversationSessionIds: {},
+  };
+  const store = new ConversationStore(() => settings, async () => {}, () => 500);
+  const session = store.startSession("pdf:papers/demo.pdf", {
+    title: "Closed later",
+    mode: "codex",
+    codex: {
+      model: "gpt-5.5",
+      reasoningEffort: "medium",
+      threadId: "thread-close",
+      lifecycle: "active",
+    },
+  });
+
+  await store.closeSession(session.id);
+
+  assert.equal(store.getActiveSession("pdf:papers/demo.pdf"), null);
+  assert.equal(store.getSession(session.id).codex.lifecycle, "closed");
+  assert.equal(store.listSessions("")[0].id, session.id);
+
+  const resumed = store.resumeSession(session.id);
+  assert.equal(resumed.codex.lifecycle, "active");
+  assert.equal(store.getActiveSession("pdf:papers/demo.pdf").id, session.id);
+});
+
 test("uses PDF paths and normalized selection hashes as conversation keys", () => {
   const PluginClass = loadPluginModule();
   const plugin = Object.create(PluginClass.prototype);
@@ -941,16 +1046,16 @@ test("onload registers separate new-conversation and continue-conversation hotke
   assert.deepEqual(plain(continued.hotkeys), [{ modifiers: ["Mod"], key: "Q" }]);
 });
 
-test("release metadata and CSS expose the exact 0.7.1 selectable-text contract", () => {
+test("release metadata and CSS expose the exact 0.8.0 selectable-text contract", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8"));
   const manifest = JSON.parse(fs.readFileSync(path.join(projectRoot, "manifest.json"), "utf8"));
   const versions = JSON.parse(fs.readFileSync(path.join(projectRoot, "versions.json"), "utf8"));
   const css = fs.readFileSync(path.join(projectRoot, "styles.css"), "utf8");
 
-  assert.equal(pkg.version, "0.7.1");
-  assert.equal(manifest.version, "0.7.1");
+  assert.equal(pkg.version, "0.8.0");
+  assert.equal(manifest.version, "0.8.0");
   assert.equal(manifest.minAppVersion, "1.4.0");
-  assert.equal(versions["0.7.1"], "1.4.0");
+  assert.equal(versions["0.8.0"], "1.4.0");
   assert.match(css, /\.pdf-chat-bubble[^}]*user-select:\s*text/s);
   assert.match(css, /-webkit-user-select:\s*text/);
   assert.match(css, /\.pdf-chat-bubble[^}]*cursor:\s*text/s);

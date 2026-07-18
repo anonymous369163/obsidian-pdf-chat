@@ -7,6 +7,8 @@ import {
 import { DEFAULT_SETTINGS, LEGACY_0_4_0_TRANSLATE_PROMPT } from "./default-settings";
 import type {
   CodexDeepAnalysisSettings,
+  CodexInputMode,
+  CodexOutputMode,
   CodexReasoningEffort,
   CodexVerbosity,
   ConversationSession,
@@ -57,6 +59,17 @@ function normalizeVerbosity(value: unknown): CodexVerbosity {
     : DEFAULT_SETTINGS.codexDeepAnalysis.verbosity;
 }
 
+export function normalizeCodexInputMode(value: unknown): CodexInputMode {
+  if (value === "debug-full" || value === "text-fallback") return "debug-full";
+  return value === "pdf-only" ? "pdf-only" : DEFAULT_SETTINGS.codexDeepAnalysis.inputMode;
+}
+
+export function normalizeCodexOutputMode(value: unknown): CodexOutputMode {
+  return value === "json-schema" ? "json-schema" : DEFAULT_SETTINGS.codexDeepAnalysis.outputMode;
+}
+
+const LEGACY_CODEX_TIMEOUT_MS = 600000;
+
 function legacySessionFromHistory(key: string, history: { updatedAt?: number; messages?: unknown }): ConversationSession | null {
   const messages = normalizeConversationMessages(history.messages);
   if (!messages.length) return null;
@@ -71,6 +84,7 @@ function legacySessionFromHistory(key: string, history: { updatedAt?: number; me
     mode: "chat",
     messages,
     referencedPdfPaths: [],
+    includeCurrentPdfInCodex: true,
     createdAt: timestamp,
     updatedAt: timestamp,
   };
@@ -185,6 +199,18 @@ export function migrateSettings(savedValue: unknown, now: () => number = Date.no
     saved && saved.codexDeepAnalysis && typeof saved.codexDeepAnalysis === "object" && !Array.isArray(saved.codexDeepAnalysis)
       ? saved.codexDeepAnalysis
       : {};
+  const savedCodexTimeout =
+    typeof savedCodex.timeoutMs === "number" &&
+    Number.isFinite(savedCodex.timeoutMs) &&
+    savedCodex.timeoutMs >= 30000
+      ? Math.floor(savedCodex.timeoutMs)
+      : null;
+  const normalizedCodexTimeout =
+    savedCodexTimeout === null || savedCodexTimeout === LEGACY_CODEX_TIMEOUT_MS
+      ? DEFAULT_SETTINGS.codexDeepAnalysis.timeoutMs
+      : savedCodexTimeout;
+  if (savedCodexTimeout !== normalizedCodexTimeout) needsSave = true;
+
   settings.codexDeepAnalysis = {
     ...DEFAULT_SETTINGS.codexDeepAnalysis,
     ...savedCodex,
@@ -200,6 +226,8 @@ export function migrateSettings(savedValue: unknown, now: () => number = Date.no
         : DEFAULT_SETTINGS.codexDeepAnalysis.model,
     reasoningEffort: normalizeReasoningEffort(savedCodex.reasoningEffort),
     verbosity: normalizeVerbosity(savedCodex.verbosity),
+    inputMode: normalizeCodexInputMode(savedCodex.inputMode),
+    outputMode: normalizeCodexOutputMode(savedCodex.outputMode),
     modelPresets:
       Array.isArray(savedCodex.modelPresets) && savedCodex.modelPresets.length
         ? savedCodex.modelPresets
@@ -219,13 +247,12 @@ export function migrateSettings(savedValue: unknown, now: () => number = Date.no
                   : `${preset.model.trim()} · ${normalizeReasoningEffort(preset.reasoningEffort)}`,
             }))
         : DEFAULT_SETTINGS.codexDeepAnalysis.modelPresets.map((preset) => ({ ...preset })),
-    timeoutMs:
-      typeof savedCodex.timeoutMs === "number" &&
-      Number.isFinite(savedCodex.timeoutMs) &&
-      savedCodex.timeoutMs >= 30000
-        ? Math.floor(savedCodex.timeoutMs)
-        : DEFAULT_SETTINGS.codexDeepAnalysis.timeoutMs,
+    timeoutMs: normalizedCodexTimeout,
     keepTempFiles: savedCodex.keepTempFiles === true,
+    includeSelectionContext:
+      typeof savedCodex.includeSelectionContext === "boolean"
+        ? savedCodex.includeSelectionContext
+        : DEFAULT_SETTINGS.codexDeepAnalysis.includeSelectionContext,
   };
   if (saved && (saved.endpoint || saved.apiKey || saved.model) && !(saved.models && saved.models.length)) {
     const migrated = {

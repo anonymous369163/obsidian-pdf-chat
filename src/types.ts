@@ -1,4 +1,5 @@
 import type { App, Plugin, TFile } from "obsidian";
+import type { CodexTurnSnapshot, StartCodexTurnRequest } from "./codex-session-manager";
 
 export type LlmRole = "system" | "user" | "assistant";
 
@@ -43,6 +44,12 @@ export type CodexReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhig
 
 export type CodexVerbosity = "low" | "medium" | "high";
 
+export type CodexInputMode = "pdf-only" | "debug-full";
+
+export type CodexOutputMode = "markdown" | "json-schema";
+
+export type CodexThreadLifecycle = "active" | "closed";
+
 export interface CodexModelPreset {
   model: string;
   reasoningEffort: CodexReasoningEffort;
@@ -53,6 +60,8 @@ export interface CodexSessionMetadata {
   model: string;
   reasoningEffort: CodexReasoningEffort;
   profile?: string;
+  threadId?: string;
+  lifecycle?: CodexThreadLifecycle;
 }
 
 export interface ConversationSession {
@@ -63,6 +72,7 @@ export interface ConversationSession {
   mode: ConversationSessionMode;
   messages: ConversationMessage[];
   referencedPdfPaths: string[];
+  includeCurrentPdfInCodex: boolean;
   codex?: CodexSessionMetadata;
   createdAt: number;
   updatedAt: number;
@@ -104,9 +114,12 @@ export interface CodexDeepAnalysisSettings {
   model: string;
   reasoningEffort: CodexReasoningEffort;
   verbosity: CodexVerbosity;
+  inputMode: CodexInputMode;
+  outputMode: CodexOutputMode;
   modelPresets: CodexModelPreset[];
   timeoutMs: number;
   keepTempFiles: boolean;
+  includeSelectionContext: boolean;
 }
 
 export interface TranslationProgress {
@@ -206,17 +219,29 @@ export interface ConversationOperations {
   getActiveSession?(key: string): ConversationSession | null;
   ensureSession?(
     key: string,
-    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "codex">>
+    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "codex">>
   ): ConversationSession;
   startSession?(
     key: string,
-    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "codex">>
+    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "codex">>
   ): ConversationSession;
   saveActiveSession?(
     key: string,
     messages: ConversationMessage[],
-    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "codex">>
+    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "codex">>
   ): Promise<void>;
+  getSession?(id: string): ConversationSession | null;
+  saveSessionById?(
+    id: string,
+    messages: ConversationMessage[],
+    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "codex">>
+  ): Promise<void>;
+  appendSessionTurn?(id: string, userContent: string, assistantContent: string): Promise<void>;
+  updateSessionMetadata?(
+    id: string,
+    metadata: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "codex">>
+  ): Promise<void>;
+  closeSession?(id: string): Promise<void>;
   resumeSession?(id: string): ConversationSession | null;
   listSessions?(query?: string): ConversationSession[];
 }
@@ -249,6 +274,15 @@ export interface ResearchActionOperations {
   list?(): ResearchAction[];
 }
 
+export interface CodexRuntimeOperations {
+  getSnapshot(sessionId: string): CodexTurnSnapshot;
+  subscribe(sessionId: string, listener: (snapshot: CodexTurnSnapshot) => void): () => void;
+  startTurn(request: StartCodexTurnRequest): Promise<CodexTurnSnapshot>;
+  stopTurn(sessionId: string): boolean;
+  closeSession(sessionId: string): Promise<void>;
+  reactivateSession(sessionId: string): void;
+}
+
 export interface PDFChatModalServices {
   conversations: ConversationOperations;
   papers: PaperContextOperations;
@@ -256,6 +290,7 @@ export interface PDFChatModalServices {
   models: ModelOperations;
   actions: ResearchActionOperations;
   translations: TranslationOperations;
+  codex?: CodexRuntimeOperations;
 }
 
 export interface PDFChatModalServiceOverrides {
@@ -265,6 +300,7 @@ export interface PDFChatModalServiceOverrides {
   models?: Partial<ModelOperations>;
   actions?: ResearchActionOperations;
   translations?: Partial<TranslationOperations>;
+  codex?: CodexRuntimeOperations;
 }
 
 export interface LlmCompatibilityOptions {
@@ -279,6 +315,7 @@ export interface PDFChatPluginApi extends Plugin {
   paperContextService?: PaperContextOperations;
   llmTransport?: LlmOperations;
   translationService?: TranslationOperations;
+  codexSessionManager?: CodexRuntimeOperations;
   saveSettings(): Promise<void>;
   getConversationKey(file: TFile | null, contextText: string, kind?: ConversationKind): string;
   getConversation(key: string): ConversationMessage[];

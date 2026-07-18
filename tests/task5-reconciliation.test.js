@@ -88,16 +88,20 @@ test("Task 5 settings preserve legacy chunk size while keeping credential-free 0
     enabled: false,
     command: "codex",
     profile: "",
-    model: "gpt-5.6-sol",
-    reasoningEffort: "xhigh",
-    verbosity: "high",
+    model: "gpt-5.5",
+    reasoningEffort: "medium",
+    verbosity: "medium",
+    inputMode: "pdf-only",
+    outputMode: "markdown",
     modelPresets: [
-      { model: "gpt-5.6-sol", reasoningEffort: "xhigh", label: "gpt-5.6-sol · xhigh" },
-      { model: "gpt-5.6-sol", reasoningEffort: "high", label: "gpt-5.6-sol · high" },
+      { model: "gpt-5.5", reasoningEffort: "medium", label: "gpt-5.5 · medium" },
+      { model: "gpt-5.5", reasoningEffort: "high", label: "gpt-5.5 · high" },
       { model: "gpt-5.6-sol", reasoningEffort: "medium", label: "gpt-5.6-sol · medium" },
+      { model: "gpt-5.6-sol", reasoningEffort: "xhigh", label: "gpt-5.6-sol · xhigh" },
     ],
-    timeoutMs: 600000,
+    timeoutMs: 1800000,
     keepTempFiles: false,
+    includeSelectionContext: true,
   });
   assert.deepEqual(plain(DEFAULT_SETTINGS.promptHistory), []);
   assert.deepEqual(plain(DEFAULT_SETTINGS.conversationSessions), {});
@@ -106,10 +110,33 @@ test("Task 5 settings preserve legacy chunk size while keeping credential-free 0
   const legacy = migrateSettings({ translateChunkMaxChars: 3000 }).settings;
   assert.equal(legacy.translation.chunkChars, 3000);
   assert.equal(legacy.codexDeepAnalysis.command, "codex");
-  assert.equal(legacy.codexDeepAnalysis.model, "gpt-5.6-sol");
-  assert.equal(legacy.codexDeepAnalysis.reasoningEffort, "xhigh");
+  assert.equal(legacy.codexDeepAnalysis.model, "gpt-5.5");
+  assert.equal(legacy.codexDeepAnalysis.reasoningEffort, "medium");
   assert.equal(legacy.codexDeepAnalysis.enabled, false);
+  assert.equal(legacy.codexDeepAnalysis.timeoutMs, 1800000);
+  assert.equal(legacy.codexDeepAnalysis.inputMode, "pdf-only");
+  assert.equal(legacy.codexDeepAnalysis.outputMode, "markdown");
+  assert.equal(legacy.codexDeepAnalysis.includeSelectionContext, true);
   assert.equal(Object.hasOwn(legacy, "translateChunkMaxChars"), false);
+
+  const oldCodexDefault = migrateSettings({ codexDeepAnalysis: { timeoutMs: 600000 } });
+  assert.equal(oldCodexDefault.settings.codexDeepAnalysis.timeoutMs, 1800000);
+  assert.equal(oldCodexDefault.needsSave, true);
+
+  const customCodexTimeout = migrateSettings({ codexDeepAnalysis: { timeoutMs: 900000 } });
+  assert.equal(customCodexTimeout.settings.codexDeepAnalysis.timeoutMs, 900000);
+
+  const customCodexInputMode = migrateSettings({ codexDeepAnalysis: { inputMode: "debug-full" } });
+  assert.equal(customCodexInputMode.settings.codexDeepAnalysis.inputMode, "debug-full");
+
+  const invalidCodexInputMode = migrateSettings({ codexDeepAnalysis: { inputMode: "everything" } });
+  assert.equal(invalidCodexInputMode.settings.codexDeepAnalysis.inputMode, "pdf-only");
+
+  const jsonCodexOutputMode = migrateSettings({ codexDeepAnalysis: { outputMode: "json-schema" } });
+  assert.equal(jsonCodexOutputMode.settings.codexDeepAnalysis.outputMode, "json-schema");
+
+  const invalidCodexOutputMode = migrateSettings({ codexDeepAnalysis: { outputMode: "everything" } });
+  assert.equal(invalidCodexOutputMode.settings.codexDeepAnalysis.outputMode, "markdown");
 
   const nestedWins = migrateSettings({
     translateChunkMaxChars: 3000,
@@ -704,10 +731,12 @@ test("fresh and continue modals select chat models independently and never resto
   assert.deepEqual(readKeys, ["pdf:demo.pdf", "pdf:demo.pdf"]);
 });
 
-test("0.7 documentation describes marker, isolated history/model choice, and private plaintext limits", () => {
+test("0.8 documentation describes marker, Codex native sessions, isolated history/model choice, and private plaintext limits", () => {
   const readme = fs.readFileSync(path.join(projectRoot, "README.md"), "utf8").toLowerCase();
   for (const phrase of [
-    "0.7.1",
+    "0.8.0",
+    "native codex thread",
+    "codex exec resume",
     "quick-translate marker",
     "separate translation history",
     "translation model",
