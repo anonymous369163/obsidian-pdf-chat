@@ -363,11 +363,14 @@ function createModalHarness({
   startFresh = false,
   app = {},
   confirm,
+  settingsPatch = {},
+  conversations = {},
 } = {}) {
   const { bundle } = loadBundle({ markdownRenderer, confirm });
   const settings = JSON.parse(JSON.stringify(bundle.DEFAULT_SETTINGS));
   settings.autoDocSummary = false;
   settings.autoRag = false;
+  Object.assign(settings, settingsPatch);
   const plugin = {
     settings,
     saveSettings: async () => {},
@@ -379,6 +382,7 @@ function createModalHarness({
       get: () => transcript,
       save: async () => {},
       clear: async () => {},
+      ...conversations,
     },
     papers: {
       getOrCreateDocSummary: async () => {
@@ -732,6 +736,135 @@ test("/codex command invokes Codex CLI directly with a stripped question", async
 
   assert.equal(confirmCalls, 0);
   assert.equal(codexQuestion, "请详细阅读这两篇论文，并解释第二篇如何帮助理解第一篇");
+  assert.match(byClass(modal.contentEl, "pdf-chat-mode-badge")[0].textContent, /CODEX MODE/);
+  assert.match(byClass(modal.contentEl, "pdf-chat-composer-status")[0].textContent, /CODEX|Codex/);
+});
+
+test("/codex enters a visible Codex terminal mode and subsequent input stays in Codex", async () => {
+  const calls = [];
+  const { modal } = createModalHarness({
+    settingsPatch: {
+      codexDeepAnalysis: {
+        enabled: true,
+        command: "codex",
+        profile: "research",
+        model: "gpt-5.6-sol",
+        reasoningEffort: "xhigh",
+        verbosity: "high",
+        modelPresets: [],
+        timeoutMs: 600000,
+        keepTempFiles: false,
+      },
+    },
+  });
+  modal.runCodexDeepAnalysis = async (question) => {
+    calls.push(question);
+  };
+
+  modal.inputEl.value = "/codex";
+  await modal.handleSubmit();
+  assert.deepEqual(calls, []);
+  assert.match(byClass(modal.contentEl, "pdf-chat-mode-badge")[0].textContent, /CODEX MODE/);
+  assert.ok(modal.contentEl.hasClass("is-codex-mode"));
+
+  modal.inputEl.value = "请继续分析方法假设";
+  await modal.handleSubmit();
+  assert.deepEqual(calls, ["请继续分析方法假设"]);
+
+  modal.inputEl.value = "/exit";
+  await modal.handleSubmit();
+  assert.match(byClass(modal.contentEl, "pdf-chat-mode-badge")[0].textContent, /API MODE/);
+  assert.equal(modal.contentEl.hasClass("is-codex-mode"), false);
+});
+
+test("terminal prompt history restores previous prompts with arrow keys unless @ suggestions are open", async () => {
+  const { modal, plugin } = createModalHarness({
+    settingsPatch: { promptHistory: ["first prompt", "second prompt"] },
+  });
+
+  modal.inputEl.value = "";
+  modal.inputEl.dispatch("keydown", { key: "ArrowUp", preventDefault() {} });
+  assert.equal(modal.inputEl.value, "second prompt");
+  modal.inputEl.dispatch("keydown", { key: "ArrowUp", preventDefault() {} });
+  assert.equal(modal.inputEl.value, "first prompt");
+  modal.inputEl.dispatch("keydown", { key: "ArrowDown", preventDefault() {} });
+  assert.equal(modal.inputEl.value, "second prompt");
+
+  modal.inputEl.value = "third prompt";
+  await modal.handleSubmit();
+  assert.deepEqual(JSON.parse(JSON.stringify(plugin.settings.promptHistory.slice(-1))), ["third prompt"]);
+
+  modal.inputEl.value = "@";
+  modal.composerMentionSuggestionsEl = modal.contentEl.createDiv({ cls: "pdf-chat-composer-mention-suggestions" });
+  modal.inputEl.dispatch("keydown", { key: "ArrowUp", preventDefault() { throw new Error("should not prevent"); } });
+  assert.equal(modal.inputEl.value, "@");
+});
+
+test("/model switches Codex presets in Codex mode and API models in normal mode", async () => {
+  const { modal, plugin } = createModalHarness();
+  plugin.settings.models.push({ id: "api-b", name: "API B", endpoint: "", apiKey: "", model: "api-b-model" });
+
+  modal.inputEl.value = "/model api-b";
+  await modal.handleSubmit();
+  assert.equal(modal.currentModelId, "api-b");
+
+  modal.inputEl.value = "/codex";
+  await modal.handleSubmit();
+  modal.inputEl.value = "/model gpt-5.6-sol high";
+  await modal.handleSubmit();
+  assert.equal(plugin.settings.codexDeepAnalysis.model, "gpt-5.6-sol");
+  assert.equal(plugin.settings.codexDeepAnalysis.reasoningEffort, "high");
+  assert.match(byClass(modal.contentEl, "pdf-chat-mode-badge")[0].textContent, /gpt-5\.6-sol/);
+
+  modal.inputEl.value = "/model";
+  await modal.handleSubmit();
+  assert.equal(byClass(modal.contentEl, "pdf-chat-command-menu").length, 1);
+});
+
+test("/new preserves old sessions and /resume restores a selected session", async () => {
+  const sessionFieldName = "conversation" + "K" + "ey";
+  const session = {
+    version: 1,
+    id: "session-old",
+    [sessionFieldName]: "pdf:papers/demo.pdf",
+    title: "Old discussion",
+    mode: "codex",
+    messages: [
+      { role: "user", content: "Old Q", status: "complete" },
+      { role: "assistant", content: "Old A", status: "complete" },
+    ],
+    referencedPdfPaths: ["papers/alpha.pdf"],
+    codex: { model: "gpt-5.6-sol", reasoningEffort: "xhigh", profile: "" },
+    createdAt: 1,
+    updatedAt: 2,
+  };
+  let activeSession = null;
+  const { modal } = createModalHarness({
+    conversations: {
+      getActiveSession: () => null,
+      listSessions: () => [session],
+      startSession: (_key, metadata) => ({ ...session, ...metadata, id: "session-new", messages: [] }),
+      resumeSession: (id) => {
+        activeSession = id;
+        return session;
+      },
+      saveActiveSession: async () => {},
+    },
+  });
+
+  modal.inputEl.value = "/new";
+  await modal.handleSubmit();
+  assert.equal(byClass(modal.historyEl, "pdf-chat-empty-state").length, 1);
+
+  modal.inputEl.value = "/resume";
+  await modal.handleSubmit();
+  const menu = byClass(modal.contentEl, "pdf-chat-command-menu")[0];
+  assert.ok(menu);
+  byClass(menu, "pdf-chat-command-option")[0].dispatch("click");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(activeSession, "session-old");
+  assert.match(byClass(modal.contentEl, "pdf-chat-mode-badge")[0].textContent, /CODEX MODE/);
+  assert.equal(byClass(modal.historyEl, "pdf-chat-bubble").length, 2);
 });
 
 test("restored history keeps the live region off until every Markdown render settles", async () => {
@@ -918,6 +1051,8 @@ test("settings preserve every legacy control in the correct ordered section and 
       "Codex 命令",
       "Codex profile",
       "Codex model",
+      "Codex reasoning effort",
+      "Codex verbosity",
       "Codex 超时毫秒",
       "保留 Codex 临时分析包",
       ...plugin.settings.promptPresets.map((_preset, index) => `预设 ${index + 1}`),

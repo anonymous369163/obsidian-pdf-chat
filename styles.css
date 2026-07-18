@@ -74,6 +74,28 @@
   white-space: nowrap;
 }
 
+.pdf-chat-mode-badge {
+  width: fit-content;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 2px 8px;
+  border: 1px solid var(--pdf-chat-accent-border);
+  border-radius: 999px;
+  background: var(--pdf-chat-accent-soft);
+  color: var(--pdf-chat-accent-muted);
+  font-size: 0.66rem;
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.03em;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-chat-modal.is-codex-mode .pdf-chat-mode-badge {
+  border-color: color-mix(in srgb, var(--interactive-accent) 42%, var(--background-modifier-border));
+  background: color-mix(in srgb, var(--interactive-accent) 18%, var(--background-primary));
+}
+
 .pdf-chat-header-primary-controls,
 .pdf-chat-header-secondary-controls {
   display: flex;
@@ -483,6 +505,10 @@
   font-weight: var(--font-semibold);
 }
 
+.pdf-chat-bubble.is-codex-response .pdf-chat-message-author {
+  color: var(--interactive-accent);
+}
+
 .pdf-chat-message-context::before {
   content: "·";
   margin-inline-end: 8px;
@@ -616,6 +642,65 @@
   border-radius: var(--pdf-chat-radius-md);
   background: var(--background-primary);
   box-shadow: var(--shadow-l);
+}
+
+.pdf-chat-command-menu {
+  position: absolute;
+  z-index: 4;
+  right: 10px;
+  bottom: calc(100% + var(--pdf-chat-space-small));
+  left: 10px;
+  display: grid;
+  gap: 4px;
+  max-height: min(260px, 44vh);
+  overflow-y: auto;
+  padding: 6px;
+  border: var(--pdf-chat-border);
+  border-radius: var(--pdf-chat-radius-md);
+  background: var(--background-primary);
+  box-shadow: var(--shadow-l);
+}
+
+.pdf-chat-command-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--pdf-chat-radius-sm);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pdf-chat-command-option:hover,
+.pdf-chat-command-option:focus-visible {
+  border-color: var(--pdf-chat-accent-border);
+  background: var(--pdf-chat-accent-soft);
+}
+
+.pdf-chat-command-option-label {
+  overflow: hidden;
+  color: var(--text-normal);
+  font-weight: var(--font-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-chat-command-option-detail,
+.pdf-chat-command-empty {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-chat-command-empty {
+  padding: 8px 10px;
 }
 
 .pdf-chat-composer-mention-option {

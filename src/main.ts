@@ -1,4 +1,4 @@
-import { Notice, Plugin, type TFile } from "obsidian";
+import { Notice, Plugin, type App, type TFile } from "obsidian";
 
 import { ActionRegistry, createResearchActionRegistry } from "./actions";
 import { DEFAULT_SETTINGS } from "./default-settings";
@@ -47,6 +47,7 @@ export {
   ConversationStore,
   getConversationKey,
   normalizeConversationHistories,
+  normalizeConversationSessions,
   normalizeConversationMessages,
   stableConversationHash,
 } from "./conversation";
@@ -81,6 +82,45 @@ export { QuickTranslateMarker } from "./quick-translate-marker";
 export { migrateSettings, normalizeRagChunkSettings } from "./settings";
 export { buildTranslationMessages, splitTranslationChunks, TranslationService } from "./translation";
 export type { LlmRequest, PaperContext, ResearchAction } from "./types";
+
+function nodeInsideElement(container: HTMLElement, node: Node | null | undefined): boolean {
+  if (!node) return false;
+  const candidate = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+  return !!candidate && container.contains(candidate);
+}
+
+function getActivePdfViewContainer(app: { workspace?: { activeLeaf?: unknown } }): HTMLElement | null {
+  const leaf = app.workspace?.activeLeaf as
+    | {
+        view?: {
+          getViewType?: () => string;
+          containerEl?: HTMLElement;
+          contentEl?: HTMLElement;
+        };
+        containerEl?: HTMLElement;
+      }
+    | null
+    | undefined;
+  const view = leaf?.view;
+  if (!view || typeof view.getViewType !== "function" || view.getViewType() !== "pdf") return null;
+  return view.containerEl || view.contentEl || leaf?.containerEl || null;
+}
+
+function isSelectionInsideActivePdfView(app: App, selection: Selection, doc: Document): boolean {
+  if (!getActivePdfFile(app)) return false;
+  const container = getActivePdfViewContainer(app);
+  if (!container || container.ownerDocument !== doc) return false;
+  const anchorNode = selection.anchorNode;
+  const focusNode = selection.focusNode;
+  if (anchorNode || focusNode) {
+    return nodeInsideElement(container, anchorNode) && nodeInsideElement(container, focusNode);
+  }
+  if (selection.rangeCount > 0) {
+    const ancestor = selection.getRangeAt(selection.rangeCount - 1).commonAncestorContainer;
+    return nodeInsideElement(container, ancestor);
+  }
+  return false;
+}
 
 export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
   declare settings: PDFChatSettings;
@@ -119,6 +159,13 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
         get: (key) => this.conversationStore!.get(key),
         save: (key, messages) => this.conversationStore!.save(key, messages),
         clear: (key) => this.conversationStore!.clear(key),
+        getActiveSession: (key) => this.conversationStore!.getActiveSession(key),
+        ensureSession: (key, metadata) => this.conversationStore!.ensureSession(key, metadata),
+        startSession: (key, metadata) => this.conversationStore!.startSession(key, metadata),
+        saveActiveSession: (key, messages, metadata) =>
+          this.conversationStore!.saveActiveSession(key, messages, metadata),
+        resumeSession: (id) => this.conversationStore!.resumeSession(id),
+        listSessions: (query) => this.conversationStore!.listSessions(query),
       },
       papers: {
         getOrCreateDocSummary: (file, forceRefresh) =>
@@ -159,6 +206,8 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
     this.quickTranslateMarker = new QuickTranslateMarker({
       isEnabled: () => this.settings.quickTranslateMarkerEnabled,
       getActivePdfFile: () => getActivePdfFile(this.app),
+      isSelectionInsideActivePdf: (selection, doc) =>
+        isSelectionInsideActivePdfView(this.app, selection, doc),
       openModal: (request) => this.openQuickTranslateModal(request),
     });
     if (typeof document !== "undefined") this.quickTranslateMarker.attach(document);

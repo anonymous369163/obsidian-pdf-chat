@@ -120,8 +120,11 @@ test("writeCodexAnalysisPackage creates a multi-paper package without secrets", 
   assert.deepEqual(manifest.papers.map((paper) => paper.role), ["current", "referenced"]);
   assert.ok(fs.existsSync(path.join(result.analysisDir, "question.md")));
   assert.ok(fs.existsSync(path.join(result.analysisDir, "output.schema.json")));
+  assert.ok(fs.existsSync(path.join(result.analysisDir, "papers", "paper-a", "brief.md")));
   assert.ok(fs.existsSync(path.join(result.analysisDir, "papers", "paper-a", "full_text.md")));
   assert.ok(fs.existsSync(path.join(result.analysisDir, "papers", "paper-b", "pages", "page-002.md")));
+  assert.match(manifest.papers[0].briefPath, /papers\/paper-a\/brief\.md/);
+  assert.ok(fs.readFileSync(path.join(result.analysisDir, "papers", "paper-a", "brief.md"), "utf8").length <= 260);
 
   const allText = fs
     .readdirSync(result.analysisDir, { recursive: true })
@@ -138,6 +141,8 @@ test("buildCodexExecArgs uses read-only ephemeral schema-constrained execution",
     command: "codex",
     model: "gpt-test",
     profile: "deep-review",
+    reasoningEffort: "xhigh",
+    verbosity: "high",
     prompt: "Read manifest",
   });
 
@@ -155,6 +160,9 @@ test("buildCodexExecArgs uses read-only ephemeral schema-constrained execution",
   assert.ok(args.args.includes("deep-review"));
   assert.ok(args.args.includes("--model"));
   assert.ok(args.args.includes("gpt-test"));
+  assert.ok(args.args.includes("-c"));
+  assert.ok(args.args.includes('model_reasoning_effort="xhigh"'));
+  assert.ok(args.args.includes('model_verbosity="high"'));
   assert.equal(args.args.at(-1), "Read manifest");
 });
 

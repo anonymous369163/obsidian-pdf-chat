@@ -45,7 +45,14 @@ export const DEFAULT_SETTINGS = {
     enabled: false,
     command: "codex",
     profile: "",
-    model: "",
+    model: "gpt-5.6-sol",
+    reasoningEffort: "xhigh",
+    verbosity: "high",
+    modelPresets: [
+      { model: "gpt-5.6-sol", reasoningEffort: "xhigh", label: "gpt-5.6-sol · xhigh" },
+      { model: "gpt-5.6-sol", reasoningEffort: "high", label: "gpt-5.6-sol · high" },
+      { model: "gpt-5.6-sol", reasoningEffort: "medium", label: "gpt-5.6-sol · medium" },
+    ],
     timeoutMs: 600000,
     keepTempFiles: false,
   },
@@ -100,6 +107,9 @@ export const DEFAULT_SETTINGS = {
   // 每篇 PDF(或精确匹配的非 PDF 选区)只保存一份最近对话。这里只存用户实际看到的问答,
   // 不保存 system prompt、全文或 RAG 检索片段,避免 data.json 被隐藏上下文快速撑大。
   conversationHistories: {},
+  conversationSessions: {},
+  activeConversationSessionIds: {},
+  promptHistory: [],
   promptPresets: [
     {
       id: "paper-map",

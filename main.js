@@ -54,6 +54,7 @@ __export(main_exports, {
   migrateSettings: () => migrateSettings,
   normalizeConversationHistories: () => normalizeConversationHistories,
   normalizeConversationMessages: () => normalizeConversationMessages,
+  normalizeConversationSessions: () => normalizeConversationSessions,
   normalizeRagChunkSettings: () => normalizeRagChunkSettings,
   parseCodexAnalysisOutput: () => parseCodexAnalysisOutput,
   removeCodexAnalysisTempDir: () => removeCodexAnalysisTempDir,
@@ -153,6 +154,65 @@ function normalizeConversationHistories(saved) {
   }
   return normalized;
 }
+function normalizeSessionMode(value) {
+  return value === "codex" ? "codex" : "chat";
+}
+function normalizeReasoningEffort(value) {
+  return value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" ? value : "xhigh";
+}
+function normalizeStringArray(value) {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value.filter((item) => typeof item === "string").map((item) => item.trim()).filter(Boolean)
+    )
+  ).slice(0, 3);
+}
+function normalizeSessionId(value, fallbackSeed) {
+  const raw = typeof value === "string" ? value.trim() : "";
+  return raw || `session-${stableConversationHash(fallbackSeed)}`;
+}
+function cloneSession(session) {
+  return {
+    ...session,
+    messages: normalizeConversationMessages(session.messages),
+    referencedPdfPaths: [...session.referencedPdfPaths],
+    codex: session.codex ? { ...session.codex } : void 0
+  };
+}
+function normalizeConversationSessions(saved) {
+  if (!saved || typeof saved !== "object" || Array.isArray(saved)) return {};
+  const normalized = {};
+  for (const [key, candidate] of Object.entries(saved)) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+    const entry = candidate;
+    const conversationKey = typeof entry.conversationKey === "string" && entry.conversationKey.trim() ? entry.conversationKey.trim() : "";
+    const messages = normalizeConversationMessages(entry.messages);
+    if (!conversationKey || !messages.length) continue;
+    const id = normalizeSessionId(entry.id || key, `${conversationKey}:${key}`);
+    const createdAt = typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt) ? entry.createdAt : 0;
+    const updatedAt = typeof entry.updatedAt === "number" && Number.isFinite(entry.updatedAt) ? entry.updatedAt : createdAt;
+    const codexCandidate = entry.codex && typeof entry.codex === "object" ? entry.codex : null;
+    const codex = codexCandidate && typeof codexCandidate.model === "string" && codexCandidate.model.trim() ? {
+      model: codexCandidate.model.trim(),
+      reasoningEffort: normalizeReasoningEffort(codexCandidate.reasoningEffort),
+      profile: typeof codexCandidate.profile === "string" ? codexCandidate.profile.trim() : ""
+    } : void 0;
+    normalized[id] = {
+      version: 1,
+      id,
+      conversationKey,
+      title: typeof entry.title === "string" && entry.title.trim() ? entry.title.trim() : conversationKey.replace(/^pdf:/, ""),
+      mode: normalizeSessionMode(entry.mode),
+      messages,
+      referencedPdfPaths: normalizeStringArray(entry.referencedPdfPaths),
+      codex,
+      createdAt,
+      updatedAt
+    };
+  }
+  return normalized;
+}
 function getConversationKey(pdfFile, contextText, kind = "chat") {
   const chatKey = pdfFile && typeof pdfFile.path === "string" && pdfFile.path ? `pdf:${pdfFile.path}` : `selection:${stableConversationHash(cleanSelectionText(contextText || ""))}`;
   return kind === "translate" ? `translate:${chatKey}` : chatKey;
@@ -163,30 +223,162 @@ var ConversationStore = class {
     this.persistSettings = persistSettings;
     this.now = now;
   }
-  get(key) {
-    const entry = (this.getSettings().conversationHistories || {})[key];
-    return entry ? normalizeConversationMessages(entry.messages) : [];
-  }
-  async save(key, messages) {
+  ensureContainers() {
     const settings = this.getSettings();
     if (!settings.conversationHistories || typeof settings.conversationHistories !== "object") {
       settings.conversationHistories = {};
     }
-    const normalizedMessages = normalizeConversationMessages(messages);
-    if (!normalizedMessages.length) {
-      delete settings.conversationHistories[key];
-    } else {
-      settings.conversationHistories[key] = {
-        version: 1,
-        updatedAt: this.now(),
-        messages: normalizedMessages
-      };
+    if (!settings.conversationSessions || typeof settings.conversationSessions !== "object") {
+      settings.conversationSessions = {};
     }
+    if (!settings.activeConversationSessionIds || typeof settings.activeConversationSessionIds !== "object") {
+      settings.activeConversationSessionIds = {};
+    }
+    return settings;
+  }
+  legacySessionId(key) {
+    return `legacy-${stableConversationHash(key)}`;
+  }
+  createSessionFromHistory(key, metadata = {}) {
+    var _a;
+    const settings = this.ensureContainers();
+    const legacy = (_a = settings.conversationHistories) == null ? void 0 : _a[key];
+    const messages = normalizeConversationMessages(legacy == null ? void 0 : legacy.messages);
+    if (!messages.length) return null;
+    const id = this.legacySessionId(key);
+    const existing = settings.conversationSessions[id];
+    if (existing) return cloneSession(existing);
+    const timestamp = (legacy == null ? void 0 : legacy.updatedAt) || this.now();
+    const session = {
+      version: 1,
+      id,
+      conversationKey: key,
+      title: metadata.title || key.replace(/^pdf:/, ""),
+      mode: metadata.mode || "chat",
+      messages,
+      referencedPdfPaths: normalizeStringArray(metadata.referencedPdfPaths),
+      codex: metadata.codex ? { ...metadata.codex } : void 0,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    settings.conversationSessions[id] = cloneSession(session);
+    settings.activeConversationSessionIds[key] = id;
+    return cloneSession(session);
+  }
+  applySessionMetadata(session, metadata = {}) {
+    if (metadata.title && metadata.title.trim()) session.title = metadata.title.trim();
+    if (metadata.mode) session.mode = metadata.mode;
+    if (metadata.referencedPdfPaths) {
+      session.referencedPdfPaths = normalizeStringArray(metadata.referencedPdfPaths);
+    }
+    if (metadata.codex) session.codex = { ...metadata.codex };
+    return session;
+  }
+  get(key) {
+    const active = this.getActiveSession(key);
+    if (active) return normalizeConversationMessages(active.messages);
+    const entry = (this.getSettings().conversationHistories || {})[key];
+    return entry ? normalizeConversationMessages(entry.messages) : [];
+  }
+  getActiveSession(key) {
+    var _a;
+    const settings = this.ensureContainers();
+    const activeId = (_a = settings.activeConversationSessionIds) == null ? void 0 : _a[key];
+    const sessions = normalizeConversationSessions(settings.conversationSessions);
+    if (activeId && sessions[activeId]) return cloneSession(sessions[activeId]);
+    const newest = Object.values(sessions).filter((session) => session.conversationKey === key).sort((left, right) => right.updatedAt - left.updatedAt)[0];
+    if (newest) {
+      settings.activeConversationSessionIds[key] = newest.id;
+      return cloneSession(newest);
+    }
+    return this.createSessionFromHistory(key);
+  }
+  ensureSession(key, metadata = {}) {
+    const settings = this.ensureContainers();
+    const active = this.getActiveSession(key);
+    if (active) {
+      const session = this.applySessionMetadata(active, metadata);
+      settings.conversationSessions[session.id] = cloneSession(session);
+      settings.activeConversationSessionIds[key] = session.id;
+      return cloneSession(session);
+    }
+    return this.startSession(key, metadata);
+  }
+  startSession(key, metadata = {}) {
+    const settings = this.ensureContainers();
+    const timestamp = this.now();
+    const id = `session-${stableConversationHash(`${key}:${timestamp}:${Object.keys(settings.conversationSessions || {}).length}`)}`;
+    const session = {
+      version: 1,
+      id,
+      conversationKey: key,
+      title: metadata.title || key.replace(/^pdf:/, ""),
+      mode: metadata.mode || "chat",
+      messages: [],
+      referencedPdfPaths: normalizeStringArray(metadata.referencedPdfPaths),
+      codex: metadata.codex ? { ...metadata.codex } : void 0,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    settings.conversationSessions[id] = cloneSession(session);
+    settings.activeConversationSessionIds[key] = id;
+    return cloneSession(session);
+  }
+  async saveActiveSession(key, messages, metadata = {}) {
+    var _a;
+    const settings = this.ensureContainers();
+    const normalizedMessages = normalizeConversationMessages(messages);
+    const timestamp = this.now();
+    if (!normalizedMessages.length) {
+      const activeId = (_a = settings.activeConversationSessionIds) == null ? void 0 : _a[key];
+      if (activeId) delete settings.conversationSessions[activeId];
+      delete settings.activeConversationSessionIds[key];
+      delete settings.conversationHistories[key];
+      await this.persistSettings();
+      return;
+    }
+    const session = this.applySessionMetadata(this.ensureSession(key, metadata), metadata);
+    session.messages = normalizedMessages;
+    session.updatedAt = timestamp;
+    settings.conversationSessions[session.id] = cloneSession(session);
+    settings.activeConversationSessionIds[key] = session.id;
+    settings.conversationHistories[key] = {
+      version: 1,
+      updatedAt: timestamp,
+      messages: normalizedMessages
+    };
     await this.persistSettings();
   }
+  resumeSession(id) {
+    const settings = this.ensureContainers();
+    const sessions = normalizeConversationSessions(settings.conversationSessions);
+    const session = sessions[id];
+    if (!session) return null;
+    settings.activeConversationSessionIds[session.conversationKey] = session.id;
+    settings.conversationSessions[session.id] = cloneSession(session);
+    return cloneSession(session);
+  }
+  listSessions(query = "") {
+    const settings = this.ensureContainers();
+    const sessions = normalizeConversationSessions(settings.conversationSessions);
+    const needle = query.trim().toLowerCase();
+    return Object.values(sessions).filter((session) => {
+      if (!needle) return true;
+      return [session.title, session.conversationKey, ...session.referencedPdfPaths].join(" ").toLowerCase().includes(needle);
+    }).sort((left, right) => right.updatedAt - left.updatedAt).map(cloneSession);
+  }
+  async save(key, messages) {
+    await this.saveActiveSession(key, messages);
+  }
   async clear(key) {
-    const histories = this.getSettings().conversationHistories;
-    if (histories && histories[key]) delete histories[key];
+    var _a;
+    const settings = this.ensureContainers();
+    const activeId = (_a = settings.activeConversationSessionIds) == null ? void 0 : _a[key];
+    if (activeId) delete settings.conversationSessions[activeId];
+    if (settings.activeConversationSessionIds) delete settings.activeConversationSessionIds[key];
+    if (settings.conversationHistories && settings.conversationHistories[key]) {
+      delete settings.conversationHistories[key];
+    }
     await this.persistSettings();
   }
 };
@@ -412,7 +604,14 @@ var DEFAULT_SETTINGS = {
     enabled: false,
     command: "codex",
     profile: "",
-    model: "",
+    model: "gpt-5.6-sol",
+    reasoningEffort: "xhigh",
+    verbosity: "high",
+    modelPresets: [
+      { model: "gpt-5.6-sol", reasoningEffort: "xhigh", label: "gpt-5.6-sol \xB7 xhigh" },
+      { model: "gpt-5.6-sol", reasoningEffort: "high", label: "gpt-5.6-sol \xB7 high" },
+      { model: "gpt-5.6-sol", reasoningEffort: "medium", label: "gpt-5.6-sol \xB7 medium" }
+    ],
     timeoutMs: 6e5,
     keepTempFiles: false
   },
@@ -451,6 +650,9 @@ var DEFAULT_SETTINGS = {
   // 每篇 PDF(或精确匹配的非 PDF 选区)只保存一份最近对话。这里只存用户实际看到的问答,
   // 不保存 system prompt、全文或 RAG 检索片段,避免 data.json 被隐藏上下文快速撑大。
   conversationHistories: {},
+  conversationSessions: {},
+  activeConversationSessionIds: {},
+  promptHistory: [],
   promptPresets: [
     {
       id: "paper-map",
@@ -993,6 +1195,15 @@ function writeJson(fs, file, value) {
 function pageFileName(page) {
   return `page-${String(page).padStart(3, "0")}.md`;
 }
+function compactWhitespace(text) {
+  return String(text || "").replace(/\s+/g, " ").trim();
+}
+function buildCodexPaperBrief(paper, maxChars = 250) {
+  const source = compactWhitespace(paper.summary) || compactWhitespace(paper.pages.map((page) => page.text).join(" "));
+  if (!source) return `${paper.name || paper.vaultPath}: no brief available.`;
+  if (source.length <= maxChars) return source;
+  return source.slice(0, Math.max(0, maxChars - 1)).trimEnd() + "\u2026";
+}
 function createCodexAnalysisTempDir(taskId) {
   const fs = loadNodeModule("node:fs");
   const os = loadNodeModule("node:os");
@@ -1077,6 +1288,7 @@ async function writeCodexAnalysisPackage(request) {
     const pagesDir = path.join(paperDir, "pages");
     fs.mkdirSync(pagesDir, { recursive: true });
     const metadataPath = path.join("papers", id, "metadata.json");
+    const briefPath = path.join("papers", id, "brief.md");
     const summaryPath = path.join("papers", id, "summary.md");
     const fullTextPath = path.join("papers", id, "full_text.md");
     const chunksPath = path.join("papers", id, "chunks.json");
@@ -1091,6 +1303,7 @@ async function writeCodexAnalysisPackage(request) {
       fullTextLength: paper.pages.reduce((total, page) => total + (page.text || "").length, 0),
       chunkCount: paper.chunks.length
     });
+    fs.writeFileSync(path.join(analysisDir, briefPath), buildCodexPaperBrief(paper), "utf8");
     fs.writeFileSync(path.join(analysisDir, summaryPath), paper.summary || "(no summary)", "utf8");
     fs.writeFileSync(
       path.join(analysisDir, fullTextPath),
@@ -1108,6 +1321,7 @@ ${page.text}`).join("\n\n"),
       name: paper.name,
       vaultPath: paper.vaultPath,
       metadataPath: metadataPath.replace(/\\/g, "/"),
+      briefPath: briefPath.replace(/\\/g, "/"),
       summaryPath: summaryPath.replace(/\\/g, "/"),
       fullTextPath: fullTextPath.replace(/\\/g, "/"),
       chunksPath: chunksPath.replace(/\\/g, "/"),
@@ -1133,7 +1347,8 @@ function buildCodexDeepAnalysisPrompt() {
   return [
     "You are a careful research assistant performing multi-paper analysis.",
     "Read manifest.json and question.md first.",
-    "For each paper: read summary.md, then full_text.md, and use pages/ or chunks.json for evidence.",
+    "For each paper: read brief.md first for orientation, then summary.md, then full_text.md, and use pages/ or chunks.json for evidence.",
+    "The prompt intentionally does not include the full paper text. Open the files listed in manifest.json inside this read-only analysis directory.",
     "Extract each paper's research problem, core method, assumptions, experiments, conclusions, and limitations.",
     "Then compare similarities, differences, complementary opportunities, and conflicts or risks.",
     "Every important claim must cite the paper name and page or chunk/source location when available.",
@@ -1156,6 +1371,8 @@ function buildCodexExecArgs(request) {
   ];
   if (request.profile) args.push("--profile", request.profile);
   if (request.model) args.push("--model", request.model);
+  if (request.reasoningEffort) args.push("-c", `model_reasoning_effort="${request.reasoningEffort}"`);
+  if (request.verbosity) args.push("-c", `model_verbosity="${request.verbosity}"`);
   args.push(request.prompt);
   return { command: request.command || "codex", args };
 }
@@ -1300,6 +1517,11 @@ function buildWorkbenchHeader(parent, options) {
     text: options.filename,
     cls: "pdf-chat-document-name"
   });
+  const modeBadge = identity.createEl("span", {
+    text: "API MODE",
+    cls: "pdf-chat-mode-badge",
+    attr: { role: "status", "aria-live": "polite" }
+  });
   const primaryControls = root.createDiv({ cls: "pdf-chat-header-primary-controls pdf-chat-interactive" });
   const secondaryControls = root.createDiv({ cls: "pdf-chat-header-secondary-controls pdf-chat-interactive" });
   const modelGroup = primaryControls.createDiv({ cls: "pdf-chat-control-group" });
@@ -1403,6 +1625,7 @@ function buildWorkbenchHeader(parent, options) {
   clearButton.addEventListener("click", closeMenu);
   return {
     root,
+    modeBadge,
     primaryControls,
     secondaryControls,
     modelSelect,
@@ -1602,6 +1825,12 @@ function getBubbleContentEl(bubble) {
 function setBubbleText(bubble, text) {
   getBubbleContentEl(bubble).setText(text);
 }
+function setTextByClass(root, className, text) {
+  const found = root.getElementsByClassName ? root.getElementsByClassName(className)[0] : null;
+  const compatible = found;
+  if (typeof (compatible == null ? void 0 : compatible.setText) === "function") compatible.setText(text);
+  else if (compatible) compatible.textContent = text;
+}
 function createBubbleDiv(parent, options) {
   const compatibleParent = parent;
   if (typeof compatibleParent.createDiv === "function") return compatibleParent.createDiv(options);
@@ -1622,6 +1851,7 @@ async function renderMarkdownIntoBubble(app, component, bubble, text) {
 }
 var PDFChatModal = class extends import_obsidian3.Modal {
   constructor(app, plugin, contextText, pdfFile, startFresh, services, autoTranslateOnOpen) {
+    var _a, _b, _c;
     super(app);
     __publicField(this, "plugin");
     __publicField(this, "services");
@@ -1648,11 +1878,15 @@ var PDFChatModal = class extends import_obsidian3.Modal {
     __publicField(this, "translateTranscript", []);
     __publicField(this, "messages");
     __publicField(this, "activeComposerKind", "chat");
+    __publicField(this, "runtimeMode", "api");
+    __publicField(this, "currentSessionId");
     __publicField(this, "isSending", false);
     __publicField(this, "abortController", null);
+    __publicField(this, "promptHistoryCursor", null);
     __publicField(this, "zoomOutBtn");
     __publicField(this, "zoomLabel");
     __publicField(this, "zoomInBtn");
+    __publicField(this, "modeBadgeEl");
     __publicField(this, "modelSelect");
     __publicField(this, "modeSelect");
     __publicField(this, "summaryCheckbox");
@@ -1670,6 +1904,7 @@ var PDFChatModal = class extends import_obsidian3.Modal {
     __publicField(this, "composerCardEl");
     __publicField(this, "composerMentionSuggestionsEl");
     __publicField(this, "composerMentionRange");
+    __publicField(this, "commandMenuEl");
     __publicField(this, "inputEl");
     __publicField(this, "sendBtn");
     this.plugin = plugin;
@@ -1699,7 +1934,22 @@ var PDFChatModal = class extends import_obsidian3.Modal {
       this.contextText,
       "translate"
     );
-    const existingTranscript = this.services.conversations.get(this.conversationKey);
+    const activeSession = this.startFresh ? null : ((_b = (_a = this.services.conversations).getActiveSession) == null ? void 0 : _b.call(_a, this.conversationKey)) || null;
+    this.currentSessionId = activeSession == null ? void 0 : activeSession.id;
+    if ((activeSession == null ? void 0 : activeSession.mode) === "codex") {
+      this.runtimeMode = "codex";
+      if (activeSession.codex) {
+        this.plugin.settings.codexDeepAnalysis.model = activeSession.codex.model;
+        this.plugin.settings.codexDeepAnalysis.reasoningEffort = activeSession.codex.reasoningEffort;
+        if (activeSession.codex.profile !== void 0) {
+          this.plugin.settings.codexDeepAnalysis.profile = activeSession.codex.profile || "";
+        }
+      }
+    }
+    if ((_c = activeSession == null ? void 0 : activeSession.referencedPdfPaths) == null ? void 0 : _c.length) {
+      this.referencedPdfFiles = activeSession.referencedPdfPaths.map((path) => this.findPdfFileByPath(path)).filter((file) => !!file);
+    }
+    const existingTranscript = (activeSession == null ? void 0 : activeSession.messages) || this.services.conversations.get(this.conversationKey);
     this.hadExistingHistory = existingTranscript.length > 0;
     this.transcript = this.startFresh ? [] : existingTranscript;
     this.messages = [
@@ -1731,6 +1981,7 @@ ${this.contextText}`;
       presets: this.plugin.settings.promptPresets,
       currentPresetId: this.currentPresetId
     });
+    this.modeBadgeEl = header.modeBadge;
     this.modelSelect = header.modelSelect;
     this.modeSelect = header.modeSelect;
     this.zoomOutBtn = header.zoomOutButton;
@@ -1750,6 +2001,7 @@ ${this.contextText}`;
     );
     this.zoomLabel.addEventListener("click", () => this.applyFontScale(1));
     this.applyFontScale(this.plugin.settings.fontScale || 1);
+    this.updateRuntimeModeUi();
     const contextPanel = buildContextPanel(contentEl, {
       selectionText: this.contextText,
       hasPdf: !!this.pdfFile
@@ -1776,6 +2028,7 @@ ${this.contextText}`;
       }
     });
     this.inputEl.addEventListener("keydown", (evt) => {
+      if (this.handlePromptHistoryKey(evt)) return;
       if (evt.key === "Enter" && !evt.shiftKey) {
         evt.preventDefault();
         submit();
@@ -1802,6 +2055,344 @@ ${this.contextText}`;
   getDocumentName() {
     if (!this.pdfFile) return "\u9009\u533A\u5BF9\u8BDD";
     return this.pdfFile.name || this.pdfFile.path.split(/[\\/]/).pop() || "\u9009\u533A\u5BF9\u8BDD";
+  }
+  getCodexModel() {
+    return this.plugin.settings.codexDeepAnalysis.model || DEFAULT_SETTINGS.codexDeepAnalysis.model;
+  }
+  getCodexReasoningEffort() {
+    return this.plugin.settings.codexDeepAnalysis.reasoningEffort || DEFAULT_SETTINGS.codexDeepAnalysis.reasoningEffort;
+  }
+  getCodexVerbosity() {
+    return this.plugin.settings.codexDeepAnalysis.verbosity || DEFAULT_SETTINGS.codexDeepAnalysis.verbosity;
+  }
+  codexMetaText(fallback = false) {
+    if (fallback) return "Codex CLI \u4E0D\u53EF\u7528\u6216\u5931\u8D25\uFF0C\u5DF2\u6539\u7528\u5F53\u524D API \u6A21\u578B";
+    const profile = this.plugin.settings.codexDeepAnalysis.profile || "default profile";
+    return `requested model: ${this.getCodexModel()} \xB7 effort: ${this.getCodexReasoningEffort()} \xB7 profile: ${profile}`;
+  }
+  updateRuntimeModeUi() {
+    const codexMode = this.runtimeMode === "codex";
+    this.contentEl.toggleClass("is-codex-mode", codexMode);
+    this.modalEl.toggleClass("is-codex-mode", codexMode);
+    if (this.modeBadgeEl) {
+      this.modeBadgeEl.setText(
+        codexMode ? `CODEX MODE \xB7 ${this.getCodexModel()} \xB7 ${this.getCodexReasoningEffort()}` : "API MODE"
+      );
+    }
+    this.updateComposerContextStatus();
+  }
+  enterCodexMode() {
+    this.runtimeMode = "codex";
+    this.activeComposerKind = "chat";
+    this.plugin.settings.codexDeepAnalysis.enabled = true;
+    this.saveSettingsInBackground();
+    this.updateRuntimeModeUi();
+  }
+  exitCodexMode() {
+    this.runtimeMode = "api";
+    this.updateRuntimeModeUi();
+  }
+  clearComposerInput() {
+    if (!this.inputEl) return;
+    this.inputEl.value = "";
+    if (this.inputEl.style) this.inputEl.style.height = "";
+  }
+  rememberPromptHistory(raw) {
+    const text = raw.trim();
+    if (!text) return;
+    const history = Array.isArray(this.plugin.settings.promptHistory) ? [...this.plugin.settings.promptHistory] : [];
+    if (history[history.length - 1] !== text) history.push(text);
+    this.plugin.settings.promptHistory = history.slice(-100);
+    this.promptHistoryCursor = null;
+    this.saveSettingsInBackground();
+  }
+  saveSettingsInBackground() {
+    Promise.resolve(this.plugin.saveSettings()).catch(() => void 0);
+  }
+  handlePromptHistoryKey(event) {
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return false;
+    if (this.composerMentionSuggestionsEl) return false;
+    const history = this.plugin.settings.promptHistory || [];
+    if (!history.length) return false;
+    event.preventDefault();
+    if (event.key === "ArrowUp") {
+      const next = this.promptHistoryCursor === null ? history.length - 1 : Math.max(0, this.promptHistoryCursor - 1);
+      this.promptHistoryCursor = next;
+      this.inputEl.value = history[next] || "";
+    } else {
+      if (this.promptHistoryCursor === null) return true;
+      const next = this.promptHistoryCursor + 1;
+      if (next >= history.length) {
+        this.promptHistoryCursor = null;
+        this.inputEl.value = "";
+      } else {
+        this.promptHistoryCursor = next;
+        this.inputEl.value = history[next] || "";
+      }
+    }
+    return true;
+  }
+  hideCommandMenu() {
+    var _a;
+    const removable = this.commandMenuEl;
+    if (typeof (removable == null ? void 0 : removable.remove) === "function") {
+      removable.remove();
+    } else if ((_a = this.commandMenuEl) == null ? void 0 : _a.parentElement) {
+      this.commandMenuEl.parentElement.removeChild(this.commandMenuEl);
+    }
+    this.commandMenuEl = void 0;
+  }
+  showCommandMenu(label, options) {
+    this.hideCommandMenu();
+    const parent = this.composerCardEl || this.contentEl;
+    const menu = parent.createDiv({
+      cls: "pdf-chat-command-menu",
+      attr: { role: "listbox", "aria-label": label }
+    });
+    if (!options.length) {
+      menu.createDiv({ cls: "pdf-chat-command-empty", text: "\u6CA1\u6709\u53EF\u7528\u9009\u9879" });
+      this.commandMenuEl = menu;
+      return;
+    }
+    for (const option of options) {
+      const button = menu.createEl("button", {
+        cls: "pdf-chat-command-option",
+        attr: { type: "button", role: "option" }
+      });
+      button.createEl("span", { text: option.label, cls: "pdf-chat-command-option-label" });
+      if (option.detail) {
+        button.createEl("span", { text: option.detail, cls: "pdf-chat-command-option-detail" });
+      }
+      labelControl(button, option.label);
+      button.addEventListener("click", () => {
+        this.hideCommandMenu();
+        void option.run();
+      });
+    }
+    this.commandMenuEl = menu;
+  }
+  applyCodexModel(model, reasoningEffort) {
+    const allowed = /* @__PURE__ */ new Set(["minimal", "low", "medium", "high", "xhigh"]);
+    const normalizedModel = model.trim();
+    const normalizedEffort = reasoningEffort.trim();
+    if (!normalizedModel || !allowed.has(normalizedEffort)) {
+      new import_obsidian3.Notice("Codex \u6A21\u578B\u683C\u5F0F\u65E0\u6548\uFF0C\u8BF7\u4F7F\u7528 /model <model> <minimal|low|medium|high|xhigh>");
+      return false;
+    }
+    this.plugin.settings.codexDeepAnalysis.model = normalizedModel;
+    this.plugin.settings.codexDeepAnalysis.reasoningEffort = normalizedEffort;
+    this.saveSettingsInBackground();
+    this.updateRuntimeModeUi();
+    new import_obsidian3.Notice(`Codex \u6A21\u578B\u5DF2\u5207\u6362\u5230 ${normalizedModel} \xB7 ${normalizedEffort}`);
+    return true;
+  }
+  showModelMenu() {
+    var _a;
+    if (this.runtimeMode === "codex") {
+      const presets = ((_a = this.plugin.settings.codexDeepAnalysis.modelPresets) == null ? void 0 : _a.length) ? this.plugin.settings.codexDeepAnalysis.modelPresets : DEFAULT_SETTINGS.codexDeepAnalysis.modelPresets;
+      this.showCommandMenu(
+        "\u9009\u62E9 Codex \u6A21\u578B",
+        presets.map((preset) => ({
+          label: preset.label || `${preset.model} \xB7 ${preset.reasoningEffort}`,
+          detail: "Codex CLI",
+          run: () => {
+            this.applyCodexModel(preset.model, preset.reasoningEffort);
+          }
+        }))
+      );
+      return;
+    }
+    this.showCommandMenu(
+      "\u9009\u62E9 PDF Chat API \u6A21\u578B",
+      this.plugin.settings.models.map((model) => ({
+        label: model.name || model.id,
+        detail: model.model || model.id,
+        run: () => this.applyModel(model.id)
+      }))
+    );
+  }
+  applyModelCommand(args) {
+    const trimmed = args.trim();
+    if (!trimmed) {
+      this.showModelMenu();
+      return;
+    }
+    if (this.runtimeMode === "codex") {
+      const [model, effort = this.getCodexReasoningEffort()] = trimmed.split(/\s+/);
+      this.applyCodexModel(model, effort);
+      return;
+    }
+    const lower = trimmed.toLowerCase();
+    const match = this.plugin.settings.models.find(
+      (model) => [model.id, model.name, model.model].some((value) => String(value || "").toLowerCase() === lower)
+    );
+    if (!match) {
+      new import_obsidian3.Notice("\u6CA1\u6709\u627E\u5230\u8FD9\u4E2A API \u6A21\u578B\uFF0C\u8F93\u5165 /model \u53EF\u4ECE\u5217\u8868\u9009\u62E9\u3002");
+      return;
+    }
+    this.applyModel(match.id);
+  }
+  sessionMetadata(title) {
+    var _a;
+    const fallbackTitle = title || ((_a = this.transcript.find((message) => message.role === "user")) == null ? void 0 : _a.content) || this.getDocumentName();
+    return {
+      title: fallbackTitle.slice(0, 80),
+      mode: this.runtimeMode === "codex" ? "codex" : "chat",
+      referencedPdfPaths: this.referencedPdfFiles.map((file) => file.path).filter(Boolean),
+      codex: this.runtimeMode === "codex" ? {
+        model: this.getCodexModel(),
+        reasoningEffort: this.getCodexReasoningEffort(),
+        profile: this.plugin.settings.codexDeepAnalysis.profile || ""
+      } : void 0
+    };
+  }
+  async startNewSession() {
+    var _a, _b;
+    const session = (_b = (_a = this.services.conversations).startSession) == null ? void 0 : _b.call(
+      _a,
+      this.conversationKey,
+      this.sessionMetadata(this.getDocumentName())
+    );
+    this.currentSessionId = session == null ? void 0 : session.id;
+    this.transcript = [];
+    this.messages = [this.buildSystemMessage()];
+    this.activeComposerKind = "chat";
+    this.fullTextAttached = false;
+    this.historyEl.empty();
+    this.hideFollowupSuggestions();
+    this.emptyStateEl = void 0;
+    this.showEmptyState();
+    await this.plugin.saveSettings();
+    new import_obsidian3.Notice("\u5DF2\u65B0\u5EFA\u8BA8\u8BBA\uFF0C\u65E7\u8BA8\u8BBA\u53EF\u7528 /resume \u627E\u56DE\u3002");
+  }
+  async resumeConversationSession(sessionId) {
+    var _a, _b;
+    const session = (_b = (_a = this.services.conversations).resumeSession) == null ? void 0 : _b.call(_a, sessionId);
+    if (!session) {
+      new import_obsidian3.Notice("\u6CA1\u6709\u627E\u5230\u8FD9\u6BB5\u5386\u53F2\u8BA8\u8BBA\u3002");
+      return;
+    }
+    this.currentSessionId = session.id;
+    this.runtimeMode = session.mode === "codex" ? "codex" : "api";
+    if (session.codex) {
+      this.plugin.settings.codexDeepAnalysis.model = session.codex.model;
+      this.plugin.settings.codexDeepAnalysis.reasoningEffort = session.codex.reasoningEffort;
+      this.plugin.settings.codexDeepAnalysis.profile = session.codex.profile || "";
+    }
+    this.referencedPdfFiles = (session.referencedPdfPaths || []).map((path) => this.findPdfFileByPath(path)).filter((file) => !!file);
+    this.transcript = session.messages || [];
+    this.messages = [
+      this.buildSystemMessage(),
+      ...this.transcript.map((message) => ({ role: message.role, content: message.content }))
+    ];
+    this.historyEl.empty();
+    this.emptyStateEl = void 0;
+    this.updateRuntimeModeUi();
+    await this.plugin.saveSettings();
+    await this.restoreConversationHistory();
+  }
+  showResumeMenu() {
+    var _a, _b;
+    const sessions = ((_b = (_a = this.services.conversations).listSessions) == null ? void 0 : _b.call(_a, "")) || [];
+    const currentFirst = [...sessions].sort((left, right) => {
+      const leftCurrent = left.conversationKey === this.conversationKey ? 1 : 0;
+      const rightCurrent = right.conversationKey === this.conversationKey ? 1 : 0;
+      return rightCurrent - leftCurrent || right.updatedAt - left.updatedAt;
+    });
+    this.showCommandMenu(
+      "\u6062\u590D\u5386\u53F2\u8BA8\u8BBA",
+      currentFirst.map((session) => ({
+        label: session.title || session.conversationKey,
+        detail: `${session.mode === "codex" ? "Codex" : "API"} \xB7 ${session.conversationKey}`,
+        run: () => this.resumeConversationSession(session.id)
+      }))
+    );
+  }
+  showStatusMessage() {
+    var _a;
+    const refs = this.referencedPdfFiles.length ? this.referencedPdfFiles.map((file) => file.name || file.path).join("\u3001") : "\u65E0";
+    const lines = [
+      `\u5F53\u524D\u6A21\u5F0F\uFF1A${this.runtimeMode === "codex" ? "Codex CLI" : "PDF Chat API"}`,
+      `API \u6A21\u578B\uFF1A${((_a = this.plugin.settings.models.find((model) => model.id === this.currentModelId)) == null ? void 0 : _a.name) || this.currentModelId}`,
+      `Codex\uFF1A${this.getCodexModel()} \xB7 ${this.getCodexReasoningEffort()} \xB7 ${this.plugin.settings.codexDeepAnalysis.profile || "default profile"}`,
+      `\u5F15\u7528 PDF\uFF1A${refs}`,
+      `Session\uFF1A${this.currentSessionId || "\u672A\u521B\u5EFA"}`
+    ];
+    this.addBubble("assistant", lines.join("\n"), {
+      assistantAuthor: this.runtimeMode === "codex" ? "Codex Mode" : "PDF Chat",
+      assistantContext: "\u72B6\u6001",
+      assistantClass: "is-status-message"
+    });
+  }
+  showHelpMessage() {
+    this.addBubble(
+      "assistant",
+      [
+        "\u652F\u6301\u7684\u547D\u4EE4\uFF1A",
+        "- /codex\uFF1A\u8FDB\u5165 Codex \u6A21\u5F0F",
+        "- /codex <\u95EE\u9898>\uFF1A\u8FDB\u5165 Codex \u6A21\u5F0F\u5E76\u7ACB\u5373\u8BA9 Codex \u8BFB\u53D6\u5F53\u524D/\u5F15\u7528 PDF",
+        "- /exit\uFF1A\u56DE\u5230\u666E\u901A API \u804A\u5929",
+        "- /model\uFF1A\u9009\u62E9\u5F53\u524D\u6A21\u5F0F\u4E0B\u7684\u6A21\u578B",
+        "- /model <model> <effort>\uFF1A\u5207\u6362 Codex \u6A21\u578B\u548C\u63A8\u7406\u5F3A\u5EA6",
+        "- /new\uFF1A\u65B0\u5EFA\u8BA8\u8BBA\uFF0C\u4E0D\u5220\u9664\u65E7\u8BA8\u8BBA",
+        "- /resume\uFF1A\u6062\u590D\u5386\u53F2\u8BA8\u8BBA",
+        "- /status\uFF1A\u67E5\u770B\u5F53\u524D\u6A21\u5F0F\u3001\u6A21\u578B\u3001\u5F15\u7528 PDF \u548C session"
+      ].join("\n"),
+      {
+        assistantAuthor: this.runtimeMode === "codex" ? "Codex Mode" : "PDF Chat",
+        assistantContext: "\u5E2E\u52A9"
+      }
+    );
+  }
+  async handleSlashCommand(question, usingOverride) {
+    if (usingOverride || !question.startsWith("/")) return false;
+    const match = /^\/([A-Za-z][\w-]*)(?:\s+([\s\S]*))?$/.exec(question.trim());
+    if (!match) return false;
+    const command = match[1].toLowerCase();
+    const args = (match[2] || "").trim();
+    switch (command) {
+      case "codex":
+        this.enterCodexMode();
+        this.clearComposerInput();
+        if (args) await this.runCodexDeepAnalysis(args);
+        return true;
+      case "exit":
+        this.exitCodexMode();
+        this.clearComposerInput();
+        new import_obsidian3.Notice("\u5DF2\u9000\u51FA Codex \u6A21\u5F0F\uFF0C\u56DE\u5230 PDF Chat API\u3002");
+        return true;
+      case "status":
+        this.clearComposerInput();
+        this.showStatusMessage();
+        return true;
+      case "help":
+        this.clearComposerInput();
+        this.showHelpMessage();
+        return true;
+      case "model":
+        this.clearComposerInput();
+        this.applyModelCommand(args);
+        return true;
+      case "new":
+        this.clearComposerInput();
+        await this.startNewSession();
+        return true;
+      case "resume":
+        this.clearComposerInput();
+        this.showResumeMenu();
+        return true;
+      default:
+        if (this.runtimeMode === "codex") {
+          this.clearComposerInput();
+          this.addBubble(
+            "assistant",
+            `\u5F53\u524D\u63D2\u4EF6\u6682\u4E0D\u652F\u6301 Codex TUI \u547D\u4EE4\uFF1A/${command}\u3002\u8F93\u5165 /help \u67E5\u770B\u53EF\u7528\u547D\u4EE4\u3002`,
+            { assistantAuthor: "Codex Mode", assistantContext: "\u547D\u4EE4\u672A\u652F\u6301" }
+          );
+          return true;
+        }
+        return false;
+    }
   }
   buildPaperContextControls(container) {
     const summaryRow = container.createDiv({ cls: "pdf-chat-summary-row" });
@@ -2036,19 +2627,20 @@ ${this.contextText}`;
   }
   updateComposerContextStatus() {
     if (!this.composerStatusEl) return;
+    const modePrefix = this.runtimeMode === "codex" ? "CODEX MODE \xB7 " : "";
     const referenceSuffix = this.referencedPdfFiles.length ? ` \xB7 \u5DF2\u5F15\u7528 ${this.referencedPdfFiles.length} \u7BC7\u8BBA\u6587` : "";
     if (!this.pdfFile) {
-      this.composerStatusEl.setText("\u9009\u533A\u4E0A\u4E0B\u6587\u5DF2\u542F\u7528" + referenceSuffix);
+      this.composerStatusEl.setText(modePrefix + "\u9009\u533A\u4E0A\u4E0B\u6587\u5DF2\u542F\u7528" + referenceSuffix);
       return;
     }
     if (this.useRag && this.useFullTextMode) {
-      this.composerStatusEl.setText("\u5168\u6587\u4E0A\u4E0B\u6587\u5DF2\u542F\u7528" + referenceSuffix);
+      this.composerStatusEl.setText(modePrefix + "\u5168\u6587\u4E0A\u4E0B\u6587\u5DF2\u542F\u7528" + referenceSuffix);
     } else if (this.useRag) {
-      this.composerStatusEl.setText("RAG \u68C0\u7D22\u5DF2\u542F\u7528" + referenceSuffix);
+      this.composerStatusEl.setText(modePrefix + "RAG \u68C0\u7D22\u5DF2\u542F\u7528" + referenceSuffix);
     } else if (this.useDocSummary) {
-      this.composerStatusEl.setText("\u6458\u8981\u80CC\u666F\u5DF2\u542F\u7528" + referenceSuffix);
+      this.composerStatusEl.setText(modePrefix + "\u6458\u8981\u80CC\u666F\u5DF2\u542F\u7528" + referenceSuffix);
     } else {
-      this.composerStatusEl.setText("\u5F53\u524D\u9009\u533A\u4E0A\u4E0B\u6587\u5DF2\u542F\u7528" + referenceSuffix);
+      this.composerStatusEl.setText(modePrefix + "\u5F53\u524D\u9009\u533A\u4E0A\u4E0B\u6587\u5DF2\u542F\u7528" + referenceSuffix);
     }
   }
   followupSuggestions() {
@@ -2120,7 +2712,15 @@ ${this.contextText}`;
   }
   async persistConversation() {
     try {
-      await this.services.conversations.save(this.conversationKey, this.transcript);
+      if (this.services.conversations.saveActiveSession) {
+        await this.services.conversations.saveActiveSession(
+          this.conversationKey,
+          this.transcript,
+          this.sessionMetadata()
+        );
+      } else {
+        await this.services.conversations.save(this.conversationKey, this.transcript);
+      }
       return true;
     } catch (err) {
       new import_obsidian3.Notice("\u4FDD\u5B58\u5BF9\u8BDD\u5931\u8D25: " + errorMessage(err));
@@ -2342,6 +2942,10 @@ ${this.contextText}`;
     const typed = (_b = (_a = this.inputEl) == null ? void 0 : _a.value) == null ? void 0 : _b.trim();
     return typed || "\u8BF7\u57FA\u4E8E\u5F53\u524D\u8BBA\u6587\u548C\u5DF2\u5F15\u7528\u8BBA\u6587\u56DE\u7B54\u6211\u7684\u95EE\u9898\u3002";
   }
+  setAssistantBubbleMeta(bubble, author, context) {
+    setTextByClass(bubble, "pdf-chat-message-author", author);
+    setTextByClass(bubble, "pdf-chat-message-context", context);
+  }
   multiPaperUserLabel(question) {
     const refs = this.referencedPdfFiles.map((file) => file.name || file.path).join("\u3001");
     return refs ? `\u591A\u8BBA\u6587\u95EE\u9898\uFF1A${question}
@@ -2503,10 +3107,6 @@ ${chunk.text}`;
       new import_obsidian3.Notice("Codex \u6DF1\u5EA6\u5206\u6790\u9700\u8981\u4ECE PDF \u89C6\u56FE\u6253\u5F00\u3002");
       return;
     }
-    if (!this.referencedPdfFiles.length) {
-      new import_obsidian3.Notice("\u8BF7\u5148 @ \u5F15\u7528\u81F3\u5C11\u4E00\u7BC7\u5176\u4ED6 PDF\u3002");
-      return;
-    }
     if (!this.plugin.settings.codexDeepAnalysis.enabled) {
       new import_obsidian3.Notice("\u9700\u8981\u5148\u5728 PDF Chat \u8BBE\u7F6E\u4E2D\u542F\u7528 Codex CLI \u6DF1\u5EA6\u5206\u6790\u3002");
       (_a = this.multiPaperStatusEl) == null ? void 0 : _a.setText("Codex \u6DF1\u5EA6\u5206\u6790\u5C1A\u672A\u542F\u7528\u3002");
@@ -2521,7 +3121,12 @@ ${chunk.text}`;
     this.inputEl.value = "";
     if (this.inputEl.style) this.inputEl.style.height = "";
     this.setSendingState(true);
-    const loadingBubble = this.addBubble("assistant", "\u6B63\u5728\u51C6\u5907 Codex \u591A\u8BBA\u6587\u5206\u6790\u5305\u2026", { loading: true });
+    const loadingBubble = this.addBubble("assistant", "\u6B63\u5728\u51C6\u5907 Codex \u591A\u8BBA\u6587\u5206\u6790\u5305\u2026", {
+      loading: true,
+      assistantAuthor: "Codex CLI",
+      assistantContext: this.codexMetaText(),
+      assistantClass: "is-codex-response"
+    });
     this.abortController = new AbortController();
     let analysisDir = "";
     try {
@@ -2544,7 +3149,9 @@ ${chunk.text}`;
         analysisDir,
         command: settings.command || DEFAULT_SETTINGS.codexDeepAnalysis.command,
         profile: settings.profile,
-        model: settings.model,
+        model: settings.model || DEFAULT_SETTINGS.codexDeepAnalysis.model,
+        reasoningEffort: settings.reasoningEffort || DEFAULT_SETTINGS.codexDeepAnalysis.reasoningEffort,
+        verbosity: settings.verbosity || DEFAULT_SETTINGS.codexDeepAnalysis.verbosity,
         prompt: buildCodexDeepAnalysisPrompt()
       });
       const runningMessage = `Codex \u6B63\u5728\u9605\u8BFB ${papers.length} \u7BC7\u8BBA\u6587\u2026`;
@@ -2570,6 +3177,7 @@ ${chunk.text}`;
         setBubbleText(loadingBubble, "Codex \u6DF1\u5EA6\u5206\u6790\u5DF2\u505C\u6B62\u3002");
         (_d = this.multiPaperStatusEl) == null ? void 0 : _d.setText("Codex \u6DF1\u5EA6\u5206\u6790\u5DF2\u505C\u6B62\u3002");
       } else if (isCodexUnavailableError(error)) {
+        this.setAssistantBubbleMeta(loadingBubble, "PDF Chat API", this.codexMetaText(true));
         setBubbleText(loadingBubble, "Codex CLI \u4E0D\u53EF\u7528\uFF0C\u6B63\u5728\u6539\u7528\u5F53\u524D\u6A21\u578B\u57FA\u4E8E\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u56DE\u7B54\u2026");
         (_e = this.multiPaperStatusEl) == null ? void 0 : _e.setText("Codex \u4E0D\u53EF\u7528\uFF0C\u6539\u7528\u5F53\u524D\u6A21\u578B\u56DE\u7B54\u3002");
         try {
@@ -2777,9 +3385,12 @@ ${chunk.text}`;
       new import_obsidian3.Notice("\u4E0A\u4E00\u4E2A\u95EE\u9898\u8FD8\u5728\u751F\u6210\u4E2D,\u8BF7\u7A0D\u5019\u6216\u70B9\u51FB\u505C\u6B62");
       return;
     }
-    const codexSlashQuestion = this.codexSlashQuestion(question);
-    if (codexSlashQuestion !== null) {
-      await this.runCodexDeepAnalysis(codexSlashQuestion);
+    if (!usingOverride) this.rememberPromptHistory(question);
+    if (await this.handleSlashCommand(question, usingOverride)) {
+      return;
+    }
+    if (!usingOverride && this.runtimeMode === "codex") {
+      await this.runCodexDeepAnalysis(question);
       return;
     }
     if (this.activeComposerKind === "translate" && this.translateTranscript.length) {
@@ -2901,17 +3512,21 @@ ${c.text}`).join("\n\n---\n\n");
     const bubble = this.historyEl.createDiv({ cls: `pdf-chat-bubble ${role}` });
     const compatibleBubble = bubble;
     if (typeof compatibleBubble.setAttr === "function") {
-      compatibleBubble.setAttr("aria-label", role === "user" ? "\u4F60\u7684\u6D88\u606F" : "PDF Chat \u7684\u6D88\u606F");
+      compatibleBubble.setAttr("aria-label", role === "user" ? "\u4F60\u7684\u6D88\u606F" : `${opts.assistantAuthor || "PDF Chat"} \u7684\u6D88\u606F`);
     } else if (typeof compatibleBubble.setAttribute === "function") {
-      compatibleBubble.setAttribute("aria-label", role === "user" ? "\u4F60\u7684\u6D88\u606F" : "PDF Chat \u7684\u6D88\u606F");
+      compatibleBubble.setAttribute("aria-label", role === "user" ? "\u4F60\u7684\u6D88\u606F" : `${opts.assistantAuthor || "PDF Chat"} \u7684\u6D88\u606F`);
     }
     if (opts && opts.loading) bubble.addClass("is-loading");
+    if (opts.assistantClass) bubble.addClass(opts.assistantClass);
     if (!canCreateBubbleChildren(bubble)) {
       setBubbleText(bubble, text);
     } else if (role === "assistant") {
       const meta = createBubbleDiv(bubble, { cls: "pdf-chat-message-meta" });
-      meta.createEl("span", { text: "PDF Chat", cls: "pdf-chat-message-author" });
-      meta.createEl("span", { text: "\u57FA\u4E8E\u5F53\u524D\u8BBA\u6587\u4E0A\u4E0B\u6587", cls: "pdf-chat-message-context" });
+      meta.createEl("span", { text: opts.assistantAuthor || "PDF Chat", cls: "pdf-chat-message-author" });
+      meta.createEl("span", {
+        text: opts.assistantContext || "\u57FA\u4E8E\u5F53\u524D\u8BBA\u6587\u4E0A\u4E0B\u6587",
+        cls: "pdf-chat-message-context"
+      });
       bubble.pdfChatContentEl = createBubbleDiv(bubble, { cls: "pdf-chat-message-content" });
       setBubbleText(bubble, text);
     } else {
@@ -2963,7 +3578,7 @@ function readSelection(doc) {
   const rectangles = Array.from(range.getClientRects());
   const rect = rectangles.length ? rectangles[rectangles.length - 1] : range.getBoundingClientRect();
   if (!rect) return null;
-  return { text, rect };
+  return { selection, snapshot: { text, rect } };
 }
 function clamp(value, minimum, maximum) {
   return Math.min(Math.max(value, minimum), Math.max(minimum, maximum));
@@ -3034,14 +3649,14 @@ var QuickTranslateMarker = class {
       this.hide();
       return;
     }
-    const snapshot = readSelection(doc);
-    if (!snapshot) {
+    const selectionState = readSelection(doc);
+    if (!selectionState || this.dependencies.isSelectionInsideActivePdf && !this.dependencies.isSelectionInsideActivePdf(selectionState.selection, doc)) {
       this.hide();
       return;
     }
     const marker = this.ensureMarker(doc);
     marker.hidden = false;
-    this.position(marker, doc, snapshot.rect);
+    this.position(marker, doc, selectionState.snapshot.rect);
   }
   ensureMarker(doc) {
     var _a;
@@ -3067,16 +3682,16 @@ var QuickTranslateMarker = class {
     return marker;
   }
   openCurrentSelection(doc) {
-    const snapshot = readSelection(doc);
+    const selectionState = readSelection(doc);
     const file = this.dependencies.getActivePdfFile();
-    if (!this.dependencies.isEnabled() || !snapshot || !file) {
+    if (!this.dependencies.isEnabled() || !selectionState || !file || this.dependencies.isSelectionInsideActivePdf && !this.dependencies.isSelectionInsideActivePdf(selectionState.selection, doc)) {
       this.hide();
       return;
     }
     this.hide();
     this.dependencies.openModal({
       file,
-      selectedText: snapshot.text,
+      selectedText: selectionState.snapshot.text,
       startFresh: true,
       autoTranslateOnOpen: true
     });
@@ -3100,6 +3715,48 @@ var QuickTranslateMarker = class {
 };
 
 // src/settings.ts
+function normalizePromptHistory(value) {
+  if (!Array.isArray(value)) return [];
+  const result = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const text = item.trim();
+    if (!text || result[result.length - 1] === text) continue;
+    result.push(text);
+  }
+  return result.slice(-100);
+}
+function normalizeActiveSessionIds(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const normalized = {};
+  for (const [key, id] of Object.entries(value)) {
+    if (typeof id === "string" && key.trim() && id.trim()) normalized[key] = id.trim();
+  }
+  return normalized;
+}
+function normalizeReasoningEffort2(value) {
+  return value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" ? value : DEFAULT_SETTINGS.codexDeepAnalysis.reasoningEffort;
+}
+function normalizeVerbosity(value) {
+  return value === "low" || value === "medium" || value === "high" ? value : DEFAULT_SETTINGS.codexDeepAnalysis.verbosity;
+}
+function legacySessionFromHistory(key, history) {
+  const messages = normalizeConversationMessages(history.messages);
+  if (!messages.length) return null;
+  const id = `legacy-${stableConversationHash(key)}`;
+  const timestamp = typeof history.updatedAt === "number" && Number.isFinite(history.updatedAt) ? history.updatedAt : 0;
+  return {
+    version: 1,
+    id,
+    conversationKey: key,
+    title: key.replace(/^pdf:/, ""),
+    mode: "chat",
+    messages,
+    referencedPdfPaths: [],
+    createdAt: timestamp,
+    updatedAt: timestamp
+  };
+}
 function normalizeRagChunkSettings(chunkSize, chunkOverlap) {
   const ragChunkSize = typeof chunkSize === "number" && Number.isInteger(chunkSize) && chunkSize > 0 ? chunkSize : DEFAULT_SETTINGS.ragChunkSize;
   const fallbackOverlap = Math.min(DEFAULT_SETTINGS.ragChunkOverlap, ragChunkSize - 1);
@@ -3114,12 +3771,24 @@ function migrateSettings(savedValue, now = Date.now) {
   var _a, _b;
   const saved = savedValue && typeof savedValue === "object" && !Array.isArray(savedValue) ? savedValue : null;
   const settings = Object.assign({}, DEFAULT_SETTINGS, saved);
+  let needsSave = false;
   settings.models = saved && Array.isArray(saved.models) && saved.models.length ? saved.models.map((model) => ({ ...model })) : DEFAULT_SETTINGS.models.map((model) => ({ ...model }));
   settings.promptPresets = saved && Array.isArray(saved.promptPresets) && saved.promptPresets.length ? saved.promptPresets.map((preset) => ({ ...preset })) : DEFAULT_SETTINGS.promptPresets.map((preset) => ({ ...preset }));
   settings.docSummaries = saved && saved.docSummaries && typeof saved.docSummaries === "object" ? { ...saved.docSummaries } : {};
   settings.docChunks = saved && saved.docChunks && typeof saved.docChunks === "object" ? { ...saved.docChunks } : {};
   settings.conversationHistories = normalizeConversationHistories(saved && saved.conversationHistories);
-  let needsSave = false;
+  settings.conversationSessions = normalizeConversationSessions(saved && saved.conversationSessions);
+  settings.activeConversationSessionIds = normalizeActiveSessionIds(saved && saved.activeConversationSessionIds);
+  settings.promptHistory = normalizePromptHistory(saved && saved.promptHistory);
+  for (const [key, history] of Object.entries(settings.conversationHistories)) {
+    const hasSession = Object.values(settings.conversationSessions).some((session2) => session2.conversationKey === key);
+    if (hasSession) continue;
+    const session = legacySessionFromHistory(key, history);
+    if (!session) continue;
+    settings.conversationSessions[session.id] = session;
+    settings.activeConversationSessionIds[key] = session.id;
+    needsSave = true;
+  }
   const normalizedRag = normalizeRagChunkSettings(settings.ragChunkSize, settings.ragChunkOverlap);
   settings.ragChunkSize = normalizedRag.ragChunkSize;
   settings.ragChunkOverlap = normalizedRag.ragChunkOverlap;
@@ -3154,7 +3823,16 @@ function migrateSettings(savedValue, now = Date.now) {
     enabled: savedCodex.enabled === true,
     command: typeof savedCodex.command === "string" && savedCodex.command.trim() ? savedCodex.command.trim() : DEFAULT_SETTINGS.codexDeepAnalysis.command,
     profile: typeof savedCodex.profile === "string" ? savedCodex.profile.trim() : "",
-    model: typeof savedCodex.model === "string" ? savedCodex.model.trim() : "",
+    model: typeof savedCodex.model === "string" && savedCodex.model.trim() ? savedCodex.model.trim() : DEFAULT_SETTINGS.codexDeepAnalysis.model,
+    reasoningEffort: normalizeReasoningEffort2(savedCodex.reasoningEffort),
+    verbosity: normalizeVerbosity(savedCodex.verbosity),
+    modelPresets: Array.isArray(savedCodex.modelPresets) && savedCodex.modelPresets.length ? savedCodex.modelPresets.filter(
+      (preset) => !!preset && typeof preset === "object" && typeof preset.model === "string" && !!preset.model.trim()
+    ).map((preset) => ({
+      model: preset.model.trim(),
+      reasoningEffort: normalizeReasoningEffort2(preset.reasoningEffort),
+      label: typeof preset.label === "string" && preset.label.trim() ? preset.label.trim() : `${preset.model.trim()} \xB7 ${normalizeReasoningEffort2(preset.reasoningEffort)}`
+    })) : DEFAULT_SETTINGS.codexDeepAnalysis.modelPresets.map((preset) => ({ ...preset })),
     timeoutMs: typeof savedCodex.timeoutMs === "number" && Number.isFinite(savedCodex.timeoutMs) && savedCodex.timeoutMs >= 3e4 ? Math.floor(savedCodex.timeoutMs) : DEFAULT_SETTINGS.codexDeepAnalysis.timeoutMs,
     keepTempFiles: savedCodex.keepTempFiles === true
   };
@@ -3535,12 +4213,28 @@ var PDFChatSettingTab = class extends import_obsidian4.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian4.Setting(containerEl).setName("Codex model").setDesc("\u53EF\u9009\uFF1B\u5BF9\u5E94 codex exec --model\u3002\u7559\u7A7A\u5219\u4F7F\u7528 Codex \u9ED8\u8BA4\u6A21\u578B\u3002").addText(
+    new import_obsidian4.Setting(containerEl).setName("Codex model").setDesc("\u5BF9\u5E94 codex exec --model\u3002\u9ED8\u8BA4 gpt-5.6-sol\uFF1B\u4E5F\u53EF\u4EE5\u5728\u804A\u5929\u6846\u7528 /model \u5207\u6362\u3002").addText(
       (text) => text.setValue(this.plugin.settings.codexDeepAnalysis.model).onChange(async (value) => {
-        this.plugin.settings.codexDeepAnalysis.model = value.trim();
+        this.plugin.settings.codexDeepAnalysis.model = value.trim() || DEFAULT_SETTINGS.codexDeepAnalysis.model;
         await this.plugin.saveSettings();
       })
     );
+    new import_obsidian4.Setting(containerEl).setName("Codex reasoning effort").setDesc("\u5BF9\u5E94 -c model_reasoning_effort\u3002\u9ED8\u8BA4 xhigh\uFF1B\u5982\u679C\u8D26\u6237\u6216\u6A21\u578B\u4E0D\u652F\u6301\uFF0C\u53EF\u964D\u5230 high/medium\u3002").addDropdown((dropdown) => {
+      for (const effort of ["minimal", "low", "medium", "high", "xhigh"]) {
+        dropdown.addOption(effort, effort);
+      }
+      dropdown.setValue(this.plugin.settings.codexDeepAnalysis.reasoningEffort).onChange(async (value) => {
+        this.plugin.settings.codexDeepAnalysis.reasoningEffort = value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" ? value : DEFAULT_SETTINGS.codexDeepAnalysis.reasoningEffort;
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian4.Setting(containerEl).setName("Codex verbosity").setDesc("\u5BF9\u5E94 -c model_verbosity\u3002\u9ED8\u8BA4 high\uFF0C\u8BA9\u6DF1\u5EA6\u9605\u8BFB\u8F93\u51FA\u66F4\u5145\u5206\u3002").addDropdown((dropdown) => {
+      for (const verbosity of ["low", "medium", "high"]) dropdown.addOption(verbosity, verbosity);
+      dropdown.setValue(this.plugin.settings.codexDeepAnalysis.verbosity).onChange(async (value) => {
+        this.plugin.settings.codexDeepAnalysis.verbosity = value === "low" || value === "medium" || value === "high" ? value : DEFAULT_SETTINGS.codexDeepAnalysis.verbosity;
+        await this.plugin.saveSettings();
+      });
+    });
     new import_obsidian4.Setting(containerEl).setName("Codex \u8D85\u65F6\u6BEB\u79D2").setDesc("\u9ED8\u8BA4 600000\uFF0C\u5373 10 \u5206\u949F\uFF1B\u8D85\u65F6\u540E\u4F1A\u7EC8\u6B62 Codex \u8FDB\u7A0B\u3002").addText(
       (text) => text.setValue(String(this.plugin.settings.codexDeepAnalysis.timeoutMs)).onChange(async (value) => {
         const parsed = Number(value.trim());
@@ -3599,6 +4293,33 @@ var PDFChatSettingTab = class extends import_obsidian4.PluginSettingTab {
 };
 
 // src/main.ts
+function nodeInsideElement(container, node) {
+  if (!node) return false;
+  const candidate = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+  return !!candidate && container.contains(candidate);
+}
+function getActivePdfViewContainer(app) {
+  var _a;
+  const leaf = (_a = app.workspace) == null ? void 0 : _a.activeLeaf;
+  const view = leaf == null ? void 0 : leaf.view;
+  if (!view || typeof view.getViewType !== "function" || view.getViewType() !== "pdf") return null;
+  return view.containerEl || view.contentEl || (leaf == null ? void 0 : leaf.containerEl) || null;
+}
+function isSelectionInsideActivePdfView(app, selection, doc) {
+  if (!getActivePdfFile(app)) return false;
+  const container = getActivePdfViewContainer(app);
+  if (!container || container.ownerDocument !== doc) return false;
+  const anchorNode = selection.anchorNode;
+  const focusNode = selection.focusNode;
+  if (anchorNode || focusNode) {
+    return nodeInsideElement(container, anchorNode) && nodeInsideElement(container, focusNode);
+  }
+  if (selection.rangeCount > 0) {
+    const ancestor = selection.getRangeAt(selection.rangeCount - 1).commonAncestorContainer;
+    return nodeInsideElement(container, ancestor);
+  }
+  return false;
+}
 var PDFChatPlugin = class extends import_obsidian5.Plugin {
   constructor() {
     super(...arguments);
@@ -3637,7 +4358,13 @@ var PDFChatPlugin = class extends import_obsidian5.Plugin {
         getKey: (file, selectedText, kind) => getConversationKey(file, selectedText, kind),
         get: (key) => this.conversationStore.get(key),
         save: (key, messages) => this.conversationStore.save(key, messages),
-        clear: (key) => this.conversationStore.clear(key)
+        clear: (key) => this.conversationStore.clear(key),
+        getActiveSession: (key) => this.conversationStore.getActiveSession(key),
+        ensureSession: (key, metadata) => this.conversationStore.ensureSession(key, metadata),
+        startSession: (key, metadata) => this.conversationStore.startSession(key, metadata),
+        saveActiveSession: (key, messages, metadata) => this.conversationStore.saveActiveSession(key, messages, metadata),
+        resumeSession: (id) => this.conversationStore.resumeSession(id),
+        listSessions: (query) => this.conversationStore.listSessions(query)
       },
       papers: {
         getOrCreateDocSummary: (file, forceRefresh) => this.paperContextService.getOrCreateDocSummary(file, forceRefresh),
@@ -3672,6 +4399,7 @@ var PDFChatPlugin = class extends import_obsidian5.Plugin {
     this.quickTranslateMarker = new QuickTranslateMarker({
       isEnabled: () => this.settings.quickTranslateMarkerEnabled,
       getActivePdfFile: () => getActivePdfFile(this.app),
+      isSelectionInsideActivePdf: (selection, doc) => isSelectionInsideActivePdfView(this.app, selection, doc),
       openModal: (request) => this.openQuickTranslateModal(request)
     });
     if (typeof document !== "undefined") this.quickTranslateMarker.attach(document);

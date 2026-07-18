@@ -415,13 +415,42 @@ export class PDFChatSettingTab extends PluginSettingTab {
       );
     new Setting(containerEl)
       .setName("Codex model")
-      .setDesc("可选；对应 codex exec --model。留空则使用 Codex 默认模型。")
+      .setDesc("对应 codex exec --model。默认 gpt-5.6-sol；也可以在聊天框用 /model 切换。")
       .addText((text) =>
         text.setValue(this.plugin.settings.codexDeepAnalysis.model).onChange(async (value) => {
-          this.plugin.settings.codexDeepAnalysis.model = value.trim();
+          this.plugin.settings.codexDeepAnalysis.model =
+            value.trim() || DEFAULT_SETTINGS.codexDeepAnalysis.model;
           await this.plugin.saveSettings();
         })
       );
+    new Setting(containerEl)
+      .setName("Codex reasoning effort")
+      .setDesc("对应 -c model_reasoning_effort。默认 xhigh；如果账户或模型不支持，可降到 high/medium。")
+      .addDropdown((dropdown) => {
+        for (const effort of ["minimal", "low", "medium", "high", "xhigh"]) {
+          dropdown.addOption(effort, effort);
+        }
+        dropdown.setValue(this.plugin.settings.codexDeepAnalysis.reasoningEffort).onChange(async (value) => {
+          this.plugin.settings.codexDeepAnalysis.reasoningEffort =
+            value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh"
+              ? value
+              : DEFAULT_SETTINGS.codexDeepAnalysis.reasoningEffort;
+          await this.plugin.saveSettings();
+        });
+      });
+    new Setting(containerEl)
+      .setName("Codex verbosity")
+      .setDesc("对应 -c model_verbosity。默认 high，让深度阅读输出更充分。")
+      .addDropdown((dropdown) => {
+        for (const verbosity of ["low", "medium", "high"]) dropdown.addOption(verbosity, verbosity);
+        dropdown.setValue(this.plugin.settings.codexDeepAnalysis.verbosity).onChange(async (value) => {
+          this.plugin.settings.codexDeepAnalysis.verbosity =
+            value === "low" || value === "medium" || value === "high"
+              ? value
+              : DEFAULT_SETTINGS.codexDeepAnalysis.verbosity;
+          await this.plugin.saveSettings();
+        });
+      });
     new Setting(containerEl)
       .setName("Codex 超时毫秒")
       .setDesc("默认 600000，即 10 分钟；超时后会终止 Codex 进程。")

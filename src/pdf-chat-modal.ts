@@ -33,7 +33,10 @@ import {
   labelControl,
 } from "./modal-ui";
 import type {
+  CodexReasoningEffort,
+  CodexVerbosity,
   ConversationMessage,
+  ConversationSession,
   DocChunksEntry,
   DocSummaryEntry,
   LlmMessage,
@@ -51,9 +54,13 @@ interface SubmitOptions {
 interface BubbleOptions {
   loading?: boolean;
   skipScroll?: boolean;
+  assistantAuthor?: string;
+  assistantContext?: string;
+  assistantClass?: string;
 }
 
 type ModalConversationKind = "chat" | "translate";
+type ModalRuntimeMode = "api" | "codex";
 
 interface ComposerMentionRange {
   start: number;
@@ -111,6 +118,15 @@ function getBubbleContentEl(bubble: HTMLDivElement): HTMLElement {
 
 function setBubbleText(bubble: HTMLDivElement, text: string): void {
   getBubbleContentEl(bubble).setText(text);
+}
+
+function setTextByClass(root: HTMLElement, className: string, text: string): void {
+  const found = root.getElementsByClassName
+    ? root.getElementsByClassName(className)[0]
+    : null;
+  const compatible = found as (Element & { setText?: (value: string) => void; textContent?: string }) | undefined;
+  if (typeof compatible?.setText === "function") compatible.setText(text);
+  else if (compatible) compatible.textContent = text;
 }
 
 function createBubbleDiv(parent: HTMLElement, options: { cls?: string; text?: string }): HTMLElement {
@@ -174,12 +190,16 @@ export class PDFChatModal extends Modal {
   translateTranscript: ConversationMessage[] = [];
   messages: LlmMessage[];
   activeComposerKind: ModalConversationKind = "chat";
+  runtimeMode: ModalRuntimeMode = "api";
+  currentSessionId?: string;
   isSending = false;
   abortController: AbortController | null = null;
+  private promptHistoryCursor: number | null = null;
 
   zoomOutBtn!: HTMLButtonElement;
   zoomLabel!: HTMLButtonElement;
   zoomInBtn!: HTMLButtonElement;
+  modeBadgeEl?: HTMLElement;
   modelSelect!: HTMLSelectElement;
   modeSelect!: HTMLSelectElement;
   summaryCheckbox?: HTMLInputElement;
@@ -197,6 +217,7 @@ export class PDFChatModal extends Modal {
   composerCardEl?: HTMLElement;
   composerMentionSuggestionsEl?: HTMLElement;
   composerMentionRange?: ComposerMentionRange;
+  commandMenuEl?: HTMLElement;
   inputEl!: HTMLTextAreaElement;
   sendBtn!: HTMLButtonElement;
 
@@ -257,7 +278,26 @@ export class PDFChatModal extends Modal {
     // 旧的这份记录就会被 recordTranscriptTurn 整份替换掉(每个 key 只保留一份最近对话)。
     // 如果只是打开看看什么都没问就关闭,onClose 里的保存会因为 transcript 仍是空数组而跳过,
     // 不会误删旧记录。
-    const existingTranscript = this.services.conversations.get(this.conversationKey);
+    const activeSession = this.startFresh
+      ? null
+      : this.services.conversations.getActiveSession?.(this.conversationKey) || null;
+    this.currentSessionId = activeSession?.id;
+    if (activeSession?.mode === "codex") {
+      this.runtimeMode = "codex";
+      if (activeSession.codex) {
+        this.plugin.settings.codexDeepAnalysis.model = activeSession.codex.model;
+        this.plugin.settings.codexDeepAnalysis.reasoningEffort = activeSession.codex.reasoningEffort;
+        if (activeSession.codex.profile !== undefined) {
+          this.plugin.settings.codexDeepAnalysis.profile = activeSession.codex.profile || "";
+        }
+      }
+    }
+    if (activeSession?.referencedPdfPaths?.length) {
+      this.referencedPdfFiles = activeSession.referencedPdfPaths
+        .map((path) => this.findPdfFileByPath(path))
+        .filter((file): file is TFile => !!file);
+    }
+    const existingTranscript = activeSession?.messages || this.services.conversations.get(this.conversationKey);
     this.hadExistingHistory = existingTranscript.length > 0;
     this.transcript = this.startFresh ? [] : existingTranscript;
     this.messages = [
@@ -294,6 +334,7 @@ export class PDFChatModal extends Modal {
       presets: this.plugin.settings.promptPresets,
       currentPresetId: this.currentPresetId,
     });
+    this.modeBadgeEl = header.modeBadge;
     this.modelSelect = header.modelSelect;
     this.modeSelect = header.modeSelect;
     this.zoomOutBtn = header.zoomOutButton;
@@ -311,6 +352,7 @@ export class PDFChatModal extends Modal {
     );
     this.zoomLabel.addEventListener("click", () => this.applyFontScale(1));
     this.applyFontScale(this.plugin.settings.fontScale || 1);
+    this.updateRuntimeModeUi();
     const contextPanel = buildContextPanel(contentEl, {
       selectionText: this.contextText,
       hasPdf: !!this.pdfFile,
@@ -339,6 +381,7 @@ export class PDFChatModal extends Modal {
       }
     });
     this.inputEl.addEventListener("keydown", (evt) => {
+      if (this.handlePromptHistoryKey(evt)) return;
       if (evt.key === "Enter" && !evt.shiftKey) {
         evt.preventDefault();
         submit();
@@ -366,6 +409,389 @@ export class PDFChatModal extends Modal {
   private getDocumentName(): string {
     if (!this.pdfFile) return "选区对话";
     return this.pdfFile.name || this.pdfFile.path.split(/[\\/]/).pop() || "选区对话";
+  }
+
+  private getCodexModel(): string {
+    return (
+      this.plugin.settings.codexDeepAnalysis.model ||
+      DEFAULT_SETTINGS.codexDeepAnalysis.model
+    );
+  }
+
+  private getCodexReasoningEffort(): CodexReasoningEffort {
+    return (
+      this.plugin.settings.codexDeepAnalysis.reasoningEffort ||
+      DEFAULT_SETTINGS.codexDeepAnalysis.reasoningEffort
+    );
+  }
+
+  private getCodexVerbosity(): CodexVerbosity {
+    return (
+      this.plugin.settings.codexDeepAnalysis.verbosity ||
+      DEFAULT_SETTINGS.codexDeepAnalysis.verbosity
+    );
+  }
+
+  private codexMetaText(fallback = false): string {
+    if (fallback) return "Codex CLI 不可用或失败，已改用当前 API 模型";
+    const profile = this.plugin.settings.codexDeepAnalysis.profile || "default profile";
+    return `requested model: ${this.getCodexModel()} · effort: ${this.getCodexReasoningEffort()} · profile: ${profile}`;
+  }
+
+  private updateRuntimeModeUi(): void {
+    const codexMode = this.runtimeMode === "codex";
+    this.contentEl.toggleClass("is-codex-mode", codexMode);
+    this.modalEl.toggleClass("is-codex-mode", codexMode);
+    if (this.modeBadgeEl) {
+      this.modeBadgeEl.setText(
+        codexMode
+          ? `CODEX MODE · ${this.getCodexModel()} · ${this.getCodexReasoningEffort()}`
+          : "API MODE"
+      );
+    }
+    this.updateComposerContextStatus();
+  }
+
+  private enterCodexMode(): void {
+    this.runtimeMode = "codex";
+    this.activeComposerKind = "chat";
+    this.plugin.settings.codexDeepAnalysis.enabled = true;
+    this.saveSettingsInBackground();
+    this.updateRuntimeModeUi();
+  }
+
+  private exitCodexMode(): void {
+    this.runtimeMode = "api";
+    this.updateRuntimeModeUi();
+  }
+
+  private clearComposerInput(): void {
+    if (!this.inputEl) return;
+    this.inputEl.value = "";
+    if (this.inputEl.style) this.inputEl.style.height = "";
+  }
+
+  private rememberPromptHistory(raw: string): void {
+    const text = raw.trim();
+    if (!text) return;
+    const history = Array.isArray(this.plugin.settings.promptHistory)
+      ? [...this.plugin.settings.promptHistory]
+      : [];
+    if (history[history.length - 1] !== text) history.push(text);
+    this.plugin.settings.promptHistory = history.slice(-100);
+    this.promptHistoryCursor = null;
+    this.saveSettingsInBackground();
+  }
+
+  private saveSettingsInBackground(): void {
+    Promise.resolve(this.plugin.saveSettings()).catch(() => undefined);
+  }
+
+  private handlePromptHistoryKey(event: KeyboardEvent): boolean {
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return false;
+    if (this.composerMentionSuggestionsEl) return false;
+    const history = this.plugin.settings.promptHistory || [];
+    if (!history.length) return false;
+    event.preventDefault();
+    if (event.key === "ArrowUp") {
+      const next = this.promptHistoryCursor === null ? history.length - 1 : Math.max(0, this.promptHistoryCursor - 1);
+      this.promptHistoryCursor = next;
+      this.inputEl.value = history[next] || "";
+    } else {
+      if (this.promptHistoryCursor === null) return true;
+      const next = this.promptHistoryCursor + 1;
+      if (next >= history.length) {
+        this.promptHistoryCursor = null;
+        this.inputEl.value = "";
+      } else {
+        this.promptHistoryCursor = next;
+        this.inputEl.value = history[next] || "";
+      }
+    }
+    return true;
+  }
+
+  private hideCommandMenu(): void {
+    const removable = this.commandMenuEl as (HTMLElement & { remove?: () => void }) | undefined;
+    if (typeof removable?.remove === "function") {
+      removable.remove();
+    } else if (this.commandMenuEl?.parentElement) {
+      this.commandMenuEl.parentElement.removeChild(this.commandMenuEl);
+    }
+    this.commandMenuEl = undefined;
+  }
+
+  private showCommandMenu(
+    label: string,
+    options: Array<{ label: string; detail?: string; run: () => void | Promise<void> }>
+  ): void {
+    this.hideCommandMenu();
+    const parent = this.composerCardEl || this.contentEl;
+    const menu = parent.createDiv({
+      cls: "pdf-chat-command-menu",
+      attr: { role: "listbox", "aria-label": label },
+    });
+    if (!options.length) {
+      menu.createDiv({ cls: "pdf-chat-command-empty", text: "没有可用选项" });
+      this.commandMenuEl = menu;
+      return;
+    }
+    for (const option of options) {
+      const button = menu.createEl("button", {
+        cls: "pdf-chat-command-option",
+        attr: { type: "button", role: "option" },
+      });
+      button.createEl("span", { text: option.label, cls: "pdf-chat-command-option-label" });
+      if (option.detail) {
+        button.createEl("span", { text: option.detail, cls: "pdf-chat-command-option-detail" });
+      }
+      labelControl(button, option.label);
+      button.addEventListener("click", () => {
+        this.hideCommandMenu();
+        void option.run();
+      });
+    }
+    this.commandMenuEl = menu;
+  }
+
+  private applyCodexModel(model: string, reasoningEffort: string): boolean {
+    const allowed = new Set(["minimal", "low", "medium", "high", "xhigh"]);
+    const normalizedModel = model.trim();
+    const normalizedEffort = reasoningEffort.trim();
+    if (!normalizedModel || !allowed.has(normalizedEffort)) {
+      new Notice("Codex 模型格式无效，请使用 /model <model> <minimal|low|medium|high|xhigh>");
+      return false;
+    }
+    this.plugin.settings.codexDeepAnalysis.model = normalizedModel;
+    this.plugin.settings.codexDeepAnalysis.reasoningEffort = normalizedEffort as CodexReasoningEffort;
+    this.saveSettingsInBackground();
+    this.updateRuntimeModeUi();
+    new Notice(`Codex 模型已切换到 ${normalizedModel} · ${normalizedEffort}`);
+    return true;
+  }
+
+  private showModelMenu(): void {
+    if (this.runtimeMode === "codex") {
+      const presets = this.plugin.settings.codexDeepAnalysis.modelPresets?.length
+        ? this.plugin.settings.codexDeepAnalysis.modelPresets
+        : DEFAULT_SETTINGS.codexDeepAnalysis.modelPresets;
+      this.showCommandMenu(
+        "选择 Codex 模型",
+        presets.map((preset) => ({
+          label: preset.label || `${preset.model} · ${preset.reasoningEffort}`,
+          detail: "Codex CLI",
+          run: () => {
+            this.applyCodexModel(preset.model, preset.reasoningEffort);
+          },
+        }))
+      );
+      return;
+    }
+    this.showCommandMenu(
+      "选择 PDF Chat API 模型",
+      this.plugin.settings.models.map((model) => ({
+        label: model.name || model.id,
+        detail: model.model || model.id,
+        run: () => this.applyModel(model.id),
+      }))
+    );
+  }
+
+  private applyModelCommand(args: string): void {
+    const trimmed = args.trim();
+    if (!trimmed) {
+      this.showModelMenu();
+      return;
+    }
+    if (this.runtimeMode === "codex") {
+      const [model, effort = this.getCodexReasoningEffort()] = trimmed.split(/\s+/);
+      this.applyCodexModel(model, effort);
+      return;
+    }
+    const lower = trimmed.toLowerCase();
+    const match = this.plugin.settings.models.find((model) =>
+      [model.id, model.name, model.model].some((value) => String(value || "").toLowerCase() === lower)
+    );
+    if (!match) {
+      new Notice("没有找到这个 API 模型，输入 /model 可从列表选择。");
+      return;
+    }
+    this.applyModel(match.id);
+  }
+
+  private sessionMetadata(title?: string): {
+    title: string;
+    mode: "chat" | "codex";
+    referencedPdfPaths: string[];
+    codex?: ConversationSession["codex"];
+  } {
+    const fallbackTitle = title || this.transcript.find((message) => message.role === "user")?.content || this.getDocumentName();
+    return {
+      title: fallbackTitle.slice(0, 80),
+      mode: this.runtimeMode === "codex" ? "codex" : "chat",
+      referencedPdfPaths: this.referencedPdfFiles.map((file) => file.path).filter(Boolean),
+      codex:
+        this.runtimeMode === "codex"
+          ? {
+              model: this.getCodexModel(),
+              reasoningEffort: this.getCodexReasoningEffort(),
+              profile: this.plugin.settings.codexDeepAnalysis.profile || "",
+            }
+          : undefined,
+    };
+  }
+
+  private async startNewSession(): Promise<void> {
+    const session = this.services.conversations.startSession?.(
+      this.conversationKey,
+      this.sessionMetadata(this.getDocumentName())
+    );
+    this.currentSessionId = session?.id;
+    this.transcript = [];
+    this.messages = [this.buildSystemMessage()];
+    this.activeComposerKind = "chat";
+    this.fullTextAttached = false;
+    this.historyEl.empty();
+    this.hideFollowupSuggestions();
+    this.emptyStateEl = undefined;
+    this.showEmptyState();
+    await this.plugin.saveSettings();
+    new Notice("已新建讨论，旧讨论可用 /resume 找回。");
+  }
+
+  private async resumeConversationSession(sessionId: string): Promise<void> {
+    const session = this.services.conversations.resumeSession?.(sessionId);
+    if (!session) {
+      new Notice("没有找到这段历史讨论。");
+      return;
+    }
+    this.currentSessionId = session.id;
+    this.runtimeMode = session.mode === "codex" ? "codex" : "api";
+    if (session.codex) {
+      this.plugin.settings.codexDeepAnalysis.model = session.codex.model;
+      this.plugin.settings.codexDeepAnalysis.reasoningEffort = session.codex.reasoningEffort;
+      this.plugin.settings.codexDeepAnalysis.profile = session.codex.profile || "";
+    }
+    this.referencedPdfFiles = (session.referencedPdfPaths || [])
+      .map((path) => this.findPdfFileByPath(path))
+      .filter((file): file is TFile => !!file);
+    this.transcript = session.messages || [];
+    this.messages = [
+      this.buildSystemMessage(),
+      ...this.transcript.map((message) => ({ role: message.role, content: message.content })),
+    ];
+    this.historyEl.empty();
+    this.emptyStateEl = undefined;
+    this.updateRuntimeModeUi();
+    await this.plugin.saveSettings();
+    await this.restoreConversationHistory();
+  }
+
+  private showResumeMenu(): void {
+    const sessions = this.services.conversations.listSessions?.("") || [];
+    const currentFirst = [...sessions].sort((left, right) => {
+      const leftCurrent = left.conversationKey === this.conversationKey ? 1 : 0;
+      const rightCurrent = right.conversationKey === this.conversationKey ? 1 : 0;
+      return rightCurrent - leftCurrent || right.updatedAt - left.updatedAt;
+    });
+    this.showCommandMenu(
+      "恢复历史讨论",
+      currentFirst.map((session) => ({
+        label: session.title || session.conversationKey,
+        detail: `${session.mode === "codex" ? "Codex" : "API"} · ${session.conversationKey}`,
+        run: () => this.resumeConversationSession(session.id),
+      }))
+    );
+  }
+
+  private showStatusMessage(): void {
+    const refs = this.referencedPdfFiles.length
+      ? this.referencedPdfFiles.map((file) => file.name || file.path).join("、")
+      : "无";
+    const lines = [
+      `当前模式：${this.runtimeMode === "codex" ? "Codex CLI" : "PDF Chat API"}`,
+      `API 模型：${this.plugin.settings.models.find((model) => model.id === this.currentModelId)?.name || this.currentModelId}`,
+      `Codex：${this.getCodexModel()} · ${this.getCodexReasoningEffort()} · ${this.plugin.settings.codexDeepAnalysis.profile || "default profile"}`,
+      `引用 PDF：${refs}`,
+      `Session：${this.currentSessionId || "未创建"}`,
+    ];
+    this.addBubble("assistant", lines.join("\n"), {
+      assistantAuthor: this.runtimeMode === "codex" ? "Codex Mode" : "PDF Chat",
+      assistantContext: "状态",
+      assistantClass: "is-status-message",
+    });
+  }
+
+  private showHelpMessage(): void {
+    this.addBubble(
+      "assistant",
+      [
+        "支持的命令：",
+        "- /codex：进入 Codex 模式",
+        "- /codex <问题>：进入 Codex 模式并立即让 Codex 读取当前/引用 PDF",
+        "- /exit：回到普通 API 聊天",
+        "- /model：选择当前模式下的模型",
+        "- /model <model> <effort>：切换 Codex 模型和推理强度",
+        "- /new：新建讨论，不删除旧讨论",
+        "- /resume：恢复历史讨论",
+        "- /status：查看当前模式、模型、引用 PDF 和 session",
+      ].join("\n"),
+      {
+        assistantAuthor: this.runtimeMode === "codex" ? "Codex Mode" : "PDF Chat",
+        assistantContext: "帮助",
+      }
+    );
+  }
+
+  private async handleSlashCommand(question: string, usingOverride: boolean): Promise<boolean> {
+    if (usingOverride || !question.startsWith("/")) return false;
+    const match = /^\/([A-Za-z][\w-]*)(?:\s+([\s\S]*))?$/.exec(question.trim());
+    if (!match) return false;
+    const command = match[1].toLowerCase();
+    const args = (match[2] || "").trim();
+    switch (command) {
+      case "codex":
+        this.enterCodexMode();
+        this.clearComposerInput();
+        if (args) await this.runCodexDeepAnalysis(args);
+        return true;
+      case "exit":
+        this.exitCodexMode();
+        this.clearComposerInput();
+        new Notice("已退出 Codex 模式，回到 PDF Chat API。");
+        return true;
+      case "status":
+        this.clearComposerInput();
+        this.showStatusMessage();
+        return true;
+      case "help":
+        this.clearComposerInput();
+        this.showHelpMessage();
+        return true;
+      case "model":
+        this.clearComposerInput();
+        this.applyModelCommand(args);
+        return true;
+      case "new":
+        this.clearComposerInput();
+        await this.startNewSession();
+        return true;
+      case "resume":
+        this.clearComposerInput();
+        this.showResumeMenu();
+        return true;
+      default:
+        if (this.runtimeMode === "codex") {
+          this.clearComposerInput();
+          this.addBubble(
+            "assistant",
+            `当前插件暂不支持 Codex TUI 命令：/${command}。输入 /help 查看可用命令。`,
+            { assistantAuthor: "Codex Mode", assistantContext: "命令未支持" }
+          );
+          return true;
+        }
+        return false;
+    }
   }
 
   private buildPaperContextControls(container: HTMLElement): void {
@@ -624,21 +1050,22 @@ export class PDFChatModal extends Modal {
 
   updateComposerContextStatus(): void {
     if (!this.composerStatusEl) return;
+    const modePrefix = this.runtimeMode === "codex" ? "CODEX MODE · " : "";
     const referenceSuffix = this.referencedPdfFiles.length
       ? ` · 已引用 ${this.referencedPdfFiles.length} 篇论文`
       : "";
     if (!this.pdfFile) {
-      this.composerStatusEl.setText("选区上下文已启用" + referenceSuffix);
+      this.composerStatusEl.setText(modePrefix + "选区上下文已启用" + referenceSuffix);
       return;
     }
     if (this.useRag && this.useFullTextMode) {
-      this.composerStatusEl.setText("全文上下文已启用" + referenceSuffix);
+      this.composerStatusEl.setText(modePrefix + "全文上下文已启用" + referenceSuffix);
     } else if (this.useRag) {
-      this.composerStatusEl.setText("RAG 检索已启用" + referenceSuffix);
+      this.composerStatusEl.setText(modePrefix + "RAG 检索已启用" + referenceSuffix);
     } else if (this.useDocSummary) {
-      this.composerStatusEl.setText("摘要背景已启用" + referenceSuffix);
+      this.composerStatusEl.setText(modePrefix + "摘要背景已启用" + referenceSuffix);
     } else {
-      this.composerStatusEl.setText("当前选区上下文已启用" + referenceSuffix);
+      this.composerStatusEl.setText(modePrefix + "当前选区上下文已启用" + referenceSuffix);
     }
   }
 
@@ -714,7 +1141,15 @@ export class PDFChatModal extends Modal {
 
   async persistConversation(): Promise<boolean> {
     try {
-      await this.services.conversations.save(this.conversationKey, this.transcript);
+      if (this.services.conversations.saveActiveSession) {
+        await this.services.conversations.saveActiveSession(
+          this.conversationKey,
+          this.transcript,
+          this.sessionMetadata()
+        );
+      } else {
+        await this.services.conversations.save(this.conversationKey, this.transcript);
+      }
       return true;
     } catch (err) {
       new Notice("保存对话失败: " + errorMessage(err));
@@ -961,6 +1396,11 @@ export class PDFChatModal extends Modal {
     return typed || "请基于当前论文和已引用论文回答我的问题。";
   }
 
+  private setAssistantBubbleMeta(bubble: HTMLDivElement, author: string, context: string): void {
+    setTextByClass(bubble, "pdf-chat-message-author", author);
+    setTextByClass(bubble, "pdf-chat-message-context", context);
+  }
+
   private multiPaperUserLabel(question: string): string {
     const refs = this.referencedPdfFiles.map((file) => file.name || file.path).join("、");
     return refs ? `多论文问题：${question}\n\n引用论文：${refs}` : `多论文问题：${question}`;
@@ -1133,10 +1573,6 @@ export class PDFChatModal extends Modal {
       new Notice("Codex 深度分析需要从 PDF 视图打开。");
       return;
     }
-    if (!this.referencedPdfFiles.length) {
-      new Notice("请先 @ 引用至少一篇其他 PDF。");
-      return;
-    }
     if (!this.plugin.settings.codexDeepAnalysis.enabled) {
       new Notice("需要先在 PDF Chat 设置中启用 Codex CLI 深度分析。");
       this.multiPaperStatusEl?.setText("Codex 深度分析尚未启用。");
@@ -1152,7 +1588,12 @@ export class PDFChatModal extends Modal {
     this.inputEl.value = "";
     if (this.inputEl.style) this.inputEl.style.height = "";
     this.setSendingState(true);
-    const loadingBubble = this.addBubble("assistant", "正在准备 Codex 多论文分析包…", { loading: true });
+    const loadingBubble = this.addBubble("assistant", "正在准备 Codex 多论文分析包…", {
+      loading: true,
+      assistantAuthor: "Codex CLI",
+      assistantContext: this.codexMetaText(),
+      assistantClass: "is-codex-response",
+    });
     this.abortController = new AbortController();
     let analysisDir = "";
 
@@ -1175,7 +1616,9 @@ export class PDFChatModal extends Modal {
         analysisDir,
         command: settings.command || DEFAULT_SETTINGS.codexDeepAnalysis.command,
         profile: settings.profile,
-        model: settings.model,
+        model: settings.model || DEFAULT_SETTINGS.codexDeepAnalysis.model,
+        reasoningEffort: settings.reasoningEffort || DEFAULT_SETTINGS.codexDeepAnalysis.reasoningEffort,
+        verbosity: settings.verbosity || DEFAULT_SETTINGS.codexDeepAnalysis.verbosity,
         prompt: buildCodexDeepAnalysisPrompt(),
       });
       const runningMessage = `Codex 正在阅读 ${papers.length} 篇论文…`;
@@ -1201,6 +1644,7 @@ export class PDFChatModal extends Modal {
         setBubbleText(loadingBubble, "Codex 深度分析已停止。");
         this.multiPaperStatusEl?.setText("Codex 深度分析已停止。");
       } else if (isCodexUnavailableError(error)) {
+        this.setAssistantBubbleMeta(loadingBubble, "PDF Chat API", this.codexMetaText(true));
         setBubbleText(loadingBubble, "Codex CLI 不可用，正在改用当前模型基于多论文上下文回答…");
         this.multiPaperStatusEl?.setText("Codex 不可用，改用当前模型回答。");
         try {
@@ -1429,9 +1873,14 @@ export class PDFChatModal extends Modal {
       return;
     }
 
-    const codexSlashQuestion = this.codexSlashQuestion(question);
-    if (codexSlashQuestion !== null) {
-      await this.runCodexDeepAnalysis(codexSlashQuestion);
+    if (!usingOverride) this.rememberPromptHistory(question);
+
+    if (await this.handleSlashCommand(question, usingOverride)) {
+      return;
+    }
+
+    if (!usingOverride && this.runtimeMode === "codex") {
+      await this.runCodexDeepAnalysis(question);
       return;
     }
 
@@ -1589,17 +2038,21 @@ export class PDFChatModal extends Modal {
       setAttr?: (name: string, value: string) => void;
     };
     if (typeof compatibleBubble.setAttr === "function") {
-      compatibleBubble.setAttr("aria-label", role === "user" ? "你的消息" : "PDF Chat 的消息");
+      compatibleBubble.setAttr("aria-label", role === "user" ? "你的消息" : `${opts.assistantAuthor || "PDF Chat"} 的消息`);
     } else if (typeof compatibleBubble.setAttribute === "function") {
-      compatibleBubble.setAttribute("aria-label", role === "user" ? "你的消息" : "PDF Chat 的消息");
+      compatibleBubble.setAttribute("aria-label", role === "user" ? "你的消息" : `${opts.assistantAuthor || "PDF Chat"} 的消息`);
     }
     if (opts && opts.loading) bubble.addClass("is-loading");
+    if (opts.assistantClass) bubble.addClass(opts.assistantClass);
     if (!canCreateBubbleChildren(bubble)) {
       setBubbleText(bubble, text);
     } else if (role === "assistant") {
       const meta = createBubbleDiv(bubble, { cls: "pdf-chat-message-meta" });
-      meta.createEl("span", { text: "PDF Chat", cls: "pdf-chat-message-author" });
-      meta.createEl("span", { text: "基于当前论文上下文", cls: "pdf-chat-message-context" });
+      meta.createEl("span", { text: opts.assistantAuthor || "PDF Chat", cls: "pdf-chat-message-author" });
+      meta.createEl("span", {
+        text: opts.assistantContext || "基于当前论文上下文",
+        cls: "pdf-chat-message-context",
+      });
       bubble.pdfChatContentEl = createBubbleDiv(bubble, { cls: "pdf-chat-message-content" });
       setBubbleText(bubble, text);
     } else {

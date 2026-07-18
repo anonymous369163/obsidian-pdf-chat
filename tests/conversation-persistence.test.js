@@ -144,6 +144,8 @@ function loadPluginModule(options = {}) {
     createCompatibilityActionRegistry: bundle.createCompatibilityActionRegistry,
     createPDFChatModalServices: bundle.createPDFChatModalServices,
     normalizeConversationHistories: bundle.normalizeConversationHistories,
+    normalizeConversationSessions: bundle.normalizeConversationSessions,
+    ConversationStore: bundle.ConversationStore,
     OpenAICompatibleTransport: bundle.OpenAICompatibleTransport,
     PDFChatModal: bundle.PDFChatModal,
   };
@@ -183,6 +185,64 @@ test("normalizes persisted histories to visible user and assistant messages", ()
       ],
     },
   });
+});
+
+test("migrates legacy conversation histories into resumable sessions without deleting old data", async () => {
+  const PluginClass = loadPluginModule();
+  const { ConversationStore } = PluginClass.__test;
+  const settings = {
+    conversationHistories: {
+      "pdf:papers/demo.pdf": {
+        version: 1,
+        updatedAt: 123,
+        messages: [
+          { role: "user", content: "Old question", status: "complete" },
+          { role: "assistant", content: "Old answer", status: "complete" },
+        ],
+      },
+    },
+    conversationSessions: {},
+    activeConversationSessionIds: {},
+  };
+  let saves = 0;
+  const store = new ConversationStore(
+    () => settings,
+    async () => {
+      saves += 1;
+    },
+    () => 456
+  );
+
+  const session = store.ensureSession("pdf:papers/demo.pdf", {
+    title: "demo.pdf",
+    mode: "codex",
+    referencedPdfPaths: ["papers/other.pdf"],
+    codex: { model: "gpt-5.6-sol", reasoningEffort: "xhigh" },
+  });
+
+  assert.equal(session.mode, "codex");
+  assert.deepEqual(plain(session.messages), [
+    { role: "user", content: "Old question", status: "complete" },
+    { role: "assistant", content: "Old answer", status: "complete" },
+  ]);
+  assert.equal(settings.conversationHistories["pdf:papers/demo.pdf"].messages[0].content, "Old question");
+  assert.equal(settings.activeConversationSessionIds["pdf:papers/demo.pdf"], session.id);
+
+  await store.saveActiveSession("pdf:papers/demo.pdf", [
+    { role: "user", content: "New", status: "complete" },
+    { role: "assistant", content: "Reply", status: "stopped" },
+  ], {
+    title: "New title",
+    mode: "codex",
+    referencedPdfPaths: ["papers/other.pdf"],
+    codex: { model: "gpt-5.6-sol", reasoningEffort: "xhigh" },
+  });
+
+  const resumed = store.resumeSession(session.id);
+  assert.equal(resumed.title, "New title");
+  assert.deepEqual(plain(resumed.messages).map((message) => message.content), ["New", "Reply"]);
+  assert.equal(settings.conversationHistories["pdf:papers/demo.pdf"].messages[0].content, "New");
+  assert.equal(saves, 1);
 });
 
 test("uses PDF paths and normalized selection hashes as conversation keys", () => {

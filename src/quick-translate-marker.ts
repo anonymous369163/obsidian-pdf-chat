@@ -12,6 +12,7 @@ export interface QuickTranslateOpenRequest {
 export interface QuickTranslateMarkerDependencies {
   isEnabled(): boolean;
   getActivePdfFile(): TFile | null;
+  isSelectionInsideActivePdf?(selection: Selection, doc: Document): boolean;
   openModal(request: QuickTranslateOpenRequest): void;
   setTimer?(callback: () => void, delay: number): unknown;
   clearTimer?(timer: unknown): void;
@@ -32,7 +33,7 @@ interface SelectionSnapshot {
 const MARKER_GAP = 8;
 const SELECTION_DEBOUNCE_MS = 150;
 
-function readSelection(doc: Document): SelectionSnapshot | null {
+function readSelection(doc: Document): { selection: Selection; snapshot: SelectionSnapshot } | null {
   const selection = doc.defaultView?.getSelection();
   if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
   const text = cleanSelectionText(selection.toString());
@@ -43,7 +44,7 @@ function readSelection(doc: Document): SelectionSnapshot | null {
     ? rectangles[rectangles.length - 1]
     : range.getBoundingClientRect();
   if (!rect) return null;
-  return { text, rect };
+  return { selection, snapshot: { text, rect } };
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {
@@ -121,14 +122,18 @@ export class QuickTranslateMarker {
       this.hide();
       return;
     }
-    const snapshot = readSelection(doc);
-    if (!snapshot) {
+    const selectionState = readSelection(doc);
+    if (
+      !selectionState ||
+      (this.dependencies.isSelectionInsideActivePdf &&
+        !this.dependencies.isSelectionInsideActivePdf(selectionState.selection, doc))
+    ) {
       this.hide();
       return;
     }
     const marker = this.ensureMarker(doc);
     marker.hidden = false;
-    this.position(marker, doc, snapshot.rect);
+    this.position(marker, doc, selectionState.snapshot.rect);
   }
 
   private ensureMarker(doc: Document): HTMLButtonElement {
@@ -155,16 +160,22 @@ export class QuickTranslateMarker {
   }
 
   private openCurrentSelection(doc: Document): void {
-    const snapshot = readSelection(doc);
+    const selectionState = readSelection(doc);
     const file = this.dependencies.getActivePdfFile();
-    if (!this.dependencies.isEnabled() || !snapshot || !file) {
+    if (
+      !this.dependencies.isEnabled() ||
+      !selectionState ||
+      !file ||
+      (this.dependencies.isSelectionInsideActivePdf &&
+        !this.dependencies.isSelectionInsideActivePdf(selectionState.selection, doc))
+    ) {
       this.hide();
       return;
     }
     this.hide();
     this.dependencies.openModal({
       file,
-      selectedText: snapshot.text,
+      selectedText: selectionState.snapshot.text,
       startFresh: true,
       autoTranslateOnOpen: true,
     });

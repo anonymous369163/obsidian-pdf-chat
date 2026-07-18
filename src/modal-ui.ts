@@ -30,6 +30,7 @@ export interface WorkbenchHeaderOptions {
 
 export interface WorkbenchHeaderElements {
   root: HTMLElement;
+  modeBadge: HTMLElement;
   primaryControls: HTMLElement;
   secondaryControls: HTMLElement;
   modelSelect: HTMLSelectElement;
@@ -52,6 +53,11 @@ export function buildWorkbenchHeader(
   identity.createEl("span", {
     text: options.filename,
     cls: "pdf-chat-document-name",
+  });
+  const modeBadge = identity.createEl("span", {
+    text: "API MODE",
+    cls: "pdf-chat-mode-badge",
+    attr: { role: "status", "aria-live": "polite" },
   });
 
   const primaryControls = root.createDiv({ cls: "pdf-chat-header-primary-controls pdf-chat-interactive" });
@@ -163,6 +169,7 @@ export function buildWorkbenchHeader(
 
   return {
     root,
+    modeBadge,
     primaryControls,
     secondaryControls,
     modelSelect,

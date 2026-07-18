@@ -37,6 +37,37 @@ export interface ConversationHistory {
   messages: ConversationMessage[];
 }
 
+export type ConversationSessionMode = "chat" | "codex";
+
+export type CodexReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
+
+export type CodexVerbosity = "low" | "medium" | "high";
+
+export interface CodexModelPreset {
+  model: string;
+  reasoningEffort: CodexReasoningEffort;
+  label: string;
+}
+
+export interface CodexSessionMetadata {
+  model: string;
+  reasoningEffort: CodexReasoningEffort;
+  profile?: string;
+}
+
+export interface ConversationSession {
+  version: 1;
+  id: string;
+  conversationKey: string;
+  title: string;
+  mode: ConversationSessionMode;
+  messages: ConversationMessage[];
+  referencedPdfPaths: string[];
+  codex?: CodexSessionMetadata;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface PromptPreset {
   id: string;
   name: string;
@@ -71,6 +102,9 @@ export interface CodexDeepAnalysisSettings {
   command: string;
   profile: string;
   model: string;
+  reasoningEffort: CodexReasoningEffort;
+  verbosity: CodexVerbosity;
+  modelPresets: CodexModelPreset[];
   timeoutMs: number;
   keepTempFiles: boolean;
 }
@@ -129,6 +163,9 @@ export interface PDFChatSettings {
   ragQueryPrompt: string;
   docChunks: Record<string, DocChunksEntry>;
   conversationHistories: Record<string, ConversationHistory>;
+  conversationSessions: Record<string, ConversationSession>;
+  activeConversationSessionIds: Record<string, string>;
+  promptHistory: string[];
   promptPresets: PromptPreset[];
 }
 
@@ -166,6 +203,22 @@ export interface ConversationOperations {
   get(key: string): ConversationMessage[];
   save(key: string, messages: ConversationMessage[]): Promise<void>;
   clear(key: string): Promise<void>;
+  getActiveSession?(key: string): ConversationSession | null;
+  ensureSession?(
+    key: string,
+    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "codex">>
+  ): ConversationSession;
+  startSession?(
+    key: string,
+    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "codex">>
+  ): ConversationSession;
+  saveActiveSession?(
+    key: string,
+    messages: ConversationMessage[],
+    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "codex">>
+  ): Promise<void>;
+  resumeSession?(id: string): ConversationSession | null;
+  listSessions?(query?: string): ConversationSession[];
 }
 
 export interface PaperContextOperations {

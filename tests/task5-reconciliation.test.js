@@ -88,14 +88,26 @@ test("Task 5 settings preserve legacy chunk size while keeping credential-free 0
     enabled: false,
     command: "codex",
     profile: "",
-    model: "",
+    model: "gpt-5.6-sol",
+    reasoningEffort: "xhigh",
+    verbosity: "high",
+    modelPresets: [
+      { model: "gpt-5.6-sol", reasoningEffort: "xhigh", label: "gpt-5.6-sol · xhigh" },
+      { model: "gpt-5.6-sol", reasoningEffort: "high", label: "gpt-5.6-sol · high" },
+      { model: "gpt-5.6-sol", reasoningEffort: "medium", label: "gpt-5.6-sol · medium" },
+    ],
     timeoutMs: 600000,
     keepTempFiles: false,
   });
+  assert.deepEqual(plain(DEFAULT_SETTINGS.promptHistory), []);
+  assert.deepEqual(plain(DEFAULT_SETTINGS.conversationSessions), {});
+  assert.deepEqual(plain(DEFAULT_SETTINGS.activeConversationSessionIds), {});
 
   const legacy = migrateSettings({ translateChunkMaxChars: 3000 }).settings;
   assert.equal(legacy.translation.chunkChars, 3000);
   assert.equal(legacy.codexDeepAnalysis.command, "codex");
+  assert.equal(legacy.codexDeepAnalysis.model, "gpt-5.6-sol");
+  assert.equal(legacy.codexDeepAnalysis.reasoningEffort, "xhigh");
   assert.equal(legacy.codexDeepAnalysis.enabled, false);
   assert.equal(Object.hasOwn(legacy, "translateChunkMaxChars"), false);
 
@@ -511,6 +523,43 @@ test("quick marker is debounced, clamped, selection-safe, disposable, and opens 
   for (const type of ["selectionchange", "mousedown", "scroll", "keydown"]) {
     assert.equal(doc.listenerCount(type), 0);
   }
+});
+
+test("quick marker requires the selection to belong to the active PDF view", () => {
+  const { QuickTranslateMarker } = loadBundle();
+  const doc = createSyntheticDocument();
+  const timers = [];
+  let selectionInsidePdf = false;
+  const marker = new QuickTranslateMarker({
+    isEnabled: () => true,
+    getActivePdfFile: () => ({ path: "papers/demo.pdf" }),
+    isSelectionInsideActivePdf: () => selectionInsidePdf,
+    openModal() {},
+    setTimer(callback, delay) {
+      const timer = { callback, delay, cancelled: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer(timer) {
+      timer.cancelled = true;
+    },
+  });
+
+  doc.setSelection(selectionFor("Alpha beta", [
+    { left: 10, top: 20, right: 40, bottom: 30, width: 30, height: 10 },
+  ]));
+  marker.attach(doc);
+
+  doc.dispatch("selectionchange");
+  timers.at(-1).callback();
+  assert.equal(doc.appended.length, 0);
+
+  selectionInsidePdf = true;
+  doc.dispatch("selectionchange");
+  timers.at(-1).callback();
+  assert.equal(doc.appended.length, 1);
+  assert.equal(doc.appended[0].hidden, false);
+  marker.destroy();
 });
 
 function createPendingQuickMarkerHarness() {

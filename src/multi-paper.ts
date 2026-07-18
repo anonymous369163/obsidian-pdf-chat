@@ -1,5 +1,5 @@
 import { prepareFuzzySearch, type App } from "obsidian";
-import type { PdfChunk, PdfPageText } from "./types";
+import type { CodexReasoningEffort, CodexVerbosity, PdfChunk, PdfPageText } from "./types";
 
 export type PaperRole = "current" | "referenced";
 
@@ -32,6 +32,7 @@ export interface CodexPaperAnalysisManifest {
     name: string;
     vaultPath: string;
     metadataPath: string;
+    briefPath: string;
     summaryPath: string;
     fullTextPath: string;
     chunksPath: string;
@@ -59,6 +60,8 @@ export interface CodexExecArgsRequest {
   command: string;
   profile?: string;
   model?: string;
+  reasoningEffort?: CodexReasoningEffort;
+  verbosity?: CodexVerbosity;
   prompt: string;
 }
 
@@ -184,6 +187,17 @@ function pageFileName(page: number): string {
   return `page-${String(page).padStart(3, "0")}.md`;
 }
 
+function compactWhitespace(text: string): string {
+  return String(text || "").replace(/\s+/g, " ").trim();
+}
+
+export function buildCodexPaperBrief(paper: PreparedCodexPaper, maxChars = 250): string {
+  const source = compactWhitespace(paper.summary) || compactWhitespace(paper.pages.map((page) => page.text).join(" "));
+  if (!source) return `${paper.name || paper.vaultPath}: no brief available.`;
+  if (source.length <= maxChars) return source;
+  return source.slice(0, Math.max(0, maxChars - 1)).trimEnd() + "…";
+}
+
 export function createCodexAnalysisTempDir(taskId: string): string {
   const fs = loadNodeModule<typeof import("node:fs")>("node:fs");
   const os = loadNodeModule<typeof import("node:os")>("node:os");
@@ -275,6 +289,7 @@ export async function writeCodexAnalysisPackage(
     fs.mkdirSync(pagesDir, { recursive: true });
 
     const metadataPath = path.join("papers", id, "metadata.json");
+    const briefPath = path.join("papers", id, "brief.md");
     const summaryPath = path.join("papers", id, "summary.md");
     const fullTextPath = path.join("papers", id, "full_text.md");
     const chunksPath = path.join("papers", id, "chunks.json");
@@ -290,6 +305,7 @@ export async function writeCodexAnalysisPackage(
       fullTextLength: paper.pages.reduce((total, page) => total + (page.text || "").length, 0),
       chunkCount: paper.chunks.length,
     });
+    fs.writeFileSync(path.join(analysisDir, briefPath), buildCodexPaperBrief(paper), "utf8");
     fs.writeFileSync(path.join(analysisDir, summaryPath), paper.summary || "(no summary)", "utf8");
     fs.writeFileSync(
       path.join(analysisDir, fullTextPath),
@@ -306,6 +322,7 @@ export async function writeCodexAnalysisPackage(
       name: paper.name,
       vaultPath: paper.vaultPath,
       metadataPath: metadataPath.replace(/\\/g, "/"),
+      briefPath: briefPath.replace(/\\/g, "/"),
       summaryPath: summaryPath.replace(/\\/g, "/"),
       fullTextPath: fullTextPath.replace(/\\/g, "/"),
       chunksPath: chunksPath.replace(/\\/g, "/"),
@@ -333,7 +350,8 @@ export function buildCodexDeepAnalysisPrompt(): string {
   return [
     "You are a careful research assistant performing multi-paper analysis.",
     "Read manifest.json and question.md first.",
-    "For each paper: read summary.md, then full_text.md, and use pages/ or chunks.json for evidence.",
+    "For each paper: read brief.md first for orientation, then summary.md, then full_text.md, and use pages/ or chunks.json for evidence.",
+    "The prompt intentionally does not include the full paper text. Open the files listed in manifest.json inside this read-only analysis directory.",
     "Extract each paper's research problem, core method, assumptions, experiments, conclusions, and limitations.",
     "Then compare similarities, differences, complementary opportunities, and conflicts or risks.",
     "Every important claim must cite the paper name and page or chunk/source location when available.",
@@ -357,6 +375,8 @@ export function buildCodexExecArgs(request: CodexExecArgsRequest): CodexExecArgs
   ];
   if (request.profile) args.push("--profile", request.profile);
   if (request.model) args.push("--model", request.model);
+  if (request.reasoningEffort) args.push("-c", `model_reasoning_effort="${request.reasoningEffort}"`);
+  if (request.verbosity) args.push("-c", `model_verbosity="${request.verbosity}"`);
   args.push(request.prompt);
   return { command: request.command || "codex", args };
 }

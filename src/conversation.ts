@@ -1,4 +1,11 @@
-import type { ConversationHistory, ConversationKind, ConversationMessage } from "./types";
+import type {
+  CodexReasoningEffort,
+  ConversationHistory,
+  ConversationKind,
+  ConversationMessage,
+  ConversationSession,
+  ConversationSessionMode,
+} from "./types";
 
 export function cleanSelectionText(raw: string): string {
   return raw
@@ -51,6 +58,87 @@ export function normalizeConversationHistories(saved: unknown): Record<string, C
   return normalized;
 }
 
+function normalizeSessionMode(value: unknown): ConversationSessionMode {
+  return value === "codex" ? "codex" : "chat";
+}
+
+function normalizeReasoningEffort(value: unknown): CodexReasoningEffort {
+  return value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh"
+    ? value
+    : "xhigh";
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter(Boolean)
+    )
+  ).slice(0, 3);
+}
+
+function normalizeSessionId(value: unknown, fallbackSeed: string): string {
+  const raw = typeof value === "string" ? value.trim() : "";
+  return raw || `session-${stableConversationHash(fallbackSeed)}`;
+}
+
+function cloneSession(session: ConversationSession): ConversationSession {
+  return {
+    ...session,
+    messages: normalizeConversationMessages(session.messages),
+    referencedPdfPaths: [...session.referencedPdfPaths],
+    codex: session.codex ? { ...session.codex } : undefined,
+  };
+}
+
+export function normalizeConversationSessions(saved: unknown): Record<string, ConversationSession> {
+  if (!saved || typeof saved !== "object" || Array.isArray(saved)) return {};
+  const normalized: Record<string, ConversationSession> = {};
+  for (const [key, candidate] of Object.entries(saved)) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+    const entry = candidate as Record<string, unknown>;
+    const conversationKey =
+      typeof entry.conversationKey === "string" && entry.conversationKey.trim()
+        ? entry.conversationKey.trim()
+        : "";
+    const messages = normalizeConversationMessages(entry.messages);
+    if (!conversationKey || !messages.length) continue;
+    const id = normalizeSessionId(entry.id || key, `${conversationKey}:${key}`);
+    const createdAt =
+      typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt) ? entry.createdAt : 0;
+    const updatedAt =
+      typeof entry.updatedAt === "number" && Number.isFinite(entry.updatedAt) ? entry.updatedAt : createdAt;
+    const codexCandidate = entry.codex && typeof entry.codex === "object" ? (entry.codex as Record<string, unknown>) : null;
+    const codex =
+      codexCandidate && typeof codexCandidate.model === "string" && codexCandidate.model.trim()
+        ? {
+            model: codexCandidate.model.trim(),
+            reasoningEffort: normalizeReasoningEffort(codexCandidate.reasoningEffort),
+            profile: typeof codexCandidate.profile === "string" ? codexCandidate.profile.trim() : "",
+          }
+        : undefined;
+    normalized[id] = {
+      version: 1,
+      id,
+      conversationKey,
+      title:
+        typeof entry.title === "string" && entry.title.trim()
+          ? entry.title.trim()
+          : conversationKey.replace(/^pdf:/, ""),
+      mode: normalizeSessionMode(entry.mode),
+      messages,
+      referencedPdfPaths: normalizeStringArray(entry.referencedPdfPaths),
+      codex,
+      createdAt,
+      updatedAt,
+    };
+  }
+  return normalized;
+}
+
 export function getConversationKey(
   pdfFile: { path?: string } | null,
   contextText: string,
@@ -65,6 +153,15 @@ export function getConversationKey(
 
 export interface ConversationSettings {
   conversationHistories?: Record<string, ConversationHistory>;
+  conversationSessions?: Record<string, ConversationSession>;
+  activeConversationSessionIds?: Record<string, string>;
+}
+
+export interface ConversationSessionMetadata {
+  title?: string;
+  mode?: ConversationSessionMode;
+  referencedPdfPaths?: string[];
+  codex?: ConversationSession["codex"];
 }
 
 export class ConversationStore {
@@ -74,32 +171,188 @@ export class ConversationStore {
     private readonly now: () => number = Date.now
   ) {}
 
-  get(key: string): ConversationMessage[] {
-    const entry = (this.getSettings().conversationHistories || {})[key];
-    return entry ? normalizeConversationMessages(entry.messages) : [];
-  }
-
-  async save(key: string, messages: unknown): Promise<void> {
+  private ensureContainers(): ConversationSettings {
     const settings = this.getSettings();
     if (!settings.conversationHistories || typeof settings.conversationHistories !== "object") {
       settings.conversationHistories = {};
     }
-    const normalizedMessages = normalizeConversationMessages(messages);
-    if (!normalizedMessages.length) {
-      delete settings.conversationHistories[key];
-    } else {
-      settings.conversationHistories[key] = {
-        version: 1,
-        updatedAt: this.now(),
-        messages: normalizedMessages,
-      };
+    if (!settings.conversationSessions || typeof settings.conversationSessions !== "object") {
+      settings.conversationSessions = {};
     }
+    if (!settings.activeConversationSessionIds || typeof settings.activeConversationSessionIds !== "object") {
+      settings.activeConversationSessionIds = {};
+    }
+    return settings;
+  }
+
+  private legacySessionId(key: string): string {
+    return `legacy-${stableConversationHash(key)}`;
+  }
+
+  private createSessionFromHistory(
+    key: string,
+    metadata: ConversationSessionMetadata = {}
+  ): ConversationSession | null {
+    const settings = this.ensureContainers();
+    const legacy = settings.conversationHistories?.[key];
+    const messages = normalizeConversationMessages(legacy?.messages);
+    if (!messages.length) return null;
+    const id = this.legacySessionId(key);
+    const existing = settings.conversationSessions![id];
+    if (existing) return cloneSession(existing);
+    const timestamp = legacy?.updatedAt || this.now();
+    const session: ConversationSession = {
+      version: 1,
+      id,
+      conversationKey: key,
+      title: metadata.title || key.replace(/^pdf:/, ""),
+      mode: metadata.mode || "chat",
+      messages,
+      referencedPdfPaths: normalizeStringArray(metadata.referencedPdfPaths),
+      codex: metadata.codex ? { ...metadata.codex } : undefined,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    settings.conversationSessions![id] = cloneSession(session);
+    settings.activeConversationSessionIds![key] = id;
+    return cloneSession(session);
+  }
+
+  private applySessionMetadata(
+    session: ConversationSession,
+    metadata: ConversationSessionMetadata = {}
+  ): ConversationSession {
+    if (metadata.title && metadata.title.trim()) session.title = metadata.title.trim();
+    if (metadata.mode) session.mode = metadata.mode;
+    if (metadata.referencedPdfPaths) {
+      session.referencedPdfPaths = normalizeStringArray(metadata.referencedPdfPaths);
+    }
+    if (metadata.codex) session.codex = { ...metadata.codex };
+    return session;
+  }
+
+  get(key: string): ConversationMessage[] {
+    const active = this.getActiveSession(key);
+    if (active) return normalizeConversationMessages(active.messages);
+    const entry = (this.getSettings().conversationHistories || {})[key];
+    return entry ? normalizeConversationMessages(entry.messages) : [];
+  }
+
+  getActiveSession(key: string): ConversationSession | null {
+    const settings = this.ensureContainers();
+    const activeId = settings.activeConversationSessionIds?.[key];
+    const sessions = normalizeConversationSessions(settings.conversationSessions);
+    if (activeId && sessions[activeId]) return cloneSession(sessions[activeId]);
+    const newest = Object.values(sessions)
+      .filter((session) => session.conversationKey === key)
+      .sort((left, right) => right.updatedAt - left.updatedAt)[0];
+    if (newest) {
+      settings.activeConversationSessionIds![key] = newest.id;
+      return cloneSession(newest);
+    }
+    return this.createSessionFromHistory(key);
+  }
+
+  ensureSession(key: string, metadata: ConversationSessionMetadata = {}): ConversationSession {
+    const settings = this.ensureContainers();
+    const active = this.getActiveSession(key);
+    if (active) {
+      const session = this.applySessionMetadata(active, metadata);
+      settings.conversationSessions![session.id] = cloneSession(session);
+      settings.activeConversationSessionIds![key] = session.id;
+      return cloneSession(session);
+    }
+    return this.startSession(key, metadata);
+  }
+
+  startSession(key: string, metadata: ConversationSessionMetadata = {}): ConversationSession {
+    const settings = this.ensureContainers();
+    const timestamp = this.now();
+    const id = `session-${stableConversationHash(`${key}:${timestamp}:${Object.keys(settings.conversationSessions || {}).length}`)}`;
+    const session: ConversationSession = {
+      version: 1,
+      id,
+      conversationKey: key,
+      title: metadata.title || key.replace(/^pdf:/, ""),
+      mode: metadata.mode || "chat",
+      messages: [],
+      referencedPdfPaths: normalizeStringArray(metadata.referencedPdfPaths),
+      codex: metadata.codex ? { ...metadata.codex } : undefined,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    settings.conversationSessions![id] = cloneSession(session);
+    settings.activeConversationSessionIds![key] = id;
+    return cloneSession(session);
+  }
+
+  async saveActiveSession(
+    key: string,
+    messages: unknown,
+    metadata: ConversationSessionMetadata = {}
+  ): Promise<void> {
+    const settings = this.ensureContainers();
+    const normalizedMessages = normalizeConversationMessages(messages);
+    const timestamp = this.now();
+    if (!normalizedMessages.length) {
+      const activeId = settings.activeConversationSessionIds?.[key];
+      if (activeId) delete settings.conversationSessions![activeId];
+      delete settings.activeConversationSessionIds![key];
+      delete settings.conversationHistories![key];
+      await this.persistSettings();
+      return;
+    }
+    const session = this.applySessionMetadata(this.ensureSession(key, metadata), metadata);
+    session.messages = normalizedMessages;
+    session.updatedAt = timestamp;
+    settings.conversationSessions![session.id] = cloneSession(session);
+    settings.activeConversationSessionIds![key] = session.id;
+    settings.conversationHistories![key] = {
+      version: 1,
+      updatedAt: timestamp,
+      messages: normalizedMessages,
+    };
     await this.persistSettings();
   }
 
+  resumeSession(id: string): ConversationSession | null {
+    const settings = this.ensureContainers();
+    const sessions = normalizeConversationSessions(settings.conversationSessions);
+    const session = sessions[id];
+    if (!session) return null;
+    settings.activeConversationSessionIds![session.conversationKey] = session.id;
+    settings.conversationSessions![session.id] = cloneSession(session);
+    return cloneSession(session);
+  }
+
+  listSessions(query = ""): ConversationSession[] {
+    const settings = this.ensureContainers();
+    const sessions = normalizeConversationSessions(settings.conversationSessions);
+    const needle = query.trim().toLowerCase();
+    return Object.values(sessions)
+      .filter((session) => {
+        if (!needle) return true;
+        return [session.title, session.conversationKey, ...session.referencedPdfPaths]
+          .join(" ")
+          .toLowerCase()
+          .includes(needle);
+      })
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .map(cloneSession);
+  }
+
+  async save(key: string, messages: unknown): Promise<void> {
+    await this.saveActiveSession(key, messages);
+  }
+
   async clear(key: string): Promise<void> {
-    const histories = this.getSettings().conversationHistories;
-    if (histories && histories[key]) delete histories[key];
+    const settings = this.ensureContainers();
+    const activeId = settings.activeConversationSessionIds?.[key];
+    if (activeId) delete settings.conversationSessions![activeId];
+    if (settings.activeConversationSessionIds) delete settings.activeConversationSessionIds[key];
+    if (settings.conversationHistories && settings.conversationHistories[key]) {
+      delete settings.conversationHistories[key];
+    }
     await this.persistSettings();
   }
 }
