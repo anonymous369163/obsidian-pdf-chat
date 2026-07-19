@@ -242,6 +242,8 @@ export interface ConversationSessionMetadata {
   includeCurrentPdfInCodex?: boolean;
   api?: ConversationSession["api"];
   codex?: ConversationSession["codex"];
+  memory?: ConversationSession["memory"];
+  sourceStatus?: ConversationSession["sourceStatus"];
 }
 
 export class ConversationStore {
@@ -292,6 +294,8 @@ export class ConversationStore {
       includeCurrentPdfInCodex: metadata.includeCurrentPdfInCodex !== false,
       api: normalizeApiSessionMetadata(metadata.api),
       codex: metadata.codex ? { ...metadata.codex, lifecycle: metadata.codex.lifecycle || "active" } : undefined,
+      memory: normalizeSessionMemory(metadata.memory),
+      sourceStatus: metadata.sourceStatus === "missing" ? "missing" : "available",
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -320,6 +324,8 @@ export class ConversationStore {
         lifecycle: metadata.codex.lifecycle || session.codex?.lifecycle || "active",
       } as ConversationSession["codex"];
     }
+    if (metadata.memory) session.memory = normalizeSessionMemory(metadata.memory);
+    if (metadata.sourceStatus) session.sourceStatus = metadata.sourceStatus;
     return session;
   }
 
@@ -386,6 +392,8 @@ export class ConversationStore {
       includeCurrentPdfInCodex: metadata.includeCurrentPdfInCodex !== false,
       api: normalizeApiSessionMetadata(metadata.api),
       codex: metadata.codex ? { ...metadata.codex, lifecycle: metadata.codex.lifecycle || "active" } : undefined,
+      memory: normalizeSessionMemory(metadata.memory),
+      sourceStatus: metadata.sourceStatus === "missing" ? "missing" : "available",
       createdAt: timestamp,
       updatedAt: timestamp,
     };

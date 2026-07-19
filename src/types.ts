@@ -267,27 +267,27 @@ export interface ConversationOperations {
   getActiveSession?(key: string): ConversationSession | null;
   ensureSession?(
     key: string,
-    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "api" | "codex">>
+    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "api" | "codex" | "memory" | "sourceStatus">>
   ): ConversationSession;
   startSession?(
     key: string,
-    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "api" | "codex">>
+    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "api" | "codex" | "memory" | "sourceStatus">>
   ): ConversationSession;
   saveActiveSession?(
     key: string,
     messages: ConversationMessage[],
-    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "api" | "codex">>
+    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "api" | "codex" | "memory" | "sourceStatus">>
   ): Promise<void>;
   getSession?(id: string): ConversationSession | null;
   saveSessionById?(
     id: string,
     messages: ConversationMessage[],
-    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "api" | "codex">>
+    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "api" | "codex" | "memory" | "sourceStatus">>
   ): Promise<void>;
   appendSessionTurn?(id: string, userContent: string, assistantContent: string): Promise<void>;
   updateSessionMetadata?(
     id: string,
-    metadata: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "api" | "codex">>
+    metadata: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "api" | "codex" | "memory" | "sourceStatus">>
   ): Promise<void>;
   beginCodexTurn?(id: string, pendingTurn: PendingCodexTurn): Promise<void>;
   updateCodexTurn?(

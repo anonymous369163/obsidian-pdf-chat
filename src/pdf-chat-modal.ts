@@ -16,6 +16,11 @@ import {
   runCodexVersionCheck,
 } from "./codex-cli";
 import type { CodexTurnSnapshot } from "./codex-session-manager";
+import {
+  composeBoundedContext,
+  summarizeSessionMemory,
+  type ContextComposition,
+} from "./context-composer";
 import { createPDFChatModalServices } from "./modal-services";
 import {
   buildCodexMarkdownPrompt,
@@ -324,9 +329,8 @@ export class PDFChatModal extends Modal {
       this.currentModelId = this.services.models.resolveContinueId();
     }
 
-    // 全文只需要在对话历史里出现一次:聊天接口是无状态的,每轮都会把 this.messages 整个重新发送,
-    // 已经进过历史的第一轮全文会随着后续每轮继续被带上,不需要再重复拼接一份,否则每多聊一轮,
-    // 实际发给模型的内容就多一份完整全文,输入越滚越大、越聊越慢、越聊越贵。
+    // this.messages 和 transcript 只保存用户实际看到的内容。全文/RAG 等隐藏上下文按轮构造，
+    // 由 context-composer 在发送前统一裁剪，不能混入可恢复、可导出的聊天记录。
     this.conversationKey = paperContext.conversationKey;
     this.translateConversationKey = this.services.conversations.getKey(
       this.pdfFile,
@@ -2135,10 +2139,50 @@ export class PDFChatModal extends Modal {
       "如果证据不足，请明确说明不足，不要编造。",
       "",
       parts.join("\n\n---\n\n"),
-      "",
-      "## 用户问题",
-      question,
     ].join("\n");
+  }
+
+  private async composeApiContext(question: string, currentContext: string): Promise<ContextComposition> {
+    const budget = this.plugin.settings.contextBudget || DEFAULT_SETTINGS.contextBudget;
+    const session = this.currentSessionId
+      ? this.services.conversations.getSession?.(this.currentSessionId)
+      : this.services.conversations.getActiveSession?.(this.conversationKey);
+    const compose = (memory?: string) => composeBoundedContext({
+      system: this.buildSystemMessage().content,
+      transcript: this.transcript,
+      currentUser: question,
+      currentContext,
+      memory,
+      maxInputChars: budget.maxInputChars,
+      minRecentTurns: budget.minRecentTurns,
+    });
+    const initial = compose();
+    if (!initial.omittedMessageCount) return initial;
+    if (session?.memory && session.memory.coveredMessageCount >= initial.omittedMessageCount) {
+      return compose(session.memory.content);
+    }
+
+    try {
+      const memory = await summarizeSessionMemory({
+        transcript: this.transcript,
+        coveredMessageCount: initial.omittedMessageCount,
+        llm: this.services.llm,
+        modelProfile: this.services.models.get(
+          this.plugin.settings.summaryModelId || this.currentModelId
+        ),
+        signal: this.abortController?.signal,
+      });
+      const writableSession = session || this.ensureCurrentSessionForWrite();
+      if (writableSession?.id && this.services.conversations.updateSessionMetadata) {
+        await this.services.conversations.updateSessionMetadata(writableSession.id, { memory });
+      }
+      return compose(memory.content);
+    } catch (error) {
+      if (!isAbortError(error)) {
+        new Notice("较早对话摘要生成失败，本轮仅携带最近对话。" + errorMessage(error));
+      }
+      return initial;
+    }
   }
 
   private async completeApiMultiPaperAnswer(
@@ -2146,14 +2190,15 @@ export class PDFChatModal extends Modal {
     userLabel: string,
     bubble: HTMLDivElement
   ): Promise<void> {
-    const outgoing = await this.buildApiMultiPaperContext(question, (message) => {
+    const currentContext = await this.buildApiMultiPaperContext(question, (message) => {
       this.multiPaperStatusEl?.setText(message);
       setBubbleText(bubble, message);
     });
+    const composition = await this.composeApiContext(question, currentContext);
     let fullText = "";
     let firstChunkArrived = false;
     fullText = await this.services.llm.chat({
-      messages: [...this.messages, { role: "user", content: outgoing }],
+      messages: composition.messages,
       onChunk: (_piece, acc) => {
         fullText = acc;
         if (!firstChunkArrived) {
@@ -2826,8 +2871,10 @@ export class PDFChatModal extends Modal {
     this.setSendingState(true);
 
     const loadingBubble = this.addBubble("assistant", "思考中…", { loading: true });
+    const abortController = new AbortController();
+    this.abortController = abortController;
 
-    let outgoingContent = opts.outgoingContentOverride || question;
+    let currentContext = opts.outgoingContentOverride || "";
     if (opts.outgoingContentOverride) {
       // 外部任务已经构造好了发送给模型的上下文；界面仍只显示用户可见问题。
     } else if (opts.skipContextAugmentation) {
@@ -2835,26 +2882,23 @@ export class PDFChatModal extends Modal {
     } else if (this.referencedPdfFiles.length) {
       setBubbleText(loadingBubble, "正在准备多论文上下文…");
       try {
-        outgoingContent = await this.buildApiMultiPaperContext(question, (message) => {
+        currentContext = await this.buildApiMultiPaperContext(question, (message) => {
           this.multiPaperStatusEl?.setText(message);
           setBubbleText(loadingBubble, message);
         });
       } catch (err) {
         new Notice("多论文上下文准备失败，已退回当前问题: " + errorMessage(err));
-        outgoingContent = question;
+        currentContext = "";
       }
       setBubbleText(loadingBubble, "思考中…");
-    } else if (this.useRag && this.useFullTextMode && this.pdfFile && !this.fullTextAttached) {
-      // 全文足够短,直接把全文交给模型,不做"猜哪一块相关"的检索——实测发现关键词检索对
-      // "列举类"问题(比如"论文对比了哪些基线算法")经常检索不全或检索错块,直接给全文更可靠。
-      // 只在对话的第一轮附带一次:之后每轮 this.messages 都会带着这一轮的历史一起重新发送,
-      // 不需要也不应该重复拼接,否则输入会随聊天轮数线性膨胀。
+    } else if (this.useRag && this.useFullTextMode && this.pdfFile) {
+      // 全文是本轮的隐藏证据，不进入可见历史。每轮发送前由上下文预算统一裁剪。
       setBubbleText(loadingBubble, "正在读取全文…");
       try {
         if (!this.fullTextForQA) {
           this.fullTextForQA = await this.services.papers.extractFullText(this.pdfFile);
         }
-        outgoingContent = "【论文全文】:\n" + this.fullTextForQA + "\n\n【我的问题】:\n" + question;
+        currentContext = "【论文全文】:\n" + this.fullTextForQA;
         this.fullTextAttached = true;
       } catch (err) {
         // 全文提取失败就退回原始问题,不阻塞正常提问
@@ -2886,23 +2930,24 @@ export class PDFChatModal extends Modal {
       );
       if (expanded.length) {
         const retrievedText = expanded.map((c) => `[第${c.page}页]\n${c.text}`).join("\n\n---\n\n");
-        outgoingContent =
+        currentContext =
           "【从全文中按关键词检索到的可能相关片段(不一定完全准确,仅供参考)】:\n" +
-          retrievedText +
-          "\n\n【我的问题】:\n" +
-          question;
+          retrievedText;
       }
       setBubbleText(loadingBubble, "思考中…");
     }
 
-    this.messages.push({ role: "user", content: outgoingContent });
-    this.abortController = new AbortController();
+    const composition = await this.composeApiContext(question, currentContext);
+    if (composition.currentInputTruncated) {
+      new Notice("本轮论文上下文超过输入预算，已保留问题并截取可发送的上下文。");
+    }
+    this.messages.push({ role: "user", content: question });
     let fullText = "";
     let firstChunkArrived = false;
 
     try {
       fullText = await this.services.llm.chat({
-        messages: this.messages,
+        messages: composition.messages,
         onChunk: (_piece, acc) => {
           fullText = acc;
           if (!firstChunkArrived) {
@@ -2912,7 +2957,7 @@ export class PDFChatModal extends Modal {
           setBubbleText(loadingBubble, acc);
           this.historyEl.scrollTo({ top: this.historyEl.scrollHeight, behavior: "auto" });
         },
-        signal: this.abortController.signal,
+        signal: abortController.signal,
         modelProfile: this.services.models.get(this.currentModelId),
       });
 

@@ -67,6 +67,7 @@ export {
   runCodexVersionCheck,
 } from "./codex-cli";
 export { CodexSessionManager } from "./codex-session-manager";
+export { composeBoundedContext, summarizeSessionMemory } from "./context-composer";
 export { DEFAULT_SETTINGS, LEGACY_0_4_0_TRANSLATE_PROMPT } from "./default-settings";
 export { OpenAICompatibleTransport } from "./llm-transport";
 export { resolveContinueModelId, resolveTranslateModelId } from "./model-routing";

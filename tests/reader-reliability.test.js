@@ -10,6 +10,10 @@ function plain(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function pdfKey(pathname) {
+  return ["pdf", pathname].join(":");
+}
+
 function loadBundle() {
   const filename = path.join(projectRoot, "main.js");
   const source = fs.readFileSync(filename, "utf8");
@@ -59,7 +63,7 @@ function legacySession() {
   return {
     version: 2,
     id: "session-reader",
-    conversationKey: "pdf:papers/reader.pdf",
+    conversationKey: pdfKey("papers/reader.pdf"),
     title: "Reader discussion",
     mode: "chat",
     messages: [
@@ -121,7 +125,7 @@ function makeReaderState() {
   const referenced = {
     ...legacySession(),
     id: "session-reference",
-    conversationKey: "pdf:papers/other.pdf",
+    conversationKey: pdfKey("papers/other.pdf"),
     referencedPdfPaths: ["papers/old.pdf", "papers/third.pdf"],
     updatedAt: 300,
   };
@@ -129,7 +133,7 @@ function makeReaderState() {
     conversationSessions: {
       [primary.id]: {
         ...primary,
-        conversationKey: "pdf:papers/old.pdf",
+        conversationKey: pdfKey("papers/old.pdf"),
       },
       [referenced.id]: referenced,
     },

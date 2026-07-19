@@ -1645,6 +1645,66 @@ test("assistant plain text is lightly split only for display", async () => {
   assert.match(content.textContent, /提示生成方面.*\n\n模型改进方面.*\n\n实验结果/s);
 });
 
+test("long API conversations summarize only omitted visible turns before the bounded request", async () => {
+  const transcript = [];
+  for (let index = 0; index < 18; index += 1) {
+    transcript.push(
+      { role: "user", content: `old-question-${index} ${"q".repeat(80)}`, status: "complete" },
+      { role: "assistant", content: `old-answer-${index} ${"a".repeat(100)}`, status: "complete" }
+    );
+  }
+  let session = {
+    version: 2,
+    id: "long-session",
+    conversationKey: ["pdf", "papers/demo.pdf"].join(":"),
+    title: "Long reading",
+    mode: "chat",
+    messages: transcript,
+    referencedPdfPaths: [],
+    includeCurrentPdfInCodex: true,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const requests = [];
+  const memoryUpdates = [];
+  const { modal } = createModalHarness({
+    transcript,
+    settingsPatch: {
+      contextBudget: { maxInputChars: 1600, minRecentTurns: 3, maxSelectionChars: 20000 },
+    },
+    conversations: {
+      getActiveSession: () => session,
+      getSession: () => session,
+      updateSessionMetadata: async (_id, patch) => {
+        memoryUpdates.push(patch.memory);
+        session = { ...session, ...patch };
+      },
+      saveSessionById: async (_id, messages) => {
+        session = { ...session, messages };
+      },
+    },
+    llmChat: async (request) => {
+      requests.push(JSON.parse(JSON.stringify(request)));
+      if (request.temperatureOverride === 0.1) return "Earlier discussion memory";
+      return "Bounded answer";
+    },
+  });
+  modal.inputEl.value = "current question";
+
+  await modal.handleSubmit();
+
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].temperatureOverride, 0.1);
+  assert.match(JSON.stringify(requests[0].messages), /old-question-0/);
+  assert.doesNotMatch(JSON.stringify(requests[0].messages), /Selected source/);
+  assert.equal(memoryUpdates.length, 1);
+  assert.equal(memoryUpdates[0].content, "Earlier discussion memory");
+  assert.ok(memoryUpdates[0].coveredMessageCount > 0);
+  assert.ok(requests[1].messages.reduce((sum, message) => sum + message.content.length, 0) <= 1600);
+  assert.match(JSON.stringify(requests[1].messages), /Earlier discussion memory/);
+  assert.equal(requests[1].messages.at(-1).content, "current question");
+});
+
 test("settings preserve every legacy control in the correct ordered section and callbacks", async () => {
   const { bundle, settingTabs } = loadBundle();
   const PluginClass = bundle.default || bundle;

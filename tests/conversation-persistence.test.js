@@ -1111,6 +1111,8 @@ test("handleSubmit persists streamed partial text when generation is stopped", a
   assert.deepEqual(persisted, [{ key: "pdf:demo.pdf", messages: plain(modal.transcript) }]);
   assert.match(apiMessages.at(-1).content, /按关键词检索到的可能相关片段/);
   assert.doesNotMatch(JSON.stringify(persisted), /按关键词检索到的可能相关片段/);
+  assert.doesNotMatch(JSON.stringify(modal.messages), /按关键词检索到的可能相关片段/);
+  assert.equal(modal.messages.at(-2).content, "Question");
   assert.equal(bubbles.at(-1).text, "Partial answer\n\n[已停止生成]");
 });
 

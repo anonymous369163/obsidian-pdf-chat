@@ -50,6 +50,7 @@ __export(main_exports, {
   chunkPdfPages: () => chunkPdfPages,
   cleanSelectionText: () => cleanSelectionText,
   codexAnalysisOutputSchema: () => codexAnalysisOutputSchema,
+  composeBoundedContext: () => composeBoundedContext,
   createCodexAnalysisTempDir: () => createCodexAnalysisTempDir,
   createCompatibilityActionRegistry: () => createCompatibilityActionRegistry,
   createPDFChatModalServices: () => createPDFChatModalServices,
@@ -85,6 +86,7 @@ __export(main_exports, {
   searchPdfFiles: () => searchPdfFiles,
   splitTranslationChunks: () => splitTranslationChunks,
   stableConversationHash: () => stableConversationHash,
+  summarizeSessionMemory: () => summarizeSessionMemory,
   tokenizeForBM25: () => tokenizeForBM25,
   writeCodexAnalysisPackage: () => writeCodexAnalysisPackage,
   writeCodexDebugFullPackage: () => writeCodexDebugFullPackage,
@@ -1685,6 +1687,8 @@ var ConversationStore = class {
       includeCurrentPdfInCodex: metadata.includeCurrentPdfInCodex !== false,
       api: normalizeApiSessionMetadata(metadata.api),
       codex: metadata.codex ? { ...metadata.codex, lifecycle: metadata.codex.lifecycle || "active" } : void 0,
+      memory: normalizeSessionMemory(metadata.memory),
+      sourceStatus: metadata.sourceStatus === "missing" ? "missing" : "available",
       createdAt: timestamp,
       updatedAt: timestamp
     };
@@ -1710,6 +1714,8 @@ var ConversationStore = class {
         lifecycle: metadata.codex.lifecycle || ((_a = session.codex) == null ? void 0 : _a.lifecycle) || "active"
       };
     }
+    if (metadata.memory) session.memory = normalizeSessionMemory(metadata.memory);
+    if (metadata.sourceStatus) session.sourceStatus = metadata.sourceStatus;
     return session;
   }
   normalizedSessions() {
@@ -1772,6 +1778,8 @@ var ConversationStore = class {
       includeCurrentPdfInCodex: metadata.includeCurrentPdfInCodex !== false,
       api: normalizeApiSessionMetadata(metadata.api),
       codex: metadata.codex ? { ...metadata.codex, lifecycle: metadata.codex.lifecycle || "active" } : void 0,
+      memory: normalizeSessionMemory(metadata.memory),
+      sourceStatus: metadata.sourceStatus === "missing" ? "missing" : "available",
       createdAt: timestamp,
       updatedAt: timestamp
     };
@@ -2753,6 +2761,141 @@ function createPDFChatModalServices(plugin, overrides = {}) {
 
 // src/pdf-chat-modal.ts
 var import_obsidian3 = require("obsidian");
+
+// src/context-composer.ts
+var MEMORY_PREFIX = "\u3010\u8F83\u65E9\u5BF9\u8BDD\u6458\u8981\u3011\n";
+var TRUNCATION_MARKER = "\n\n[\u5185\u5BB9\u56E0\u4E0A\u4E0B\u6587\u9884\u7B97\u5DF2\u622A\u65AD]";
+function normalizeLimit(value, fallback) {
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+function truncatePrefix(value, limit) {
+  if (limit <= 0) return "";
+  if (value.length <= limit) return value;
+  if (limit <= TRUNCATION_MARKER.length) return value.slice(0, limit);
+  return value.slice(0, limit - TRUNCATION_MARKER.length).trimEnd() + TRUNCATION_MARKER;
+}
+function buildMandatoryMessages(system, currentContext, currentUser, maxInputChars) {
+  const delimiter = currentContext ? "\n\n" : "";
+  const fullCurrent = `${currentContext}${delimiter}${currentUser}`;
+  if (system.length + fullCurrent.length <= maxInputChars) {
+    return {
+      system: { role: "system", content: system },
+      current: { role: "user", content: fullCurrent },
+      truncated: false
+    };
+  }
+  const systemBudget = Math.min(system.length, Math.max(0, Math.floor(maxInputChars * 0.4)));
+  const fittedSystem = truncatePrefix(system, systemBudget);
+  const currentBudget = Math.max(0, maxInputChars - fittedSystem.length);
+  let fittedCurrent = "";
+  if (currentUser.length >= currentBudget) {
+    fittedCurrent = truncatePrefix(currentUser, currentBudget);
+  } else if (currentContext) {
+    const contextBudget = Math.max(0, currentBudget - currentUser.length - delimiter.length);
+    const fittedContext = truncatePrefix(currentContext, contextBudget);
+    fittedCurrent = fittedContext ? `${fittedContext}${delimiter}${currentUser}` : currentUser;
+  } else {
+    fittedCurrent = currentUser;
+  }
+  return {
+    system: { role: "system", content: fittedSystem },
+    current: { role: "user", content: fittedCurrent },
+    truncated: true
+  };
+}
+function groupTranscriptTurns(transcript) {
+  const turns = [];
+  let current = null;
+  transcript.forEach((candidate, index) => {
+    if (!candidate || candidate.role !== "user" && candidate.role !== "assistant") return;
+    if (typeof candidate.content !== "string" || !candidate.content) return;
+    const message = { role: candidate.role, content: candidate.content };
+    if (candidate.role === "user") {
+      if (current) turns.push(current);
+      current = { start: index, messages: [message], chars: message.content.length };
+      return;
+    }
+    if (!current) {
+      turns.push({ start: index, messages: [message], chars: message.content.length });
+      return;
+    }
+    current.messages.push(message);
+    current.chars += message.content.length;
+  });
+  if (current) turns.push(current);
+  return turns;
+}
+function composeBoundedContext(request) {
+  const maxInputChars = normalizeLimit(request.maxInputChars, 6e4);
+  const minRecentTurns = normalizeLimit(request.minRecentTurns, 6);
+  const system = typeof request.system === "string" ? request.system : "";
+  const currentUser = typeof request.currentUser === "string" ? request.currentUser : "";
+  const currentContext = typeof request.currentContext === "string" ? request.currentContext : "";
+  const mandatory = buildMandatoryMessages(system, currentContext, currentUser, maxInputChars);
+  let remaining = Math.max(
+    0,
+    maxInputChars - mandatory.system.content.length - mandatory.current.content.length
+  );
+  const transcript = Array.isArray(request.transcript) ? request.transcript : [];
+  const turns = groupTranscriptTurns(transcript);
+  const included = [];
+  let nextTurnIndex = turns.length - 1;
+  while (nextTurnIndex >= 0 && included.length < minRecentTurns) {
+    const turn = turns[nextTurnIndex];
+    if (turn.chars > remaining) break;
+    included.unshift(turn);
+    remaining -= turn.chars;
+    nextTurnIndex -= 1;
+  }
+  const memory = typeof request.memory === "string" ? request.memory.trim() : "";
+  const memoryContent = memory ? `${MEMORY_PREFIX}${memory}` : "";
+  const includeMemory = !!memoryContent && memoryContent.length <= remaining;
+  if (!includeMemory) {
+    while (nextTurnIndex >= 0) {
+      const turn = turns[nextTurnIndex];
+      if (turn.chars > remaining) break;
+      included.unshift(turn);
+      remaining -= turn.chars;
+      nextTurnIndex -= 1;
+    }
+  }
+  const includedTranscriptStart = included.length ? included[0].start : transcript.length;
+  const messages = [mandatory.system];
+  if (includeMemory) messages.push({ role: "system", content: memoryContent });
+  for (const turn of included) messages.push(...turn.messages);
+  messages.push(mandatory.current);
+  return {
+    messages,
+    omittedMessageCount: includedTranscriptStart,
+    includedTranscriptStart,
+    currentInputTruncated: mandatory.truncated
+  };
+}
+async function summarizeSessionMemory(request) {
+  const visibleMessages = request.transcript.slice(0, Math.max(0, request.coveredMessageCount)).filter((message) => message.role === "user" || message.role === "assistant").map((message) => `${message.role === "user" ? "\u7528\u6237" : "\u52A9\u624B"}: ${message.content}`).join("\n\n");
+  if (!visibleMessages.trim()) throw new Error("No visible conversation turns to summarize");
+  const content = await request.llm.chat({
+    messages: [
+      {
+        role: "system",
+        content: "\u8BF7\u628A\u8F83\u65E9\u7684\u8BBA\u6587\u9605\u8BFB\u5BF9\u8BDD\u538B\u7F29\u6210\u7B80\u6D01\u3001\u5FE0\u5B9E\u7684\u4F1A\u8BDD\u8BB0\u5FC6\u3002\u4FDD\u7559\u7528\u6237\u76EE\u6807\u3001\u5DF2\u786E\u8BA4\u7ED3\u8BBA\u3001\u5173\u952E\u672F\u8BED\u3001\u672A\u89E3\u51B3\u95EE\u9898\u548C\u5FC5\u8981\u8BC1\u636E\uFF1B\u4E0D\u8981\u8865\u9020\u4FE1\u606F\uFF0C\u4E0D\u8981\u8F93\u51FA\u6807\u9898\u6216\u8BF4\u660E\u3002"
+      },
+      { role: "user", content: visibleMessages }
+    ],
+    modelProfile: request.modelProfile,
+    signal: request.signal,
+    stream: false,
+    temperatureOverride: 0.1,
+    maxTokensOverride: 1200
+  });
+  const normalized = content.trim();
+  if (!normalized) throw new Error("Conversation memory summarization returned empty output");
+  return {
+    content: normalized,
+    coveredMessageCount: Math.max(0, Math.min(request.coveredMessageCount, request.transcript.length)),
+    updatedAt: (request.now || Date.now)()
+  };
+}
 
 // src/modal-ui.ts
 var controlId = 0;
@@ -4868,23 +5011,61 @@ ${chunk.text}`;
       "\u9700\u8981\u533A\u5206\u4F9D\u636E\u65F6\uFF0C\u8BF7\u6807\u660E\u6765\u81EA\u54EA\u7BC7\u8BBA\u6587\u3002",
       "\u5982\u679C\u8BC1\u636E\u4E0D\u8DB3\uFF0C\u8BF7\u660E\u786E\u8BF4\u660E\u4E0D\u8DB3\uFF0C\u4E0D\u8981\u7F16\u9020\u3002",
       "",
-      parts.join("\n\n---\n\n"),
-      "",
-      "## \u7528\u6237\u95EE\u9898",
-      question
+      parts.join("\n\n---\n\n")
     ].join("\n");
+  }
+  async composeApiContext(question, currentContext) {
+    var _a, _b, _c, _d, _e;
+    const budget = this.plugin.settings.contextBudget || DEFAULT_SETTINGS.contextBudget;
+    const session = this.currentSessionId ? (_b = (_a = this.services.conversations).getSession) == null ? void 0 : _b.call(_a, this.currentSessionId) : (_d = (_c = this.services.conversations).getActiveSession) == null ? void 0 : _d.call(_c, this.conversationKey);
+    const compose = (memory) => composeBoundedContext({
+      system: this.buildSystemMessage().content,
+      transcript: this.transcript,
+      currentUser: question,
+      currentContext,
+      memory,
+      maxInputChars: budget.maxInputChars,
+      minRecentTurns: budget.minRecentTurns
+    });
+    const initial = compose();
+    if (!initial.omittedMessageCount) return initial;
+    if ((session == null ? void 0 : session.memory) && session.memory.coveredMessageCount >= initial.omittedMessageCount) {
+      return compose(session.memory.content);
+    }
+    try {
+      const memory = await summarizeSessionMemory({
+        transcript: this.transcript,
+        coveredMessageCount: initial.omittedMessageCount,
+        llm: this.services.llm,
+        modelProfile: this.services.models.get(
+          this.plugin.settings.summaryModelId || this.currentModelId
+        ),
+        signal: (_e = this.abortController) == null ? void 0 : _e.signal
+      });
+      const writableSession = session || this.ensureCurrentSessionForWrite();
+      if ((writableSession == null ? void 0 : writableSession.id) && this.services.conversations.updateSessionMetadata) {
+        await this.services.conversations.updateSessionMetadata(writableSession.id, { memory });
+      }
+      return compose(memory.content);
+    } catch (error) {
+      if (!isAbortError2(error)) {
+        new import_obsidian3.Notice("\u8F83\u65E9\u5BF9\u8BDD\u6458\u8981\u751F\u6210\u5931\u8D25\uFF0C\u672C\u8F6E\u4EC5\u643A\u5E26\u6700\u8FD1\u5BF9\u8BDD\u3002" + errorMessage2(error));
+      }
+      return initial;
+    }
   }
   async completeApiMultiPaperAnswer(question, userLabel, bubble) {
     var _a, _b;
-    const outgoing = await this.buildApiMultiPaperContext(question, (message) => {
+    const currentContext = await this.buildApiMultiPaperContext(question, (message) => {
       var _a2;
       (_a2 = this.multiPaperStatusEl) == null ? void 0 : _a2.setText(message);
       setBubbleText(bubble, message);
     });
+    const composition = await this.composeApiContext(question, currentContext);
     let fullText = "";
     let firstChunkArrived = false;
     fullText = await this.services.llm.chat({
-      messages: [...this.messages, { role: "user", content: outgoing }],
+      messages: composition.messages,
       onChunk: (_piece, acc) => {
         fullText = acc;
         if (!firstChunkArrived) {
@@ -5489,29 +5670,31 @@ ${snapshot.progress || "\u6B63\u5728\u7B49\u5F85 Codex CLI \u4E8B\u4EF6\u2026"}`
     }
     this.setSendingState(true);
     const loadingBubble = this.addBubble("assistant", "\u601D\u8003\u4E2D\u2026", { loading: true });
-    let outgoingContent = opts.outgoingContentOverride || question;
+    const abortController = new AbortController();
+    this.abortController = abortController;
+    let currentContext = opts.outgoingContentOverride || "";
     if (opts.outgoingContentOverride) {
     } else if (opts.skipContextAugmentation) {
     } else if (this.referencedPdfFiles.length) {
       setBubbleText(loadingBubble, "\u6B63\u5728\u51C6\u5907\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u2026");
       try {
-        outgoingContent = await this.buildApiMultiPaperContext(question, (message) => {
+        currentContext = await this.buildApiMultiPaperContext(question, (message) => {
           var _a;
           (_a = this.multiPaperStatusEl) == null ? void 0 : _a.setText(message);
           setBubbleText(loadingBubble, message);
         });
       } catch (err) {
         new import_obsidian3.Notice("\u591A\u8BBA\u6587\u4E0A\u4E0B\u6587\u51C6\u5907\u5931\u8D25\uFF0C\u5DF2\u9000\u56DE\u5F53\u524D\u95EE\u9898: " + errorMessage2(err));
-        outgoingContent = question;
+        currentContext = "";
       }
       setBubbleText(loadingBubble, "\u601D\u8003\u4E2D\u2026");
-    } else if (this.useRag && this.useFullTextMode && this.pdfFile && !this.fullTextAttached) {
+    } else if (this.useRag && this.useFullTextMode && this.pdfFile) {
       setBubbleText(loadingBubble, "\u6B63\u5728\u8BFB\u53D6\u5168\u6587\u2026");
       try {
         if (!this.fullTextForQA) {
           this.fullTextForQA = await this.services.papers.extractFullText(this.pdfFile);
         }
-        outgoingContent = "\u3010\u8BBA\u6587\u5168\u6587\u3011:\n" + this.fullTextForQA + "\n\n\u3010\u6211\u7684\u95EE\u9898\u3011:\n" + question;
+        currentContext = "\u3010\u8BBA\u6587\u5168\u6587\u3011:\n" + this.fullTextForQA;
         this.fullTextAttached = true;
       } catch (err) {
       }
@@ -5535,17 +5718,20 @@ ${snapshot.progress || "\u6B63\u5728\u7B49\u5F85 Codex CLI \u4E8B\u4EF6\u2026"}`
       if (expanded.length) {
         const retrievedText = expanded.map((c) => `[\u7B2C${c.page}\u9875]
 ${c.text}`).join("\n\n---\n\n");
-        outgoingContent = "\u3010\u4ECE\u5168\u6587\u4E2D\u6309\u5173\u952E\u8BCD\u68C0\u7D22\u5230\u7684\u53EF\u80FD\u76F8\u5173\u7247\u6BB5(\u4E0D\u4E00\u5B9A\u5B8C\u5168\u51C6\u786E,\u4EC5\u4F9B\u53C2\u8003)\u3011:\n" + retrievedText + "\n\n\u3010\u6211\u7684\u95EE\u9898\u3011:\n" + question;
+        currentContext = "\u3010\u4ECE\u5168\u6587\u4E2D\u6309\u5173\u952E\u8BCD\u68C0\u7D22\u5230\u7684\u53EF\u80FD\u76F8\u5173\u7247\u6BB5(\u4E0D\u4E00\u5B9A\u5B8C\u5168\u51C6\u786E,\u4EC5\u4F9B\u53C2\u8003)\u3011:\n" + retrievedText;
       }
       setBubbleText(loadingBubble, "\u601D\u8003\u4E2D\u2026");
     }
-    this.messages.push({ role: "user", content: outgoingContent });
-    this.abortController = new AbortController();
+    const composition = await this.composeApiContext(question, currentContext);
+    if (composition.currentInputTruncated) {
+      new import_obsidian3.Notice("\u672C\u8F6E\u8BBA\u6587\u4E0A\u4E0B\u6587\u8D85\u8FC7\u8F93\u5165\u9884\u7B97\uFF0C\u5DF2\u4FDD\u7559\u95EE\u9898\u5E76\u622A\u53D6\u53EF\u53D1\u9001\u7684\u4E0A\u4E0B\u6587\u3002");
+    }
+    this.messages.push({ role: "user", content: question });
     let fullText = "";
     let firstChunkArrived = false;
     try {
       fullText = await this.services.llm.chat({
-        messages: this.messages,
+        messages: composition.messages,
         onChunk: (_piece, acc) => {
           fullText = acc;
           if (!firstChunkArrived) {
@@ -5555,7 +5741,7 @@ ${c.text}`).join("\n\n---\n\n");
           setBubbleText(loadingBubble, acc);
           this.historyEl.scrollTo({ top: this.historyEl.scrollHeight, behavior: "auto" });
         },
-        signal: this.abortController.signal,
+        signal: abortController.signal,
         modelProfile: this.services.models.get(this.currentModelId)
       });
       loadingBubble.removeClass("is-loading");
