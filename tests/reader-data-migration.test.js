@@ -104,6 +104,8 @@ test("checkpointed migration writes validated reader entities before stripping l
   assert.equal(result.migrated, true);
   assert.equal(result.fallback, false);
   assert.equal(sessions.get("s1").messages[1].content, "Answer");
+  assert.equal(sessions.get("s1").version, 3);
+  assert.ok(sessions.get("s1").messages.every((message) => message.id && Number.isFinite(message.createdAt)));
   assert.equal(papers.get("papers/demo.pdf").summary.summary, "Summary");
   assert.equal(committed.length, 1);
   assert.equal(committed[0].readerDataVersion, 1);

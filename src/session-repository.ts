@@ -113,10 +113,10 @@ export class SessionRepository {
       title: session.title,
       conversationKey: session.conversationKey,
       mode: session.mode,
-      pinned: false,
-      archived: false,
+      pinned: session.pinned,
+      archived: Boolean(session.archivedAt),
       missing: session.sourceStatus === "missing",
-      tags: [],
+      tags: [...session.tags],
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
     };
@@ -169,9 +169,9 @@ export class SessionRepository {
     this.sessions.set(session.id, clone(session));
     this.indexEntries.set(session.id, {
       ...this.indexEntry(session, fileName),
-      pinned: existing?.pinned || false,
-      archived: existing?.archived || false,
-      tags: existing?.tags || [],
+      pinned: session.pinned,
+      archived: Boolean(session.archivedAt),
+      tags: [...session.tags],
     });
     await this.persistIndex();
   }

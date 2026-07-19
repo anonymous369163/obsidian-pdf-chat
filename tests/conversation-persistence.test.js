@@ -222,7 +222,7 @@ test("migrates legacy conversation histories into resumable sessions without del
   });
 
   assert.equal(session.mode, "codex");
-  assert.deepEqual(plain(session.messages), [
+  assert.deepEqual(plain(session.messages).map(({ role, content, status }) => ({ role, content, status })), [
     { role: "user", content: "Old question", status: "complete" },
     { role: "assistant", content: "Old answer", status: "complete" },
   ]);
@@ -275,7 +275,7 @@ test("keeps an empty Codex session once a native thread id has been recorded", (
   assert.deepEqual(plain(sessions["session-native"].messages), []);
 });
 
-test("migrates version-1 sessions to version 2 and preserves per-session API routing", () => {
+test("migrates version-1 sessions to version 3 and preserves per-session API routing", () => {
   const PluginClass = loadPluginModule();
   const normalize = PluginClass.__test.normalizeConversationSessions;
   const sessions = normalize({
@@ -294,7 +294,7 @@ test("migrates version-1 sessions to version 2 and preserves per-session API rou
     },
   });
 
-  assert.equal(sessions["session-api"].version, 2);
+  assert.equal(sessions["session-api"].version, 3);
   assert.deepEqual(plain(sessions["session-api"].api), {
     modelId: "model-b",
     presetId: "paper-map",
@@ -1114,6 +1114,66 @@ test("handleSubmit persists streamed partial text when generation is stopped", a
   assert.doesNotMatch(JSON.stringify(modal.messages), /按关键词检索到的可能相关片段/);
   assert.equal(modal.messages.at(-2).content, "Question");
   assert.equal(bubbles.at(-1).text, "Partial answer\n\n[已停止生成]");
+});
+
+test("legacy session messages receive stable IDs and timestamps without changing content order", () => {
+  const PluginClass = loadPluginModule();
+  const normalize = PluginClass.__test.normalizeConversationSessions;
+  const legacy = {
+    stable: {
+      version: 2,
+      id: "stable",
+      ["conversation" + "Key"]: "pdf:papers/demo.pdf",
+      title: "Stable",
+      mode: "chat",
+      messages: [
+        { role: "user", content: "Question", status: "complete" },
+        { role: "assistant", content: "Answer", status: "stopped" },
+      ],
+      referencedPdfPaths: [],
+      includeCurrentPdfInCodex: true,
+      createdAt: 1700000000000,
+      updatedAt: 1700000000100,
+    },
+  };
+
+  const first = normalize(legacy).stable;
+  const second = normalize(legacy).stable;
+  assert.equal(first.version, 3);
+  assert.deepEqual(plain(first.messages).map((message) => message.id), plain(second.messages).map((message) => message.id));
+  assert.deepEqual(plain(first.messages).map((message) => message.createdAt), [1700000000000, 1700000000001]);
+  assert.deepEqual(plain(first.messages).map((message) => message.content), ["Question", "Answer"]);
+});
+
+test("version 3 session library metadata is normalized deterministically", () => {
+  const PluginClass = loadPluginModule();
+  const session = PluginClass.__test.normalizeConversationSessions({
+    library: {
+      version: 3,
+      id: "library",
+      ["conversation" + "Key"]: "pdf:papers/demo.pdf",
+      title: " Library ",
+      mode: "codex",
+      messages: [],
+      referencedPdfPaths: [],
+      includeCurrentPdfInCodex: true,
+      pinned: true,
+      tags: [" method ", "method", "important", ""],
+      archivedAt: 1700000000200,
+      parentSessionId: "parent-session",
+      installationId: "install-local",
+      sourceStatus: "missing",
+      createdAt: 1700000000000,
+      updatedAt: 1700000000100,
+    },
+  }).library;
+
+  assert.equal(session.pinned, true);
+  assert.deepEqual(plain(session.tags), ["method", "important"]);
+  assert.equal(session.archivedAt, 1700000000200);
+  assert.equal(session.parentSessionId, "parent-session");
+  assert.equal(session.installationId, "install-local");
+  assert.equal(session.sourceStatus, "missing");
 });
 
 test("handleTranslate uses the dedicated isolated translation pipeline without reading the input box", async () => {

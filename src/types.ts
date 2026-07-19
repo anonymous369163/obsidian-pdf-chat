@@ -27,9 +27,22 @@ export interface LlmRequest {
 }
 
 export interface ConversationMessage {
+  id?: string;
   role: "user" | "assistant";
   content: string;
   status: "complete" | "stopped";
+  createdAt?: number;
+  evidence?: ResearchEvidence[];
+}
+
+export interface ResearchEvidence {
+  id: string;
+  claim: string;
+  paperPath?: string;
+  page?: number;
+  sourceAlias?: string;
+  verification: "located" | "unverified";
+  raw: string;
 }
 
 export interface ConversationHistory {
@@ -106,7 +119,7 @@ export interface PendingCodexTurn {
 }
 
 export interface ConversationSession {
-  version: 2;
+  version: 3;
   id: string;
   conversationKey: string;
   title: string;
@@ -118,7 +131,12 @@ export interface ConversationSession {
   codex?: CodexSessionMetadata;
   pendingTurn?: PendingCodexTurn;
   memory?: SessionMemory;
-  sourceStatus?: PaperSourceStatus;
+  sourceStatus: PaperSourceStatus;
+  pinned: boolean;
+  tags: string[];
+  archivedAt?: number;
+  parentSessionId?: string;
+  installationId?: string;
   createdAt: number;
   updatedAt: number;
 }

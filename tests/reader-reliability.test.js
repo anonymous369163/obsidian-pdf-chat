@@ -88,7 +88,19 @@ test("0.8.2 settings add bounded context defaults without deleting legacy state"
     minRecentTurns: 6,
     maxSelectionChars: 20000,
   });
-  assert.deepEqual(plain(migrated.settings.conversationSessions), legacySessions);
+  const migratedSession = plain(migrated.settings.conversationSessions["session-reader"]);
+  assert.equal(migratedSession.version, 3);
+  assert.equal(migratedSession.id, legacySessions["session-reader"].id);
+  assert.equal(migratedSession.conversationKey, legacySessions["session-reader"].conversationKey);
+  assert.equal(migratedSession.title, legacySessions["session-reader"].title);
+  assert.equal(migratedSession.sourceStatus, "available");
+  assert.equal(migratedSession.pinned, false);
+  assert.deepEqual(migratedSession.tags, []);
+  assert.deepEqual(
+    migratedSession.messages.map(({ role, content, status }) => ({ role, content, status })),
+    legacySessions["session-reader"].messages,
+  );
+  assert.ok(migratedSession.messages.every((message) => message.id && message.createdAt));
   assert.deepEqual(plain(DEFAULT_SETTINGS.contextBudget), {
     maxInputChars: 60000,
     minRecentTurns: 6,

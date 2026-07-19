@@ -6,6 +6,7 @@ import type {
   ConversationSession,
   ConversationSessionMode,
   PendingCodexTurn,
+  ResearchEvidence,
 } from "./types";
 
 export function cleanSelectionText(raw: string): string {
@@ -26,20 +27,62 @@ export function stableConversationHash(text: string): string {
 }
 
 export function normalizeConversationMessages(messages: unknown): ConversationMessage[] {
+  return normalizeMessages(messages);
+}
+
+interface MessageIdentityOptions {
+  sessionId: string;
+  baseTimestamp: number;
+}
+
+function normalizeMessages(
+  messages: unknown,
+  identity?: MessageIdentityOptions
+): ConversationMessage[] {
   if (!Array.isArray(messages)) return [];
   const normalized: ConversationMessage[] = [];
-  for (const candidate of messages) {
+  for (let index = 0; index < messages.length; index += 1) {
+    const candidate = messages[index];
     if (!candidate || typeof candidate !== "object") continue;
     const message = candidate as Record<string, unknown>;
     if (message.role !== "user" && message.role !== "assistant") continue;
     if (typeof message.content !== "string" || !message.content.trim()) continue;
-    normalized.push({
+    const value: ConversationMessage = {
       role: message.role,
       content: message.content,
       status: message.role === "assistant" && message.status === "stopped" ? "stopped" : "complete",
-    });
+    };
+    const existingId = typeof message.id === "string" ? message.id.trim() : "";
+    const existingCreatedAt =
+      typeof message.createdAt === "number" && Number.isFinite(message.createdAt)
+        ? message.createdAt
+        : undefined;
+    if (identity || existingId) {
+      value.id =
+        existingId ||
+        `message-${stableConversationHash(
+          `${identity!.sessionId}:${index}:${message.role}:${stableConversationHash(message.content)}`
+        )}`;
+    }
+    if (identity || existingCreatedAt !== undefined) {
+      value.createdAt = existingCreatedAt ?? identity!.baseTimestamp + index;
+    }
+    if (Array.isArray(message.evidence)) {
+      value.evidence = message.evidence
+        .filter((item): item is ResearchEvidence => Boolean(item && typeof item === "object"))
+        .map((item) => ({ ...item }));
+    }
+    normalized.push(value);
   }
   return normalized;
+}
+
+function normalizeSessionMessages(
+  messages: unknown,
+  sessionId: string,
+  baseTimestamp: number
+): ConversationMessage[] {
+  return normalizeMessages(messages, { sessionId, baseTimestamp });
 }
 
 export function normalizeConversationHistories(saved: unknown): Record<string, ConversationHistory> {
@@ -128,6 +171,18 @@ function normalizeApiSessionMetadata(value: unknown): ConversationSession["api"]
     : undefined;
 }
 
+function normalizeTags(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim().replace(/\s+/g, " ").slice(0, 50))
+        .filter(Boolean)
+    )
+  ).slice(0, 20);
+}
+
 function normalizeSessionMemory(value: unknown): ConversationSession["memory"] {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const candidate = value as Record<string, unknown>;
@@ -154,8 +209,9 @@ function normalizeSessionId(value: unknown, fallbackSeed: string): string {
 function cloneSession(session: ConversationSession): ConversationSession {
   return {
     ...session,
-    messages: normalizeConversationMessages(session.messages),
+    messages: normalizeSessionMessages(session.messages, session.id, session.createdAt),
     referencedPdfPaths: [...session.referencedPdfPaths],
+    tags: [...session.tags],
     api: session.api ? { ...session.api } : undefined,
     codex: session.codex ? { ...session.codex } : undefined,
     pendingTurn: session.pendingTurn
@@ -175,12 +231,12 @@ export function normalizeConversationSessions(saved: unknown): Record<string, Co
       typeof entry.conversationKey === "string" && entry.conversationKey.trim()
         ? entry.conversationKey.trim()
         : "";
-    const messages = normalizeConversationMessages(entry.messages);
     const id = normalizeSessionId(entry.id || key, `${conversationKey}:${key}`);
     const createdAt =
       typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt) ? entry.createdAt : 0;
     const updatedAt =
       typeof entry.updatedAt === "number" && Number.isFinite(entry.updatedAt) ? entry.updatedAt : createdAt;
+    const messages = normalizeSessionMessages(entry.messages, id, createdAt);
     const codexCandidate = entry.codex && typeof entry.codex === "object" ? (entry.codex as Record<string, unknown>) : null;
     const codex =
       codexCandidate && typeof codexCandidate.model === "string" && codexCandidate.model.trim()
@@ -194,7 +250,7 @@ export function normalizeConversationSessions(saved: unknown): Record<string, Co
         : undefined;
     if (!conversationKey) continue;
     normalized[id] = {
-      version: 2,
+      version: 3,
       id,
       conversationKey,
       title:
@@ -209,7 +265,19 @@ export function normalizeConversationSessions(saved: unknown): Record<string, Co
       codex,
       pendingTurn: normalizePendingCodexTurn(entry.pendingTurn),
       memory: normalizeSessionMemory(entry.memory),
-      sourceStatus: entry.sourceStatus === "missing" ? "missing" : undefined,
+      sourceStatus: entry.sourceStatus === "missing" ? "missing" : "available",
+      pinned: entry.pinned === true,
+      tags: normalizeTags(entry.tags),
+      archivedAt:
+        typeof entry.archivedAt === "number" && Number.isFinite(entry.archivedAt) && entry.archivedAt > 0
+          ? entry.archivedAt
+          : undefined,
+      parentSessionId:
+        typeof entry.parentSessionId === "string" && entry.parentSessionId.trim() && entry.parentSessionId.trim() !== id
+          ? entry.parentSessionId.trim()
+          : undefined,
+      installationId:
+        typeof entry.installationId === "string" ? entry.installationId.trim() || undefined : undefined,
       createdAt,
       updatedAt,
     };
@@ -244,6 +312,11 @@ export interface ConversationSessionMetadata {
   codex?: ConversationSession["codex"];
   memory?: ConversationSession["memory"];
   sourceStatus?: ConversationSession["sourceStatus"];
+  pinned?: boolean;
+  tags?: string[];
+  archivedAt?: number;
+  parentSessionId?: string;
+  installationId?: string;
 }
 
 export class ConversationStore {
@@ -284,18 +357,23 @@ export class ConversationStore {
     if (existing) return cloneSession(existing);
     const timestamp = legacy?.updatedAt || this.now();
     const session: ConversationSession = {
-      version: 2,
+      version: 3,
       id,
       conversationKey: key,
       title: metadata.title || key.replace(/^pdf:/, ""),
       mode: metadata.mode || "chat",
-      messages,
+      messages: normalizeSessionMessages(messages, id, timestamp),
       referencedPdfPaths: normalizeStringArray(metadata.referencedPdfPaths),
       includeCurrentPdfInCodex: metadata.includeCurrentPdfInCodex !== false,
       api: normalizeApiSessionMetadata(metadata.api),
       codex: metadata.codex ? { ...metadata.codex, lifecycle: metadata.codex.lifecycle || "active" } : undefined,
       memory: normalizeSessionMemory(metadata.memory),
       sourceStatus: metadata.sourceStatus === "missing" ? "missing" : "available",
+      pinned: metadata.pinned === true,
+      tags: normalizeTags(metadata.tags),
+      archivedAt: metadata.archivedAt,
+      parentSessionId: metadata.parentSessionId,
+      installationId: metadata.installationId,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -326,6 +404,11 @@ export class ConversationStore {
     }
     if (metadata.memory) session.memory = normalizeSessionMemory(metadata.memory);
     if (metadata.sourceStatus) session.sourceStatus = metadata.sourceStatus;
+    if (typeof metadata.pinned === "boolean") session.pinned = metadata.pinned;
+    if (metadata.tags) session.tags = normalizeTags(metadata.tags);
+    if (metadata.archivedAt !== undefined) session.archivedAt = metadata.archivedAt;
+    if (metadata.parentSessionId !== undefined) session.parentSessionId = metadata.parentSessionId;
+    if (metadata.installationId !== undefined) session.installationId = metadata.installationId;
     return session;
   }
 
@@ -382,7 +465,7 @@ export class ConversationStore {
     const timestamp = this.now();
     const id = `session-${stableConversationHash(`${key}:${timestamp}:${Object.keys(settings.conversationSessions || {}).length}`)}`;
     const session: ConversationSession = {
-      version: 2,
+      version: 3,
       id,
       conversationKey: key,
       title: metadata.title || key.replace(/^pdf:/, ""),
@@ -394,6 +477,11 @@ export class ConversationStore {
       codex: metadata.codex ? { ...metadata.codex, lifecycle: metadata.codex.lifecycle || "active" } : undefined,
       memory: normalizeSessionMemory(metadata.memory),
       sourceStatus: metadata.sourceStatus === "missing" ? "missing" : "available",
+      pinned: metadata.pinned === true,
+      tags: normalizeTags(metadata.tags),
+      archivedAt: metadata.archivedAt,
+      parentSessionId: metadata.parentSessionId,
+      installationId: metadata.installationId,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -428,7 +516,7 @@ export class ConversationStore {
       return;
     }
     const session = this.applySessionMetadata(this.ensureSession(key, metadata), metadata);
-    session.messages = normalizedMessages;
+    session.messages = normalizeSessionMessages(normalizedMessages, session.id, timestamp);
     session.updatedAt = timestamp;
     settings.conversationSessions![session.id] = cloneSession(session);
     settings.activeConversationSessionIds![key] = session.id;
@@ -454,8 +542,8 @@ export class ConversationStore {
     const existing = this.getSession(id);
     if (!existing) throw new Error(`Conversation session not found: ${id}`);
     const session = this.applySessionMetadata(existing, metadata);
-    session.messages = normalizeConversationMessages(messages);
     session.updatedAt = this.now();
+    session.messages = normalizeSessionMessages(messages, session.id, session.updatedAt);
     settings.conversationSessions![id] = cloneSession(session);
     if (settings.activeConversationSessionIds?.[session.conversationKey] === id && session.messages.length) {
       settings.conversationHistories![session.conversationKey] = {
@@ -546,11 +634,11 @@ export class ConversationStore {
     }
     const firstUserTurn = !session.messages.some((message) => message.role === "user");
     const derivedTitle = userContent.replace(/\s+/g, " ").trim().slice(0, 80);
-    session.messages = normalizeConversationMessages([
+    session.messages = normalizeSessionMessages([
       ...session.messages,
       { role: "user", content: userContent, status: "complete" },
       { role: "assistant", content: assistantContent, status: "complete" },
-    ]);
+    ], session.id, this.now());
     if (firstUserTurn && derivedTitle) session.title = derivedTitle;
     session.codex = { ...(session.codex || {}), ...codex } as ConversationSession["codex"];
     session.pendingTurn = undefined;

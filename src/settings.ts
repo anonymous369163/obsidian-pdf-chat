@@ -76,8 +76,8 @@ function legacySessionFromHistory(key: string, history: { updatedAt?: number; me
   const id = `legacy-${stableConversationHash(key)}`;
   const timestamp =
     typeof history.updatedAt === "number" && Number.isFinite(history.updatedAt) ? history.updatedAt : 0;
-  return {
-    version: 2,
+  const session: ConversationSession = {
+    version: 3,
     id,
     conversationKey: key,
     title: key.replace(/^pdf:/, ""),
@@ -85,9 +85,13 @@ function legacySessionFromHistory(key: string, history: { updatedAt?: number; me
     messages,
     referencedPdfPaths: [],
     includeCurrentPdfInCodex: true,
+    pinned: false,
+    tags: [],
+    sourceStatus: "available",
     createdAt: timestamp,
     updatedAt: timestamp,
   };
+  return normalizeConversationSessions({ [id]: session })[id] || null;
 }
 
 export interface SettingsMigrationResult {
