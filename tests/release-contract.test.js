@@ -6,24 +6,24 @@ const test = require("node:test");
 const projectRoot = path.resolve(__dirname, "..");
 const read = (relativePath) => fs.readFileSync(path.join(projectRoot, relativePath), "utf8");
 
-test("release metadata is exactly version 0.8.1 with Obsidian 1.4.0 compatibility", () => {
+test("release metadata is exactly version 0.8.2 with Obsidian 1.4.0 compatibility", () => {
   const pkg = JSON.parse(read("package.json"));
   const manifest = JSON.parse(read("manifest.json"));
   const versions = JSON.parse(read("versions.json"));
 
-  assert.equal(pkg.version, "0.8.1");
-  assert.equal(manifest.version, "0.8.1");
+  assert.equal(pkg.version, "0.8.2");
+  assert.equal(manifest.version, "0.8.2");
   assert.equal(manifest.minAppVersion, "1.4.0");
-  assert.equal(versions["0.8.1"], "1.4.0");
+  assert.equal(versions["0.8.2"], "1.4.0");
 });
 
-test("release verifier validates the 0.8.1 metadata contract", () => {
+test("release verifier validates the 0.8.2 metadata contract", () => {
   const verifier = require(path.join(projectRoot, "scripts", "verify-release.js"));
 
-  assert.equal(verifier.RELEASE_VERSION, "0.8.1");
+  assert.equal(verifier.RELEASE_VERSION, "0.8.2");
   assert.deepEqual(verifier.verifyReleaseMetadata(projectRoot), {
     minAppVersion: "1.4.0",
-    version: "0.8.1",
+    version: "0.8.2",
   });
 });
 
@@ -82,6 +82,10 @@ test("README documents the research workbench, installation, development, and pr
     "separate translation history",
     "translation model",
     "continue model",
+    "bounded context",
+    "pdf rename",
+    "extraction quality",
+    "oversized selection",
   ]) {
     assert.ok(readme.includes(phrase), `README must include: ${phrase}`);
   }

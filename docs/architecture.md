@@ -8,6 +8,10 @@ PDF Chat is a dependency-light Obsidian plugin organized around typed service bo
 - `src/pdf-chat-modal.ts`, `src/modal-ui.ts`, and `src/modal-services.ts` own the research-workbench presentation and coordinate actions without embedding transport or extraction logic.
 - `src/llm-transport.ts` accepts a typed `LlmRequest` and isolates the OpenAI-compatible HTTP and streaming protocol.
 - `src/paper-context.ts` creates typed `PaperContext` values, extracts PDF text, caches summaries/chunks, and performs local retrieval.
+- `src/extraction-quality.ts` classifies empty, short, replacement-heavy, and readable page extraction before the UI claims full-text availability.
+- `src/context-composer.ts` creates a bounded API request from visible transcript, rolling session memory, and per-turn hidden paper evidence.
+- `src/selection-limit-modal.ts` owns the one-turn oversized-selection decision and never persists its full-send override.
+- `src/vault-lifecycle.ts` reconciles PDF rename/delete events without discarding retained discussions.
 - `src/codex-cli.ts` owns native Codex CLI argument construction, JSONL parsing, direct PDF path prompts, and scoped child-process termination.
 - `src/codex-session-manager.ts` owns background Codex turns, native thread IDs, pending-turn journals, throttled progress persistence, global/UI subscriptions, and session-safe result persistence.
 - `src/multi-paper.ts` owns vault PDF search, ordinary API multi-paper context, and the advanced one-shot `debug-full` compatibility path.
@@ -19,6 +23,10 @@ PDF Chat is a dependency-light Obsidian plugin organized around typed service bo
 The paper service should extract once, cache by document identity and modification time, then fan out the same context to summary, full-text, and RAG consumers. `PaperContext` carries the active file, selection, and conversation identity. UI actions produce typed requests; `LlmRequest` carries messages, the selected model profile, cancellation, streaming callbacks, and bounded overrides. A `ResearchAction` invokes a focused service operation instead of reaching into modal internals.
 
 This separation keeps extraction, retrieval, model transport, conversations, and UI independently testable. Local `data.json` is persistence, not a release artifact.
+
+Normal API context is assembled per turn rather than accumulated in model history. The persisted transcript and `PDFChatModal.messages` contain only visible user/assistant content. Current full text, BM25 evidence, and referenced-paper material are hidden request payloads; `composeBoundedContext` reserves the current question, keeps recent complete turns, and uses a low-temperature summary-model call only when older visible turns must be omitted. The resulting request has a hard character budget, while the transcript remains lossless and exportable.
+
+PDF extraction quality is stored beside summary and chunk cache entries. Poor extraction never activates automatic full-text mode. Users can still refresh/query available chunks, ask Codex to read the original PDF directly, or apply external OCR. Vault rename reconciliation updates session keys, references, active mappings, and caches; delete reconciliation removes only regenerable caches and marks retained sessions as missing-source records.
 
 ## Native Codex session boundary
 

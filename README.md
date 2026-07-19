@@ -1,6 +1,6 @@
 ﻿# Obsidian PDF Chat
 
-Version 0.8.1 strengthens the native Codex thread workflow introduced in 0.8.0. Every turn is journaled to its exact PDF Chat session, background completion is visible after the modal closes, failed final saves can be retried safely, and history/task pickers are searchable.
+Version 0.8.2 hardens the long-term reading workflow around the native Codex thread foundation. PDF rename/delete events preserve discussions, cross-PDF resume is saved before navigation, normal API chat uses bounded context with rolling visible-history memory, oversized selection sends require an explicit decision, and extraction quality warnings prevent weak PDF text from being labelled as full-text reading.
 
 PDF Chat turns an Obsidian PDF view into a compact research workbench. Select paper text, open the workbench, and ask questions without leaving the document. User and assistant messages are selectable and copyable, and the most recent conversation is restored per-PDF.
 
@@ -11,6 +11,10 @@ PDF Chat turns an Obsidian PDF view into a compact research workbench. Select pa
 - Use the PDF-only quick-translate marker beside a non-empty selection to open a fresh modal and translate immediately.
 - Generate or reuse a paper summary for compact global context.
 - Read shorter papers in full or use local BM25 RAG for long-paper retrieval.
+- Keep long normal-API discussions responsive with bounded context: recent complete turns stay verbatim, older visible discussion is compressed into local rolling memory, and hidden PDF/RAG payloads never enter the saved transcript.
+- Continue the same discussion after a PDF rename. Deleting a PDF removes only regenerable summary/RAG caches while retaining its transcript as a missing-source session.
+- Choose what to do with an oversized selection: send it once in full, send only the configured prefix, or cancel without starting an API/Codex request.
+- Use extraction quality status to spot empty, scanned, or corrupted PDF text. Poor extraction disables automatic full-text mode and recommends Codex direct-PDF reading or OCR while leaving manual RAG available.
 - Type `@` in the composer to search vault PDFs and attach up to three referenced papers to the current question. The candidate list supports ArrowUp/ArrowDown, Enter, Tab, and Escape.
 - Type `/codex` to enter CODEX MODE. The current PDF is attached by default, referenced PDFs can be added with `@`, and each chip can be removed before the next turn.
 - Use `/refs`, `/unref <name-or-number>`, or `/clearrefs` to remove PDFs referenced by the current discussion.

@@ -1358,16 +1358,16 @@ test("onload registers separate new-conversation and continue-conversation hotke
   assert.deepEqual(plain(continued.hotkeys), [{ modifiers: ["Mod"], key: "Q" }]);
 });
 
-test("release metadata and CSS expose the exact 0.8.1 selectable-text contract", () => {
+test("release metadata and CSS expose the exact 0.8.2 selectable-text contract", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8"));
   const manifest = JSON.parse(fs.readFileSync(path.join(projectRoot, "manifest.json"), "utf8"));
   const versions = JSON.parse(fs.readFileSync(path.join(projectRoot, "versions.json"), "utf8"));
   const css = fs.readFileSync(path.join(projectRoot, "styles.css"), "utf8");
 
-  assert.equal(pkg.version, "0.8.1");
-  assert.equal(manifest.version, "0.8.1");
+  assert.equal(pkg.version, "0.8.2");
+  assert.equal(manifest.version, "0.8.2");
   assert.equal(manifest.minAppVersion, "1.4.0");
-  assert.equal(versions["0.8.1"], "1.4.0");
+  assert.equal(versions["0.8.2"], "1.4.0");
   assert.match(css, /\.pdf-chat-bubble[^}]*user-select:\s*text/s);
   assert.match(css, /-webkit-user-select:\s*text/);
   assert.match(css, /\.pdf-chat-bubble[^}]*cursor:\s*text/s);
