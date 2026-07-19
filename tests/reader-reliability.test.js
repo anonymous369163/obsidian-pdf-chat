@@ -115,3 +115,131 @@ test("invalid context budgets are repaired while valid custom values are preserv
     maxSelectionChars: 12000,
   });
 });
+
+function makeReaderState() {
+  const primary = legacySession();
+  const referenced = {
+    ...legacySession(),
+    id: "session-reference",
+    conversationKey: "pdf:papers/other.pdf",
+    referencedPdfPaths: ["papers/old.pdf", "papers/third.pdf"],
+    updatedAt: 300,
+  };
+  return {
+    conversationSessions: {
+      [primary.id]: {
+        ...primary,
+        conversationKey: "pdf:papers/old.pdf",
+      },
+      [referenced.id]: referenced,
+    },
+    activeConversationSessionIds: {
+      "pdf:papers/old.pdf": primary.id,
+      "pdf:papers/other.pdf": referenced.id,
+    },
+    conversationHistories: {
+      "pdf:papers/old.pdf": {
+        version: 1,
+        updatedAt: 200,
+        messages: primary.messages,
+      },
+    },
+    docSummaries: {
+      "papers/old.pdf": {
+        mtime: 1,
+        summary: "old summary",
+        generatedAt: 10,
+        fullLength: 100,
+        truncated: false,
+      },
+    },
+    docChunks: {
+      "papers/old.pdf": {
+        mtime: 1,
+        chunks: [{ idx: 0, page: 1, text: "evidence" }],
+        fullTextLength: 100,
+        generatedAt: 10,
+      },
+    },
+  };
+}
+
+test("PDF rename migrates sessions, active mappings, references, histories, and caches", () => {
+  const { reconcilePdfRenameState } = loadBundle();
+  assert.equal(typeof reconcilePdfRenameState, "function");
+
+  const result = reconcilePdfRenameState(
+    makeReaderState(),
+    "papers/old.pdf",
+    "archive/new.pdf"
+  );
+
+  assert.equal(result.conversationSessions["session-reader"].conversationKey, "pdf:archive/new.pdf");
+  assert.equal(result.conversationSessions["session-reader"].sourceStatus, "available");
+  assert.deepEqual(
+    plain(result.conversationSessions["session-reference"].referencedPdfPaths),
+    ["archive/new.pdf", "papers/third.pdf"]
+  );
+  assert.equal(result.activeConversationSessionIds["pdf:papers/old.pdf"], undefined);
+  assert.equal(result.activeConversationSessionIds["pdf:archive/new.pdf"], "session-reader");
+  assert.equal(result.conversationHistories["pdf:papers/old.pdf"], undefined);
+  assert.ok(result.conversationHistories["pdf:archive/new.pdf"]);
+  assert.equal(result.docSummaries["papers/old.pdf"], undefined);
+  assert.equal(result.docSummaries["archive/new.pdf"].summary, "old summary");
+  assert.equal(result.docChunks["papers/old.pdf"], undefined);
+  assert.equal(result.docChunks["archive/new.pdf"].chunks[0].text, "evidence");
+});
+
+test("PDF delete removes only regenerable caches and marks primary sessions missing", () => {
+  const { reconcilePdfDeleteState } = loadBundle();
+  assert.equal(typeof reconcilePdfDeleteState, "function");
+
+  const result = reconcilePdfDeleteState(makeReaderState(), "papers/old.pdf");
+
+  assert.equal(result.docSummaries["papers/old.pdf"], undefined);
+  assert.equal(result.docChunks["papers/old.pdf"], undefined);
+  assert.equal(result.conversationSessions["session-reader"].sourceStatus, "missing");
+  assert.equal(result.conversationSessions["session-reader"].messages.length, 2);
+  assert.deepEqual(
+    plain(result.conversationSessions["session-reference"].referencedPdfPaths),
+    ["papers/old.pdf", "papers/third.pdf"]
+  );
+  assert.ok(result.conversationHistories["pdf:papers/old.pdf"]);
+});
+
+test("vault lifecycle service registers PDF rename and delete handlers and persists serialized updates", async () => {
+  const { VaultLifecycleService } = loadBundle();
+  assert.equal(typeof VaultLifecycleService, "function");
+  const callbacks = new Map();
+  const registered = [];
+  const vault = {
+    on(name, callback) {
+      callbacks.set(name, callback);
+      return { name };
+    },
+  };
+  let settings = makeReaderState();
+  let saves = 0;
+  const service = new VaultLifecycleService(
+    vault,
+    () => settings,
+    (next) => {
+      settings = next;
+    },
+    async () => {
+      saves += 1;
+    }
+  );
+  service.attach((event) => registered.push(event.name));
+
+  assert.deepEqual(registered, ["rename", "delete"]);
+  callbacks.get("rename")({ path: "archive/new.pdf" }, "papers/old.pdf");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settings.conversationSessions["session-reader"].conversationKey, "pdf:archive/new.pdf");
+  assert.equal(saves, 1);
+
+  callbacks.get("delete")({ path: "archive/new.pdf" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settings.conversationSessions["session-reader"].sourceStatus, "missing");
+  assert.equal(saves, 2);
+});

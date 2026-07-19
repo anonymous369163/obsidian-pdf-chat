@@ -128,6 +128,24 @@ function normalizeApiSessionMetadata(value: unknown): ConversationSession["api"]
     : undefined;
 }
 
+function normalizeSessionMemory(value: unknown): ConversationSession["memory"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const candidate = value as Record<string, unknown>;
+  const content = typeof candidate.content === "string" ? candidate.content.trim() : "";
+  if (!content) return undefined;
+  return {
+    content,
+    coveredMessageCount:
+      typeof candidate.coveredMessageCount === "number" && Number.isFinite(candidate.coveredMessageCount)
+        ? Math.max(0, Math.floor(candidate.coveredMessageCount))
+        : 0,
+    updatedAt:
+      typeof candidate.updatedAt === "number" && Number.isFinite(candidate.updatedAt)
+        ? candidate.updatedAt
+        : 0,
+  };
+}
+
 function normalizeSessionId(value: unknown, fallbackSeed: string): string {
   const raw = typeof value === "string" ? value.trim() : "";
   return raw || `session-${stableConversationHash(fallbackSeed)}`;
@@ -143,6 +161,7 @@ function cloneSession(session: ConversationSession): ConversationSession {
     pendingTurn: session.pendingTurn
       ? { ...session.pendingTurn, attachedPdfPaths: [...session.pendingTurn.attachedPdfPaths] }
       : undefined,
+    memory: session.memory ? { ...session.memory } : undefined,
   };
 }
 
@@ -189,6 +208,8 @@ export function normalizeConversationSessions(saved: unknown): Record<string, Co
       api: normalizeApiSessionMetadata(entry.api),
       codex,
       pendingTurn: normalizePendingCodexTurn(entry.pendingTurn),
+      memory: normalizeSessionMemory(entry.memory),
+      sourceStatus: entry.sourceStatus === "missing" ? "missing" : undefined,
       createdAt,
       updatedAt,
     };

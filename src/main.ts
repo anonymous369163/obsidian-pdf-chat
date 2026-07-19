@@ -21,6 +21,11 @@ import {
 import { enqueueSettingsSave, migrateSettings } from "./settings";
 import { PDFChatSettingTab } from "./settings-tab";
 import { TranslationService } from "./translation";
+import {
+  reconcilePdfDeleteState,
+  reconcilePdfRenameState,
+  VaultLifecycleService,
+} from "./vault-lifecycle";
 import type {
   ConversationMessage,
   ConversationKind,
@@ -102,6 +107,7 @@ export { PDFChatModal } from "./pdf-chat-modal";
 export { QuickTranslateMarker } from "./quick-translate-marker";
 export { migrateSettings, normalizeCodexInputMode, normalizeCodexOutputMode, normalizeRagChunkSettings } from "./settings";
 export { buildTranslationMessages, splitTranslationChunks, TranslationService } from "./translation";
+export { reconcilePdfDeleteState, reconcilePdfRenameState, VaultLifecycleService } from "./vault-lifecycle";
 export type { LlmRequest, PaperContext, ResearchAction } from "./types";
 
 function nodeInsideElement(container: HTMLElement, node: Node | null | undefined): boolean {
@@ -154,6 +160,7 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
   modalServices?: PDFChatModalServices;
   quickTranslateMarker?: QuickTranslateMarker;
   codexSessionManager?: CodexSessionManager;
+  vaultLifecycleService?: VaultLifecycleService;
   private codexGlobalUnsubscribe?: () => void;
   private readonly codexRunningSessionIds = new Set<string>();
 
@@ -197,6 +204,17 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
     );
     this.translationService = new TranslationService(this.llmTransport);
     this.actionRegistry = createResearchActionRegistry();
+    if (this.app?.vault && typeof this.app.vault.on === "function") {
+      this.vaultLifecycleService = new VaultLifecycleService(
+        this.app.vault,
+        () => this.settings,
+        (settings) => {
+          this.settings = settings;
+        },
+        () => this.saveSettings()
+      );
+      this.vaultLifecycleService.attach((event) => this.registerEvent(event));
+    }
     this.modalServices = createPDFChatModalServices(this, {
       conversations: {
         getKey: (file, selectedText, kind) => getConversationKey(file, selectedText, kind),
@@ -299,6 +317,7 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
     this.codexRunningSessionIds.clear();
     this.codexSessionManager?.dispose();
     this.codexSessionManager = undefined;
+    this.vaultLifecycleService = undefined;
     this.quickTranslateMarker?.destroy();
     this.quickTranslateMarker = undefined;
   }

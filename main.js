@@ -35,6 +35,7 @@ __export(main_exports, {
   QuickTranslateMarker: () => QuickTranslateMarker,
   ResearchActionRegistry: () => ResearchActionRegistry,
   TranslationService: () => TranslationService,
+  VaultLifecycleService: () => VaultLifecycleService,
   bm25Retrieve: () => bm25Retrieve,
   bm25RetrieveMulti: () => bm25RetrieveMulti,
   buildCodexDebugFullMarkdownPrompt: () => buildCodexDebugFullMarkdownPrompt,
@@ -69,6 +70,8 @@ __export(main_exports, {
   normalizeRagChunkSettings: () => normalizeRagChunkSettings,
   parseCodexAnalysisOutput: () => parseCodexAnalysisOutput,
   parseCodexMarkdownOutput: () => parseCodexMarkdownOutput,
+  reconcilePdfDeleteState: () => reconcilePdfDeleteState,
+  reconcilePdfRenameState: () => reconcilePdfRenameState,
   removeCodexAnalysisTempDir: () => removeCodexAnalysisTempDir,
   renderCodexAnalysisMarkdown: () => renderCodexAnalysisMarkdown,
   resolveCodexExecArgs: () => resolveCodexExecArgs,
@@ -1569,6 +1572,17 @@ function normalizeApiSessionMetadata(value) {
   const presetId = typeof candidate.presetId === "string" ? candidate.presetId.trim() : "";
   return modelId || presetId ? { modelId: modelId || void 0, presetId: presetId || void 0 } : void 0;
 }
+function normalizeSessionMemory(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return void 0;
+  const candidate = value;
+  const content = typeof candidate.content === "string" ? candidate.content.trim() : "";
+  if (!content) return void 0;
+  return {
+    content,
+    coveredMessageCount: typeof candidate.coveredMessageCount === "number" && Number.isFinite(candidate.coveredMessageCount) ? Math.max(0, Math.floor(candidate.coveredMessageCount)) : 0,
+    updatedAt: typeof candidate.updatedAt === "number" && Number.isFinite(candidate.updatedAt) ? candidate.updatedAt : 0
+  };
+}
 function normalizeSessionId(value, fallbackSeed) {
   const raw = typeof value === "string" ? value.trim() : "";
   return raw || `session-${stableConversationHash(fallbackSeed)}`;
@@ -1580,7 +1594,8 @@ function cloneSession(session) {
     referencedPdfPaths: [...session.referencedPdfPaths],
     api: session.api ? { ...session.api } : void 0,
     codex: session.codex ? { ...session.codex } : void 0,
-    pendingTurn: session.pendingTurn ? { ...session.pendingTurn, attachedPdfPaths: [...session.pendingTurn.attachedPdfPaths] } : void 0
+    pendingTurn: session.pendingTurn ? { ...session.pendingTurn, attachedPdfPaths: [...session.pendingTurn.attachedPdfPaths] } : void 0,
+    memory: session.memory ? { ...session.memory } : void 0
   };
 }
 function normalizeConversationSessions(saved) {
@@ -1615,6 +1630,8 @@ function normalizeConversationSessions(saved) {
       api: normalizeApiSessionMetadata(entry.api),
       codex,
       pendingTurn: normalizePendingCodexTurn(entry.pendingTurn),
+      memory: normalizeSessionMemory(entry.memory),
+      sourceStatus: entry.sourceStatus === "missing" ? "missing" : void 0,
       createdAt,
       updatedAt
     };
@@ -6465,6 +6482,122 @@ var PDFChatSettingTab = class extends import_obsidian4.PluginSettingTab {
   }
 };
 
+// src/vault-lifecycle.ts
+function pdfKey(path) {
+  return `pdf:${path}`;
+}
+function replaceExactPath(paths, oldPath, newPath) {
+  return Array.from(new Set(paths.map((path) => path === oldPath ? newPath : path)));
+}
+function chooseNewer(current, candidate) {
+  var _a, _b, _c, _d;
+  if (!candidate) return current;
+  if (!current) return candidate;
+  const currentTime = (_b = (_a = current.updatedAt) != null ? _a : current.generatedAt) != null ? _b : 0;
+  const candidateTime = (_d = (_c = candidate.updatedAt) != null ? _c : candidate.generatedAt) != null ? _d : 0;
+  return candidateTime > currentTime ? candidate : current;
+}
+function sessionUpdatedAt(sessions, id) {
+  return id && sessions[id] ? sessions[id].updatedAt : 0;
+}
+function reconcilePdfRenameState(input, oldPath, newPath) {
+  if (!oldPath || !newPath || oldPath === newPath) return input;
+  const oldKey = pdfKey(oldPath);
+  const newKey = pdfKey(newPath);
+  const conversationSessions = Object.fromEntries(
+    Object.entries(input.conversationSessions).map(([id, session]) => [
+      id,
+      {
+        ...session,
+        conversationKey: session.conversationKey === oldKey ? newKey : session.conversationKey,
+        referencedPdfPaths: replaceExactPath(session.referencedPdfPaths, oldPath, newPath),
+        sourceStatus: session.conversationKey === oldKey ? "available" : session.sourceStatus
+      }
+    ])
+  );
+  const activeConversationSessionIds = { ...input.activeConversationSessionIds };
+  const oldActiveId = activeConversationSessionIds[oldKey];
+  if (oldActiveId) {
+    const currentNewId = activeConversationSessionIds[newKey];
+    if (!currentNewId || sessionUpdatedAt(conversationSessions, oldActiveId) >= sessionUpdatedAt(conversationSessions, currentNewId)) {
+      activeConversationSessionIds[newKey] = oldActiveId;
+    }
+    delete activeConversationSessionIds[oldKey];
+  }
+  const conversationHistories = { ...input.conversationHistories };
+  const migratedHistory = chooseNewer(conversationHistories[newKey], conversationHistories[oldKey]);
+  if (migratedHistory) conversationHistories[newKey] = migratedHistory;
+  delete conversationHistories[oldKey];
+  const docSummaries = { ...input.docSummaries };
+  const migratedSummary = chooseNewer(docSummaries[newPath], docSummaries[oldPath]);
+  if (migratedSummary) docSummaries[newPath] = migratedSummary;
+  delete docSummaries[oldPath];
+  const docChunks = { ...input.docChunks };
+  const migratedChunks = chooseNewer(docChunks[newPath], docChunks[oldPath]);
+  if (migratedChunks) docChunks[newPath] = migratedChunks;
+  delete docChunks[oldPath];
+  return {
+    ...input,
+    conversationSessions,
+    activeConversationSessionIds,
+    conversationHistories,
+    docSummaries,
+    docChunks
+  };
+}
+function reconcilePdfDeleteState(input, path) {
+  if (!path) return input;
+  const key = pdfKey(path);
+  const conversationSessions = Object.fromEntries(
+    Object.entries(input.conversationSessions).map(([id, session]) => [
+      id,
+      session.conversationKey === key ? { ...session, sourceStatus: "missing" } : { ...session }
+    ])
+  );
+  const docSummaries = { ...input.docSummaries };
+  const docChunks = { ...input.docChunks };
+  delete docSummaries[path];
+  delete docChunks[path];
+  return { ...input, conversationSessions, docSummaries, docChunks };
+}
+function isPdfPath(path) {
+  return /\.pdf$/i.test(path);
+}
+var VaultLifecycleService = class {
+  constructor(vault, getSettings, replaceSettings, persist) {
+    this.vault = vault;
+    this.getSettings = getSettings;
+    this.replaceSettings = replaceSettings;
+    this.persist = persist;
+    __publicField(this, "queue", Promise.resolve());
+  }
+  attach(register) {
+    register(
+      this.vault.on("rename", (file, oldPath) => {
+        const newPath = file.path;
+        if (isPdfPath(oldPath) && isPdfPath(newPath)) {
+          this.enqueue(() => reconcilePdfRenameState(this.getSettings(), oldPath, newPath));
+        } else if (isPdfPath(oldPath)) {
+          this.enqueue(() => reconcilePdfDeleteState(this.getSettings(), oldPath));
+        }
+      })
+    );
+    register(
+      this.vault.on("delete", (file) => {
+        if (isPdfPath(file.path)) {
+          this.enqueue(() => reconcilePdfDeleteState(this.getSettings(), file.path));
+        }
+      })
+    );
+  }
+  enqueue(update) {
+    this.queue = this.queue.catch(() => void 0).then(async () => {
+      this.replaceSettings(update());
+      await this.persist();
+    });
+  }
+};
+
 // src/main.ts
 function nodeInsideElement(container, node) {
   if (!node) return false;
@@ -6505,11 +6638,12 @@ var PDFChatPlugin = class extends import_obsidian5.Plugin {
     __publicField(this, "modalServices");
     __publicField(this, "quickTranslateMarker");
     __publicField(this, "codexSessionManager");
+    __publicField(this, "vaultLifecycleService");
     __publicField(this, "codexGlobalUnsubscribe");
     __publicField(this, "codexRunningSessionIds", /* @__PURE__ */ new Set());
   }
   async onload() {
-    var _a;
+    var _a, _b;
     this._saveQueue = Promise.resolve();
     await this.loadSettings();
     this.conversationStore = new ConversationStore(
@@ -6550,6 +6684,17 @@ var PDFChatPlugin = class extends import_obsidian5.Plugin {
     );
     this.translationService = new TranslationService(this.llmTransport);
     this.actionRegistry = createResearchActionRegistry();
+    if (((_a = this.app) == null ? void 0 : _a.vault) && typeof this.app.vault.on === "function") {
+      this.vaultLifecycleService = new VaultLifecycleService(
+        this.app.vault,
+        () => this.settings,
+        (settings) => {
+          this.settings = settings;
+        },
+        () => this.saveSettings()
+      );
+      this.vaultLifecycleService.attach((event) => this.registerEvent(event));
+    }
     this.modalServices = createPDFChatModalServices(this, {
       conversations: {
         getKey: (file, selectedText, kind) => getConversationKey(file, selectedText, kind),
@@ -6616,7 +6761,7 @@ var PDFChatPlugin = class extends import_obsidian5.Plugin {
       openModal: (request) => this.openQuickTranslateModal(request)
     });
     if (typeof document !== "undefined") this.quickTranslateMarker.attach(document);
-    const workspace = (_a = this.app) == null ? void 0 : _a.workspace;
+    const workspace = (_b = this.app) == null ? void 0 : _b.workspace;
     workspace == null ? void 0 : workspace.onLayoutReady(() => {
       const windowOpenRef = workspace.on("window-open", (workspaceWindow) => {
         var _a2;
@@ -6642,6 +6787,7 @@ var PDFChatPlugin = class extends import_obsidian5.Plugin {
     this.codexRunningSessionIds.clear();
     (_b = this.codexSessionManager) == null ? void 0 : _b.dispose();
     this.codexSessionManager = void 0;
+    this.vaultLifecycleService = void 0;
     (_c = this.quickTranslateMarker) == null ? void 0 : _c.destroy();
     this.quickTranslateMarker = void 0;
   }
