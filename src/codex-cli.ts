@@ -115,9 +115,9 @@ export function resolveCodexPdfLocation(
   return { absolutePath, workingDirectory: path.dirname(absolutePath) };
 }
 
-function quotePathForPrompt(file: CodexPdfReference): string {
+function quotePathForPrompt(file: CodexPdfReference, index: number): string {
   const label = file.role === "current" ? "当前论文" : "引用论文";
-  return `- ${label}（${file.name}）：${file.absolutePath}`;
+  return `- [P${index + 1}] ${label}（${file.name}）：${file.absolutePath}`;
 }
 
 export function buildCodexTurnPrompt(request: BuildCodexTurnPromptRequest): string {
@@ -132,7 +132,7 @@ export function buildCodexTurnPrompt(request: BuildCodexTurnPromptRequest): stri
   ];
   if (selection) sections.push(`本轮选区上下文：\n${selection}`);
   sections.push(
-    "请直接回答用户问题。只有问题确实需要论文内容时才读取上述 PDF；普通问候或状态问题无需读取 PDF。引用论文证据时尽量给出文件名和 PDF 页码。不要读取未列出的 PDF。"
+    "请直接回答用户问题。只有问题确实需要论文内容时才读取上述 PDF；普通问候或状态问题无需读取 PDF。引用可确认的论文证据时，请使用 [P1, p.N] 格式（P1 替换为上方论文别名，N 替换为 PDF 页码）；无法确认页码时明确说明，不要编造。不要读取未列出的 PDF。"
   );
   return sections.join("\n\n");
 }

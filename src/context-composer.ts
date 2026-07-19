@@ -35,6 +35,26 @@ export interface SessionMemorySummaryRequest {
   now?: () => number;
 }
 
+export interface EvidencePromptSource {
+  alias: string;
+  name: string;
+  paperPath: string;
+}
+
+export function buildEvidenceCitationInstructions(sources: EvidencePromptSource[]): string {
+  const normalized = (Array.isArray(sources) ? sources : []).filter(
+    (source) => source?.alias?.trim() && source?.paperPath?.trim()
+  );
+  if (!normalized.length) return "";
+  return [
+    "论文证据来源别名：",
+    ...normalized.map(
+      (source) => `- [${source.alias.trim()}] ${source.name || source.paperPath}：${source.paperPath}`
+    ),
+    "回答中引用可确认的论文证据时，请使用 [P1, p.N] 这种格式（P1 替换为对应别名，N 替换为 PDF 页码）。无法确认页码时请明确说明，不要编造页码。",
+  ].join("\n");
+}
+
 interface TranscriptTurn {
   start: number;
   messages: LlmMessage[];

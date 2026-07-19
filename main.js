@@ -54,6 +54,7 @@ __export(main_exports, {
   buildCodexPdfOnlyPrompt: () => buildCodexPdfOnlyPrompt,
   buildCodexThreadExecArgs: () => buildCodexThreadExecArgs,
   buildCodexTurnPrompt: () => buildCodexTurnPrompt,
+  buildEvidenceCitationInstructions: () => buildEvidenceCitationInstructions,
   buildTranslationMessages: () => buildTranslationMessages,
   chunkPdfPages: () => chunkPdfPages,
   cleanSelectionText: () => cleanSelectionText,
@@ -78,8 +79,10 @@ __export(main_exports, {
   normalizeConversationMessages: () => normalizeConversationMessages,
   normalizeConversationSessions: () => normalizeConversationSessions,
   normalizeRagChunkSettings: () => normalizeRagChunkSettings,
+  openPdfEvidence: () => openPdfEvidence,
   parseCodexAnalysisOutput: () => parseCodexAnalysisOutput,
   parseCodexMarkdownOutput: () => parseCodexMarkdownOutput,
+  parseResearchEvidence: () => parseResearchEvidence,
   reconcilePdfDeleteState: () => reconcilePdfDeleteState,
   reconcilePdfRenameState: () => reconcilePdfRenameState,
   removeCodexAnalysisTempDir: () => removeCodexAnalysisTempDir,
@@ -105,7 +108,7 @@ __export(main_exports, {
   writeCodexPdfOnlyPackage: () => writeCodexPdfOnlyPackage
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 
 // src/actions.ts
 var ResearchActionRegistry = class {
@@ -917,9 +920,9 @@ function resolveCodexPdfLocation(app, vaultPath) {
   if (!absolutePath) throw new Error(`Unable to resolve PDF path: ${vaultPath}`);
   return { absolutePath, workingDirectory: path.dirname(absolutePath) };
 }
-function quotePathForPrompt(file) {
+function quotePathForPrompt(file, index) {
   const label = file.role === "current" ? "\u5F53\u524D\u8BBA\u6587" : "\u5F15\u7528\u8BBA\u6587";
-  return `- ${label}\uFF08${file.name}\uFF09\uFF1A${file.absolutePath}`;
+  return `- [P${index + 1}] ${label}\uFF08${file.name}\uFF09\uFF1A${file.absolutePath}`;
 }
 function buildCodexTurnPrompt(request) {
   const question = (request.question || "").trim();
@@ -934,7 +937,7 @@ ${papers.map(quotePathForPrompt).join("\n")}` : "\u672C\u8F6E\u6CA1\u6709\u9644\
   if (selection) sections.push(`\u672C\u8F6E\u9009\u533A\u4E0A\u4E0B\u6587\uFF1A
 ${selection}`);
   sections.push(
-    "\u8BF7\u76F4\u63A5\u56DE\u7B54\u7528\u6237\u95EE\u9898\u3002\u53EA\u6709\u95EE\u9898\u786E\u5B9E\u9700\u8981\u8BBA\u6587\u5185\u5BB9\u65F6\u624D\u8BFB\u53D6\u4E0A\u8FF0 PDF\uFF1B\u666E\u901A\u95EE\u5019\u6216\u72B6\u6001\u95EE\u9898\u65E0\u9700\u8BFB\u53D6 PDF\u3002\u5F15\u7528\u8BBA\u6587\u8BC1\u636E\u65F6\u5C3D\u91CF\u7ED9\u51FA\u6587\u4EF6\u540D\u548C PDF \u9875\u7801\u3002\u4E0D\u8981\u8BFB\u53D6\u672A\u5217\u51FA\u7684 PDF\u3002"
+    "\u8BF7\u76F4\u63A5\u56DE\u7B54\u7528\u6237\u95EE\u9898\u3002\u53EA\u6709\u95EE\u9898\u786E\u5B9E\u9700\u8981\u8BBA\u6587\u5185\u5BB9\u65F6\u624D\u8BFB\u53D6\u4E0A\u8FF0 PDF\uFF1B\u666E\u901A\u95EE\u5019\u6216\u72B6\u6001\u95EE\u9898\u65E0\u9700\u8BFB\u53D6 PDF\u3002\u5F15\u7528\u53EF\u786E\u8BA4\u7684\u8BBA\u6587\u8BC1\u636E\u65F6\uFF0C\u8BF7\u4F7F\u7528 [P1, p.N] \u683C\u5F0F\uFF08P1 \u66FF\u6362\u4E3A\u4E0A\u65B9\u8BBA\u6587\u522B\u540D\uFF0CN \u66FF\u6362\u4E3A PDF \u9875\u7801\uFF09\uFF1B\u65E0\u6CD5\u786E\u8BA4\u9875\u7801\u65F6\u660E\u786E\u8BF4\u660E\uFF0C\u4E0D\u8981\u7F16\u9020\u3002\u4E0D\u8981\u8BFB\u53D6\u672A\u5217\u51FA\u7684 PDF\u3002"
   );
   return sections.join("\n\n");
 }
@@ -2872,6 +2875,22 @@ var import_obsidian4 = require("obsidian");
 // src/context-composer.ts
 var MEMORY_PREFIX = "\u3010\u8F83\u65E9\u5BF9\u8BDD\u6458\u8981\u3011\n";
 var TRUNCATION_MARKER = "\n\n[\u5185\u5BB9\u56E0\u4E0A\u4E0B\u6587\u9884\u7B97\u5DF2\u622A\u65AD]";
+function buildEvidenceCitationInstructions(sources) {
+  const normalized = (Array.isArray(sources) ? sources : []).filter(
+    (source) => {
+      var _a, _b;
+      return ((_a = source == null ? void 0 : source.alias) == null ? void 0 : _a.trim()) && ((_b = source == null ? void 0 : source.paperPath) == null ? void 0 : _b.trim());
+    }
+  );
+  if (!normalized.length) return "";
+  return [
+    "\u8BBA\u6587\u8BC1\u636E\u6765\u6E90\u522B\u540D\uFF1A",
+    ...normalized.map(
+      (source) => `- [${source.alias.trim()}] ${source.name || source.paperPath}\uFF1A${source.paperPath}`
+    ),
+    "\u56DE\u7B54\u4E2D\u5F15\u7528\u53EF\u786E\u8BA4\u7684\u8BBA\u6587\u8BC1\u636E\u65F6\uFF0C\u8BF7\u4F7F\u7528 [P1, p.N] \u8FD9\u79CD\u683C\u5F0F\uFF08P1 \u66FF\u6362\u4E3A\u5BF9\u5E94\u522B\u540D\uFF0CN \u66FF\u6362\u4E3A PDF \u9875\u7801\uFF09\u3002\u65E0\u6CD5\u786E\u8BA4\u9875\u7801\u65F6\u8BF7\u660E\u786E\u8BF4\u660E\uFF0C\u4E0D\u8981\u7F16\u9020\u9875\u7801\u3002"
+  ].join("\n");
+}
 function normalizeLimit(value, fallback) {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
@@ -5145,6 +5164,13 @@ ${selectionContext}`;
     for (const file of this.referencedPdfFiles) papers.push({ file, role: "referenced" });
     return papers;
   }
+  evidencePromptSources() {
+    return this.selectedPaperFiles().map(({ file }, index) => ({
+      alias: `P${index + 1}`,
+      name: file.name || file.path,
+      paperPath: file.path
+    }));
+  }
   getMultiPaperQuestion() {
     var _a, _b;
     const typed = (_b = (_a = this.inputEl) == null ? void 0 : _a.value) == null ? void 0 : _b.trim();
@@ -5163,7 +5189,8 @@ ${selectionContext}`;
   async buildApiMultiPaperContext(question, progress) {
     const papers = this.selectedPaperFiles();
     const parts = [];
-    for (const { file, role } of papers) {
+    for (const [index, { file, role }] of papers.entries()) {
+      const alias = `P${index + 1}`;
       progress == null ? void 0 : progress(`\u6B63\u5728\u51C6\u5907 ${file.name || file.path} \u7684\u6458\u8981\u548C\u68C0\u7D22\u7247\u6BB5\u2026`);
       const summary = await this.services.papers.getOrCreateDocSummary(file, false);
       const chunksEntry = await this.services.papers.getOrCreateDocChunks(file, false);
@@ -5174,12 +5201,12 @@ ${selectionContext}`;
       );
       const evidence = retrieved.length ? retrieved.map((chunk) => {
         var _a;
-        return `[Page ${chunk.page} / chunk ${(_a = chunk.idx) != null ? _a : "?"}]
+        return `[${alias}, p.${chunk.page}] [chunk ${(_a = chunk.idx) != null ? _a : "?"}]
 ${chunk.text}`;
       }).join("\n\n") : "(\u672A\u68C0\u7D22\u5230\u660E\u663E\u76F8\u5173\u7247\u6BB5)";
       parts.push(
         [
-          `## ${role === "current" ? "\u5F53\u524D\u8BBA\u6587" : "\u5F15\u7528\u8BBA\u6587"}\uFF1A${file.name || file.path}`,
+          `## [${alias}] ${role === "current" ? "\u5F53\u524D\u8BBA\u6587" : "\u5F15\u7528\u8BBA\u6587"}\uFF1A${file.name || file.path}`,
           `\u8DEF\u5F84\uFF1A${file.path}`,
           "### \u6458\u8981",
           summary.summary || "(\u65E0\u6458\u8981)",
@@ -5212,7 +5239,8 @@ ${chunk.text}`;
     var _a, _b, _c, _d, _e;
     const budget = this.plugin.settings.contextBudget || DEFAULT_SETTINGS.contextBudget;
     const session = this.currentSessionId ? (_b = (_a = this.services.conversations).getSession) == null ? void 0 : _b.call(_a, this.currentSessionId) : (_d = (_c = this.services.conversations).getActiveSession) == null ? void 0 : _d.call(_c, this.conversationKey);
-    const system = this.buildSystemMessage(selection.text).content;
+    const citationInstructions = buildEvidenceCitationInstructions(this.evidencePromptSources());
+    const system = [this.buildSystemMessage(selection.text).content, citationInstructions].filter(Boolean).join("\n\n");
     const maxInputChars = selection.kind === "all" && selection.oversized ? Math.max(budget.maxInputChars, system.length + question.length + 2) : budget.maxInputChars;
     const compose = (memory) => composeBoundedContext({
       system,
@@ -7870,6 +7898,102 @@ var VaultLifecycleService = class {
   }
 };
 
+// src/evidence.ts
+var import_obsidian6 = require("obsidian");
+var ALIAS_CITATION = /\[([A-Za-z][A-Za-z0-9_-]*)\s*,\s*p(?:age)?\.?\s*(-?\d+)\]/gi;
+var PDF_LINK_CITATION = /\[\[([^\]#|]+\.pdf)#page=(-?\d+)(?:\|[^\]]*)?\]\]/gi;
+function normalizedPath(value) {
+  return value.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+}
+function stableHash(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+function normalizeClaim(markdown, index, rawLength) {
+  const lineStart = markdown.lastIndexOf("\n", index) + 1;
+  const nextLineBreak = markdown.indexOf("\n", index + rawLength);
+  const lineEnd = nextLineBreak >= 0 ? nextLineBreak : markdown.length;
+  const cleaned = markdown.slice(lineStart, lineEnd).replace(ALIAS_CITATION, "").replace(PDF_LINK_CITATION, "").replace(/\s+/g, " ").replace(/\s+([.,!?;:。！？；：])/g, "$1").trim();
+  return cleaned || "\u8BBA\u6587\u8BC1\u636E";
+}
+function collectCandidates(markdown) {
+  const candidates = [];
+  for (const match of markdown.matchAll(ALIAS_CITATION)) {
+    candidates.push({
+      index: match.index || 0,
+      raw: match[0],
+      alias: match[1],
+      page: Number(match[2])
+    });
+  }
+  for (const match of markdown.matchAll(PDF_LINK_CITATION)) {
+    candidates.push({
+      index: match.index || 0,
+      raw: match[0],
+      path: normalizedPath(match[1]),
+      page: Number(match[2])
+    });
+  }
+  return candidates.sort((left, right) => left.index - right.index);
+}
+function validPage(page, source) {
+  if (!Number.isInteger(page) || page < 1 || !source) return false;
+  if (Number.isInteger(source.pageCount) && Number(source.pageCount) > 0) {
+    return page <= Number(source.pageCount);
+  }
+  return true;
+}
+function parseResearchEvidence(markdown, sources) {
+  if (typeof markdown !== "string" || !markdown.trim()) return [];
+  const normalizedSources = (Array.isArray(sources) ? sources : []).filter((source) => source && source.alias && source.paperPath).map((source) => ({
+    ...source,
+    alias: source.alias.trim(),
+    paperPath: normalizedPath(source.paperPath)
+  }));
+  const byAlias = new Map(normalizedSources.map((source) => [source.alias.toLowerCase(), source]));
+  const byPath = new Map(normalizedSources.map((source) => [source.paperPath.toLowerCase(), source]));
+  const seen = /* @__PURE__ */ new Set();
+  const evidence = [];
+  for (const candidate of collectCandidates(markdown)) {
+    const source = candidate.alias ? byAlias.get(candidate.alias.toLowerCase()) : byPath.get((candidate.path || "").toLowerCase());
+    const paperPath = (source == null ? void 0 : source.paperPath) || candidate.path;
+    const sourceAlias = (source == null ? void 0 : source.alias) || candidate.alias;
+    const claim = normalizeClaim(markdown, candidate.index, candidate.raw.length);
+    const verification = validPage(candidate.page, source) ? "located" : "unverified";
+    const dedupeKey = `${(paperPath || sourceAlias || "unknown").toLowerCase()}|${candidate.page}|${claim.toLowerCase()}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    evidence.push({
+      id: `evidence-${stableHash(`${dedupeKey}|${candidate.raw}`)}`,
+      claim,
+      ...paperPath ? { paperPath } : {},
+      ...Number.isInteger(candidate.page) ? { page: candidate.page } : {},
+      ...sourceAlias ? { sourceAlias } : {},
+      verification,
+      raw: candidate.raw
+    });
+  }
+  return evidence;
+}
+async function openPdfEvidence(app, evidence) {
+  if (!evidence || evidence.verification !== "located" || !evidence.paperPath || !Number.isInteger(evidence.page) || Number(evidence.page) < 1) {
+    new import_obsidian6.Notice("\u8FD9\u6761\u8BC1\u636E\u5C1A\u672A\u9A8C\u8BC1\uFF0C\u65E0\u6CD5\u5B9A\u4F4D\u5230 PDF \u9875\u9762\u3002");
+    return false;
+  }
+  const paperPath = normalizedPath(evidence.paperPath);
+  const file = app.vault.getAbstractFileByPath(paperPath);
+  if (!file || !paperPath.toLowerCase().endsWith(".pdf")) {
+    new import_obsidian6.Notice("\u8BC1\u636E\u5BF9\u5E94\u7684 PDF \u5DF2\u79FB\u52A8\u6216\u4E0D\u5B58\u5728\uFF0C\u65E0\u6CD5\u6253\u5F00\u9875\u9762\u3002");
+    return false;
+  }
+  await app.workspace.openLinkText(`${paperPath}#page=${evidence.page}`, "", false);
+  return true;
+}
+
 // src/main.ts
 function nodeInsideElement(container, node) {
   if (!node) return false;
@@ -7898,7 +8022,7 @@ function isSelectionInsideActivePdfView(app, selection, doc) {
   }
   return false;
 }
-var PDFChatPlugin = class extends import_obsidian6.Plugin {
+var PDFChatPlugin = class extends import_obsidian7.Plugin {
   constructor() {
     super(...arguments);
     __publicField(this, "_saveQueue", Promise.resolve());
@@ -7936,11 +8060,11 @@ var PDFChatPlugin = class extends import_obsidian6.Plugin {
         const session = (_a2 = this.conversationStore) == null ? void 0 : _a2.getSession(snapshot.sessionId);
         const title = (session == null ? void 0 : session.title) || snapshot.question || "Codex \u4EFB\u52A1";
         if (snapshot.status === "idle") {
-          new import_obsidian6.Notice(`Codex \u5DF2\u5B8C\u6210\uFF1A${title}`);
+          new import_obsidian7.Notice(`Codex \u5DF2\u5B8C\u6210\uFF1A${title}`);
         } else if (snapshot.status === "stopped") {
-          new import_obsidian6.Notice(`Codex \u5DF2\u505C\u6B62\uFF1A${title}`);
+          new import_obsidian7.Notice(`Codex \u5DF2\u505C\u6B62\uFF1A${title}`);
         } else {
-          new import_obsidian6.Notice(`Codex \u4EFB\u52A1\u5931\u8D25\uFF1A${title}`);
+          new import_obsidian7.Notice(`Codex \u4EFB\u52A1\u5931\u8D25\uFF1A${title}`);
         }
       }
     );
@@ -8073,7 +8197,7 @@ var PDFChatPlugin = class extends import_obsidian6.Plugin {
     const text = cleanSelectionText(raw || "");
     const pdfFile = getActivePdfFile(this.app);
     if (!text && !pdfFile) {
-      new import_obsidian6.Notice("\u6CA1\u6709\u68C0\u6D4B\u5230\u9009\u4E2D\u7684\u6587\u5B57,\u8BF7\u5148\u5212\u9009\u4E00\u6BB5\u5185\u5BB9\u518D\u6309\u5FEB\u6377\u952E");
+      new import_obsidian7.Notice("\u6CA1\u6709\u68C0\u6D4B\u5230\u9009\u4E2D\u7684\u6587\u5B57,\u8BF7\u5148\u5212\u9009\u4E00\u6BB5\u5185\u5BB9\u518D\u6309\u5FEB\u6377\u952E");
       return;
     }
     const paperContext = this.paperContextService.createContext(
@@ -8115,7 +8239,7 @@ var PDFChatPlugin = class extends import_obsidian6.Plugin {
       this.settings = initialized.settings;
       if (initialized.fallback) {
         this.readerDataStore = void 0;
-        new import_obsidian6.Notice("\u9605\u8BFB\u6570\u636E\u8FC1\u79FB\u5C1A\u672A\u5B8C\u6210\uFF0C\u5F53\u524D\u7EE7\u7EED\u4F7F\u7528\u517C\u5BB9\u5B58\u50A8\uFF1B\u4F60\u7684\u539F\u6709\u6570\u636E\u672A\u88AB\u5220\u9664\u3002");
+        new import_obsidian7.Notice("\u9605\u8BFB\u6570\u636E\u8FC1\u79FB\u5C1A\u672A\u5B8C\u6210\uFF0C\u5F53\u524D\u7EE7\u7EED\u4F7F\u7528\u517C\u5BB9\u5B58\u50A8\uFF1B\u4F60\u7684\u539F\u6709\u6570\u636E\u672A\u88AB\u5220\u9664\u3002");
       } else {
         this.readerDataStore = readerDataStore;
       }

@@ -88,6 +88,9 @@ test("buildCodexTurnPrompt sends only the question, selected context, and direct
   assert.match(prompt, /D:\/vault\/papers\/A\.pdf/);
   assert.match(prompt, /D:\/vault\/refs\/B\.pdf/);
   assert.match(prompt, /This is the selected paragraph/);
+  assert.match(prompt, /\[P1\].*A\.pdf/);
+  assert.match(prompt, /\[P2\].*B\.pdf/);
+  assert.match(prompt, /\[P1, p\.N\]/);
   assert.match(prompt, /普通问候.*无需读取|greeting.*without reading/i);
   assert.doesNotMatch(prompt, /manifest\.json|question\.md|full_text|chunks\.json|summary\.md|brief\.md/);
 });

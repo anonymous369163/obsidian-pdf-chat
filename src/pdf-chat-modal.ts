@@ -17,6 +17,7 @@ import {
 } from "./codex-cli";
 import type { CodexTurnSnapshot } from "./codex-session-manager";
 import {
+  buildEvidenceCitationInstructions,
   composeBoundedContext,
   summarizeSessionMemory,
   type ContextComposition,
@@ -2111,6 +2112,18 @@ export class PDFChatModal extends Modal {
     return papers;
   }
 
+  private evidencePromptSources(): Array<{
+    alias: string;
+    name: string;
+    paperPath: string;
+  }> {
+    return this.selectedPaperFiles().map(({ file }, index) => ({
+      alias: `P${index + 1}`,
+      name: file.name || file.path,
+      paperPath: file.path,
+    }));
+  }
+
   private getMultiPaperQuestion(): string {
     const typed = this.inputEl?.value?.trim();
     return typed || "请基于当前论文和已引用论文回答我的问题。";
@@ -2129,7 +2142,8 @@ export class PDFChatModal extends Modal {
   private async buildApiMultiPaperContext(question: string, progress?: (message: string) => void): Promise<string> {
     const papers = this.selectedPaperFiles();
     const parts: string[] = [];
-    for (const { file, role } of papers) {
+    for (const [index, { file, role }] of papers.entries()) {
+      const alias = `P${index + 1}`;
       progress?.(`正在准备 ${file.name || file.path} 的摘要和检索片段…`);
       const summary = await this.services.papers.getOrCreateDocSummary(file, false);
       const chunksEntry = await this.services.papers.getOrCreateDocChunks(file, false);
@@ -2139,11 +2153,11 @@ export class PDFChatModal extends Modal {
         this.plugin.settings.ragTopK || DEFAULT_SETTINGS.ragTopK
       );
       const evidence = retrieved.length
-        ? retrieved.map((chunk) => `[Page ${chunk.page} / chunk ${chunk.idx ?? "?"}]\n${chunk.text}`).join("\n\n")
+        ? retrieved.map((chunk) => `[${alias}, p.${chunk.page}] [chunk ${chunk.idx ?? "?"}]\n${chunk.text}`).join("\n\n")
         : "(未检索到明显相关片段)";
       parts.push(
         [
-          `## ${role === "current" ? "当前论文" : "引用论文"}：${file.name || file.path}`,
+          `## [${alias}] ${role === "current" ? "当前论文" : "引用论文"}：${file.name || file.path}`,
           `路径：${file.path}`,
           "### 摘要",
           summary.summary || "(无摘要)",
@@ -2184,7 +2198,10 @@ export class PDFChatModal extends Modal {
     const session = this.currentSessionId
       ? this.services.conversations.getSession?.(this.currentSessionId)
       : this.services.conversations.getActiveSession?.(this.conversationKey);
-    const system = this.buildSystemMessage(selection.text).content;
+    const citationInstructions = buildEvidenceCitationInstructions(this.evidencePromptSources());
+    const system = [this.buildSystemMessage(selection.text).content, citationInstructions]
+      .filter(Boolean)
+      .join("\n\n");
     const maxInputChars =
       selection.kind === "all" && selection.oversized
         ? Math.max(budget.maxInputChars, system.length + question.length + 2)

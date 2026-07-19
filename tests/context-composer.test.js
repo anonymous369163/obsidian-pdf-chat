@@ -107,3 +107,17 @@ test("mandatory current input is truncated deterministically when it alone excee
   assert.match(result.messages.at(-1).content, /question/);
   assert.equal(result.currentInputTruncated, true);
 });
+
+test("evidence instructions assign stable paper aliases and require page citations", () => {
+  const { buildEvidenceCitationInstructions } = loadBundle();
+  const instructions = buildEvidenceCitationInstructions([
+    { alias: "P1", name: "Current.pdf", paperPath: "papers/Current.pdf" },
+    { alias: "P2", name: "Reference.pdf", paperPath: "refs/Reference.pdf" },
+  ]);
+
+  assert.match(instructions, /P1.*Current\.pdf/);
+  assert.match(instructions, /P2.*Reference\.pdf/);
+  assert.match(instructions, /\[P1, p\.N\]/);
+  assert.match(instructions, /无法确认页码|不能确认页码/);
+  assert.equal(buildEvidenceCitationInstructions([]), "");
+});

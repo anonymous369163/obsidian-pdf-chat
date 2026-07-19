@@ -70,12 +70,17 @@ export {
 } from "./codex-cli";
 export { CodexSessionManager } from "./codex-session-manager";
 export { assessExtractionQuality } from "./extraction-quality";
+export { openPdfEvidence, parseResearchEvidence } from "./evidence";
 export { AtomicJsonStore, JsonStoreError } from "./json-store";
 export { PaperAssetRepository } from "./paper-asset-repository";
 export { ReaderDataMigrator } from "./reader-data-migration";
 export { isJsonAdapter, ReaderDataStore } from "./reader-data-store";
 export { SessionRepository } from "./session-repository";
-export { composeBoundedContext, summarizeSessionMemory } from "./context-composer";
+export {
+  buildEvidenceCitationInstructions,
+  composeBoundedContext,
+  summarizeSessionMemory,
+} from "./context-composer";
 export {
   requestSelectionLimitDecision,
   resolveSelectionForTurn,
