@@ -5,6 +5,7 @@ data.json
 node_modules/
 dist/
 build/
+.worktrees/
 
 # Local experiments and vault files
 rag-eval/
