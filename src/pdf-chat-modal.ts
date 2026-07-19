@@ -24,7 +24,7 @@ import {
   type ContextComposition,
 } from "./context-composer";
 import { createPDFChatModalServices } from "./modal-services";
-import { SessionLibraryService } from "./session-library";
+import { formatCodexForkHandoff, SessionLibraryService } from "./session-library";
 import { SessionLibraryModal } from "./session-library-modal";
 import {
   requestSelectionLimitDecision,
@@ -1030,10 +1030,14 @@ export class PDFChatModal extends Modal {
   }
 
   private showResumeMenu(): void {
+    const availablePdfPaths = (this.app.vault?.getFiles?.() || [])
+      .filter((file) => (file.extension || "").toLowerCase() === "pdf")
+      .map((file) => file.path);
     const library = new SessionLibraryService({
       conversations: this.services.conversations,
       artifacts: this.services.artifacts,
       codex: this.services.codex,
+      installationId: () => this.plugin.settings.installationId,
       confirmDelete: (session) =>
         window.confirm(
           `确定删除会话“${session.title}”吗？\n\n只会删除聊天记录，不会删除 PDF 或研究笔记。`
@@ -1041,6 +1045,7 @@ export class PDFChatModal extends Modal {
     });
     new SessionLibraryModal(this.app, library, {
       currentConversationKey: this.conversationKey,
+      availablePdfPaths,
       onResume: (session) => this.resumeConversationSession(session.id),
       onRebind: (session) => this.showSessionRebindPicker(library, session),
     }).open();
@@ -2518,7 +2523,12 @@ export class PDFChatModal extends Modal {
     const workingDirectory =
       currentLocation?.workingDirectory || adapter?.getBasePath?.() || ".";
     const selectedContext = selection.text;
-    const prompt = buildCodexTurnPrompt({ question, papers, selectedContext });
+    const turnPrompt = buildCodexTurnPrompt({ question, papers, selectedContext });
+    const forkHandoff =
+      session?.parentSessionId && !session.codex?.threadId
+        ? formatCodexForkHandoff(session)
+        : "";
+    const prompt = forkHandoff ? `${forkHandoff}\n\n${turnPrompt}` : turnPrompt;
 
     this.activeComposerKind = "chat";
     this.hideFollowupSuggestions();
@@ -2914,6 +2924,25 @@ export class PDFChatModal extends Modal {
           ? `Codex 本轮失败：${snapshot.error || snapshot.progress || "未知错误"}`
           : snapshot.progress || "Codex 本轮已停止，可继续使用同一 thread 提问。"
       );
+      if (snapshot.status === "failed" && snapshot.recoveryReason) {
+        const actions = getBubbleContentEl(bubble).createDiv({
+          cls: "pdf-chat-codex-recovery-actions",
+        });
+        const historyButton = actions.createEl("button", {
+          text: "查看历史",
+          cls: "pdf-chat-codex-recovery-action",
+          attr: { type: "button" },
+        });
+        labelControl(historyButton, "查看历史记录");
+        historyButton.addEventListener("click", () => this.showResumeMenu());
+        const forkButton = actions.createEl("button", {
+          text: "创建本地分支",
+          cls: "pdf-chat-codex-recovery-action is-primary",
+          attr: { type: "button" },
+        });
+        labelControl(forkButton, "创建本地分支并继续讨论");
+        forkButton.addEventListener("click", () => this.showResumeMenu());
+      }
       this.multiPaperStatusEl?.setText(snapshot.progress || "Codex 本轮已停止。");
     }
     this.codexTaskBubble = undefined;

@@ -1025,6 +1025,114 @@ test("Codex native mode sends direct PDF paths and the current selection through
   assert.match(started[0].prompt, /普通问候.*无需读取|greeting.*without reading/i);
 });
 
+test("the first turn of an explicit Codex fork includes only its bounded visible handoff", async () => {
+  const started = [];
+  const session = {
+    version: 3,
+    id: "local-fork",
+    ["conversation" + "Key"]: "pdf:papers/demo.pdf",
+    title: "Fork: remote discussion",
+    mode: "codex",
+    parentSessionId: "remote-parent",
+    installationId: "install-local",
+    messages: [
+      { id: "fork-u", role: "user", content: "Newest parent question", status: "complete", createdAt: 1 },
+      { id: "fork-a", role: "assistant", content: "Newest parent answer", status: "complete", createdAt: 2 },
+    ],
+    memory: { content: "Bounded earlier summary", coveredMessageCount: 4, updatedAt: 2 },
+    referencedPdfPaths: [],
+    includeCurrentPdfInCodex: true,
+    codex: { model: "gpt-5.5", reasoningEffort: "medium", lifecycle: "active" },
+    sourceStatus: "available",
+    pinned: false,
+    tags: [],
+    createdAt: 1,
+    updatedAt: 2,
+  };
+  const codex = {
+    subscribe: () => () => {},
+    getSnapshot: () => ({ sessionId: session.id, status: "idle", attachedPdfPaths: [], selectionChars: 0 }),
+    async startTurn(request) {
+      started.push(request);
+      return { sessionId: request.sessionId, threadId: "local-thread", status: "idle", attachedPdfPaths: [], selectionChars: 0 };
+    },
+    stopTurn: () => false,
+    closeSession: async () => {},
+    reactivateSession: () => {},
+  };
+  const { modal, plugin } = createModalHarness({
+    app: { vault: { adapter: { getFullPath: (vaultPath) => `D:/vault/${vaultPath}` } } },
+    codex,
+    conversations: {
+      getActiveSession: () => session,
+      getSession: () => session,
+      ensureSession: () => session,
+    },
+  });
+  plugin.settings.codexDeepAnalysis.enabled = true;
+
+  await modal.runCodexDeepAnalysis("Continue the analysis");
+
+  assert.equal(started.length, 1);
+  assert.match(started[0].prompt, /explicit local fork/i);
+  assert.match(started[0].prompt, /Bounded earlier summary/);
+  assert.match(started[0].prompt, /Newest parent question/);
+  assert.match(started[0].prompt, /Newest parent answer/);
+  assert.match(started[0].prompt, /Continue the analysis/);
+});
+
+test("session library shows history and explicit local-fork recovery for foreign Codex threads", async () => {
+  const { bundle } = loadBundle();
+  const parent = {
+    version: 3,
+    id: "remote-parent",
+    ["conversation" + "Key"]: "pdf:papers/demo.pdf",
+    title: "Remote discussion",
+    mode: "codex",
+    messages: [],
+    referencedPdfPaths: ["papers/B.pdf"],
+    includeCurrentPdfInCodex: true,
+    codex: { model: "gpt-5.5", reasoningEffort: "high", threadId: "remote-thread", lifecycle: "active" },
+    sourceStatus: "available",
+    pinned: false,
+    tags: [],
+    installationId: "install-remote",
+    createdAt: 1,
+    updatedAt: 2,
+  };
+  const child = { ...parent, id: "local-child", title: "Fork: Remote discussion", parentSessionId: parent.id, installationId: "install-local", codex: { ...parent.codex, threadId: undefined } };
+  let resumedId = "";
+  let created = 0;
+  const library = {
+    query: () => [parent],
+    getCodexRecovery: () => ({ reason: "foreign-installation", canResumeNativeThread: false }),
+    previewCodexFork: () => ({ attachedPdfPaths: ["papers/demo.pdf", "papers/B.pdf"], omittedPdfPaths: [], handoffChars: 320, messageCount: 4 }),
+    createCodexFork: async () => {
+      created += 1;
+      return child;
+    },
+  };
+  const modal = new bundle.SessionLibraryModal({}, library, {
+    ["currentConversation" + "Key"]: "pdf:papers/demo.pdf",
+    availablePdfPaths: ["papers/demo.pdf", "papers/B.pdf"],
+    onResume: (session) => { resumedId = session.id; },
+  });
+  modal.open();
+
+  const text = descendants(modal.contentEl).map((element) => element.textContent).join(" ");
+  assert.match(text, /本机无法直接恢复|foreign/i);
+  assert.match(text, /320/);
+  assert.match(text, /2 篇 PDF/);
+  const viewButton = descendants(modal.contentEl).find((element) => /查看历史/.test(element.getAttribute("aria-label") || ""));
+  const forkButton = descendants(modal.contentEl).find((element) => /创建本地分支/.test(element.getAttribute("aria-label") || ""));
+  assert.ok(viewButton);
+  assert.ok(forkButton);
+  forkButton.dispatch("click");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(created, 1);
+  assert.equal(resumedId, "local-child");
+});
+
 test("Esc suspends a running Codex modal while an explicit X close terminates its session", async () => {
   const closedSessions = [];
   const session = {
@@ -1140,6 +1248,61 @@ test("reopening a running Codex session reconstructs its progress and renders th
 
   assert.equal(modal.isCodexRunning, false);
   assert.match(byClass(modal.historyEl, "pdf-chat-message-content").at(-1).textContent, /Background result/);
+});
+
+test("unavailable Codex threads expose explicit history and local-fork recovery actions", async () => {
+  let listener;
+  const session = {
+    version: 3,
+    id: "foreign-session",
+    ["conversation" + "Key"]: "pdf:papers/demo.pdf",
+    title: "Foreign session",
+    mode: "codex",
+    messages: [],
+    referencedPdfPaths: [],
+    includeCurrentPdfInCodex: true,
+    codex: { model: "gpt-5.5", reasoningEffort: "medium", threadId: "foreign-thread", lifecycle: "active" },
+    installationId: "install-remote",
+    sourceStatus: "available",
+    pinned: false,
+    tags: [],
+    createdAt: 1,
+    updatedAt: 2,
+  };
+  const codex = {
+    subscribe: (_id, next) => { listener = next; return () => {}; },
+    getSnapshot: () => ({ sessionId: session.id, status: "idle", attachedPdfPaths: [], selectionChars: 0 }),
+    startTurn: async () => {},
+    stopTurn: () => false,
+    closeSession: async () => {},
+    reactivateSession: () => {},
+  };
+  const { modal } = createModalHarness({
+    codex,
+    conversations: {
+      getActiveSession: () => session,
+      getSession: () => session,
+      listSessions: () => [session],
+      resumeSession: () => session,
+    },
+    settingsPatch: { installationId: "install-local" },
+  });
+
+  listener({
+    sessionId: session.id,
+    threadId: "foreign-thread",
+    status: "failed",
+    error: "Foreign thread",
+    recoveryReason: "foreign-installation",
+    attachedPdfPaths: [],
+    selectionChars: 0,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const actions = byClass(modal.historyEl, "pdf-chat-codex-recovery-action");
+  assert.equal(actions.length, 2);
+  assert.match(actions[0].getAttribute("aria-label"), /查看历史/);
+  assert.match(actions[1].getAttribute("aria-label"), /创建本地分支/);
 });
 
 test("closing a Codex-mode modal keeps the Codex process running in the background", () => {

@@ -9,6 +9,7 @@ import {
 } from "./codex-cli";
 import type {
   CodexReasoningEffort,
+  CodexRecoveryReason,
   CodexSessionMetadata,
   CodexVerbosity,
   ConversationSession,
@@ -30,6 +31,7 @@ export interface CodexTurnSnapshot {
   selectionChars: number;
   finalMarkdown?: string;
   error?: string;
+  recoveryReason?: CodexRecoveryReason;
 }
 
 export interface StartCodexTurnRequest {
@@ -66,6 +68,14 @@ export interface CodexSessionPersistence {
     codex: CodexSessionMetadata
   ): Promise<void>;
   closeSession(id: string): Promise<void>;
+  updateSessionMetadata?(
+    id: string,
+    metadata: Partial<Pick<ConversationSession, "installationId">>
+  ): Promise<void>;
+}
+
+export interface CodexSessionManagerOptions {
+  installationId?: string;
 }
 
 export type CodexThreadRunner = (
@@ -110,8 +120,18 @@ export class CodexSessionManager {
 
   constructor(
     private readonly persistence: CodexSessionPersistence,
-    private readonly runner: CodexThreadRunner = runCodexThreadTurn
+    private readonly runner: CodexThreadRunner = runCodexThreadTurn,
+    private readonly options: CodexSessionManagerOptions = {}
   ) {}
+
+  private isForeignThread(session: ConversationSession): boolean {
+    return Boolean(
+      session.codex?.threadId &&
+        session.installationId &&
+        this.options.installationId &&
+        session.installationId !== this.options.installationId
+    );
+  }
 
   private managed(sessionId: string): ManagedTurn {
     let managed = this.turns.get(sessionId);
@@ -188,6 +208,29 @@ export class CodexSessionManager {
     const managed = this.managed(request.sessionId);
     if (managed.snapshot.status === "running") {
       throw new Error("This Codex session already has a running turn");
+    }
+    if (this.isForeignThread(session)) {
+      const recoveryMessage =
+        "该 Codex thread 属于另一台设备，请查看历史或创建 local fork（本地分支）。";
+      managed.snapshot = {
+        sessionId: request.sessionId,
+        threadId: session.codex?.threadId,
+        status: "failed",
+        question: request.question,
+        progress: recoveryMessage,
+        attachedPdfPaths: [...request.attachedPdfPaths],
+        selectionChars: request.selectionChars,
+        error: recoveryMessage,
+        recoveryReason: "foreign-installation",
+      };
+      this.notify(managed);
+      return cloneSnapshot(managed.snapshot);
+    }
+
+    if (!session.installationId && this.options.installationId) {
+      await this.persistence.updateSessionMetadata?.(request.sessionId, {
+        installationId: this.options.installationId,
+      });
     }
 
     const runToken = this.nextRunToken++;
@@ -312,6 +355,7 @@ export class CodexSessionManager {
       managed.snapshot.status = "idle";
       managed.snapshot.progress = "Codex 已完成本轮回答";
       managed.snapshot.error = undefined;
+      managed.snapshot.recoveryReason = undefined;
       this.notify(managed);
     } catch (error) {
       if (managed.runToken !== runToken || managed.snapshot.status === "closed") {
@@ -329,10 +373,12 @@ export class CodexSessionManager {
           .catch(() => undefined);
       } else {
         managed.snapshot.status = "failed";
+        const threadUnavailable = isCodexThreadUnavailableError(error);
+        managed.snapshot.recoveryReason = threadUnavailable ? "thread-unavailable" : undefined;
         managed.snapshot.error = managed.snapshot.finalMarkdown
           ? `Codex 回答已生成，但保存失败：${errorMessage(error)}`
-          : isCodexThreadUnavailableError(error)
-          ? "Codex 会话可能来自另一台设备，或本机 Codex thread 记录已被删除。请用 /new 创建新会话。"
+          : threadUnavailable
+          ? "Codex thread 在本机不可用。请查看历史或创建 local fork（本地分支），不会静默新建 thread。"
           : errorMessage(error);
         managed.snapshot.progress = managed.snapshot.error;
         void this.persistence

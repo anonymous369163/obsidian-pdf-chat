@@ -1,4 +1,5 @@
 import type {
+  CodexRecoveryReason,
   CodexRuntimeOperations,
   ConversationOperations,
   ConversationSession,
@@ -20,6 +21,24 @@ export interface SessionLibraryDependencies {
   artifacts?: Pick<ResearchArtifactOperations, "exportSessionMarkdown">;
   codex?: Pick<CodexRuntimeOperations, "getSnapshot">;
   confirmDelete?: (session: ConversationSession) => boolean | Promise<boolean>;
+  installationId?: () => string;
+}
+
+export interface CodexForkRequest {
+  availablePdfPaths: string[];
+  handoffMaxChars: number;
+}
+
+export interface CodexForkPreview {
+  attachedPdfPaths: string[];
+  omittedPdfPaths: string[];
+  handoffChars: number;
+  messageCount: number;
+}
+
+export interface CodexRecoveryState {
+  reason?: CodexRecoveryReason;
+  canResumeNativeThread: boolean;
 }
 
 function normalizeTags(tags: string[]): string[] {
@@ -45,6 +64,56 @@ function searchableText(session: ConversationSession): string {
   ]
     .join(" ")
     .toLowerCase();
+}
+
+function primaryPdfPath(session: ConversationSession): string | undefined {
+  return session.conversationKey.startsWith("pdf:")
+    ? session.conversationKey.slice("pdf:".length)
+    : undefined;
+}
+
+function selectForkHandoff(session: ConversationSession, maxChars: number): {
+  memory: ConversationSession["memory"];
+  messages: ConversationSession["messages"];
+  chars: number;
+} {
+  const limit = Math.max(0, Math.floor(maxChars || 0));
+  const originalMemory = session.memory?.content || "";
+  const memoryContent = originalMemory.slice(0, limit);
+  const memory = session.memory
+    ? { ...session.memory, content: memoryContent }
+    : undefined;
+  let remaining = Math.max(0, limit - memoryContent.length);
+  const messages: ConversationSession["messages"] = [];
+  for (let index = session.messages.length - 1; index >= 0; index -= 1) {
+    const message = session.messages[index];
+    if (message.content.length > remaining) break;
+    messages.unshift({
+      ...message,
+      evidence: message.evidence?.map((evidence) => ({ ...evidence })),
+    });
+    remaining -= message.content.length;
+  }
+  return { memory, messages, chars: limit - remaining };
+}
+
+export function formatCodexForkHandoff(session: ConversationSession): string {
+  const parts: string[] = [];
+  if (session.memory?.content.trim()) {
+    parts.push(`Earlier session memory:\n${session.memory.content.trim()}`);
+  }
+  if (session.messages.length) {
+    const visibleTurns = session.messages
+      .map((message) => `${message.role === "user" ? "User" : "Assistant"}:\n${message.content}`)
+      .join("\n\n");
+    parts.push(`Recent visible turns from the parent session:\n${visibleTurns}`);
+  }
+  if (!parts.length) return "";
+  return [
+    "This is an explicit local fork of a Codex session whose native thread is unavailable here.",
+    "Use the bounded visible handoff below only as prior discussion context; do not claim access to the old native thread.",
+    ...parts,
+  ].join("\n\n");
 }
 
 export class SessionLibraryService {
@@ -117,6 +186,77 @@ export class SessionLibraryService {
       throw new Error("当前存储不支持重新绑定 PDF");
     }
     await this.dependencies.conversations.rebindSessionSource(id, newPath);
+  }
+
+  getCodexRecovery(session: ConversationSession): CodexRecoveryState {
+    const liveReason = this.dependencies.codex?.getSnapshot(session.id)?.recoveryReason;
+    if (liveReason) return { reason: liveReason, canResumeNativeThread: false };
+    const localInstallationId = this.dependencies.installationId?.() || "";
+    const foreign = Boolean(
+      session.codex?.threadId &&
+        session.installationId &&
+        localInstallationId &&
+        session.installationId !== localInstallationId
+    );
+    return foreign
+      ? { reason: "foreign-installation", canResumeNativeThread: false }
+      : { canResumeNativeThread: true };
+  }
+
+  previewCodexFork(id: string, request: CodexForkRequest): CodexForkPreview {
+    const session = this.requireSession(id);
+    const available = new Set(request.availablePdfPaths.filter(Boolean));
+    const currentPath = primaryPdfPath(session);
+    const candidates = [
+      ...(session.includeCurrentPdfInCodex && currentPath ? [currentPath] : []),
+      ...(session.referencedPdfPaths || []),
+    ].filter((path, index, all) => all.indexOf(path) === index);
+    const handoff = selectForkHandoff(session, request.handoffMaxChars);
+    return {
+      attachedPdfPaths: candidates.filter((path) => available.has(path)),
+      omittedPdfPaths: candidates.filter((path) => !available.has(path)),
+      handoffChars: handoff.chars,
+      messageCount: handoff.messages.length,
+    };
+  }
+
+  async createCodexFork(id: string, request: CodexForkRequest): Promise<ConversationSession> {
+    const parent = this.requireSession(id);
+    if (!this.dependencies.conversations.startSession || !this.dependencies.conversations.saveSessionById) {
+      throw new Error("当前存储不支持创建 Codex 本地分支");
+    }
+    const installationId = this.dependencies.installationId?.().trim() || "";
+    if (!installationId) throw new Error("缺少本机安装标识，无法安全创建 Codex 分支");
+    const available = new Set(request.availablePdfPaths.filter(Boolean));
+    const currentPath = primaryPdfPath(parent);
+    const handoff = selectForkHandoff(parent, request.handoffMaxChars);
+    const referencedPdfPaths = (parent.referencedPdfPaths || []).filter((path) => available.has(path));
+    const metadata = {
+      title: `Fork: ${parent.title}`.slice(0, 120),
+      mode: "codex" as const,
+      referencedPdfPaths,
+      includeCurrentPdfInCodex: Boolean(
+        parent.includeCurrentPdfInCodex && currentPath && available.has(currentPath)
+      ),
+      codex: {
+        model: parent.codex?.model || "",
+        reasoningEffort: parent.codex?.reasoningEffort || "medium" as const,
+        profile: parent.codex?.profile || "",
+        lifecycle: "active" as const,
+      },
+      memory: handoff.memory,
+      sourceStatus: parent.sourceStatus,
+      parentSessionId: parent.id,
+      installationId,
+    };
+    const child = this.dependencies.conversations.startSession(parent.conversationKey, metadata);
+    const messages = handoff.messages.map((message, index) => ({
+      ...message,
+      id: `${child.id}-fork-${index + 1}`,
+      evidence: message.evidence?.map((evidence) => ({ ...evidence })),
+    }));
+    await this.dependencies.conversations.saveSessionById(child.id, messages, metadata);
+    return this.dependencies.conversations.getSession?.(child.id) || { ...child, messages };
   }
 
   async delete(id: string): Promise<boolean> {

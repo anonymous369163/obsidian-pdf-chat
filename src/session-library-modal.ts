@@ -5,6 +5,7 @@ import type { ConversationSession } from "./types";
 
 export interface SessionLibraryModalOptions {
   currentConversationKey: string;
+  availablePdfPaths?: string[];
   onResume(session: ConversationSession): Promise<void> | void;
   onRebind?(session: ConversationSession): Promise<void> | void;
 }
@@ -134,12 +135,33 @@ export class SessionLibraryModal extends Modal {
     if (session.sourceStatus === "missing") {
       summary.createEl("span", { text: "原 PDF 缺失", cls: "pdf-chat-session-missing" });
     }
+    const recovery = this.library.getCodexRecovery(session);
+    if (recovery.reason) {
+      const preview = this.library.previewCodexFork(session.id, {
+        availablePdfPaths: this.options.availablePdfPaths || [],
+        handoffMaxChars: 12000,
+      });
+      summary.createEl("span", {
+        text: `本机无法直接恢复该 Codex thread；本地分支将携带 ${preview.handoffChars} 字可见上下文 · ${preview.attachedPdfPaths.length} 篇 PDF${preview.omittedPdfPaths.length ? ` · 忽略 ${preview.omittedPdfPaths.length} 篇缺失 PDF` : ""}`,
+        cls: "pdf-chat-session-recovery",
+      });
+    }
     const actions = card.createDiv({ cls: "pdf-chat-session-actions" });
-    this.action(actions, "恢复", "恢复这段会话", async () => {
+    this.action(actions, recovery.reason ? "查看历史" : "恢复", recovery.reason ? "查看历史记录" : "恢复这段会话", async () => {
       const resumed = this.library.reactivate(session.id);
       await this.options.onResume(resumed);
       this.close();
     });
+    if (recovery.reason) {
+      this.action(actions, "创建本地分支", "创建本地分支并继续讨论", async () => {
+        const fork = await this.library.createCodexFork(session.id, {
+          availablePdfPaths: this.options.availablePdfPaths || [],
+          handoffMaxChars: 12000,
+        });
+        await this.options.onResume(fork);
+        this.close();
+      }, "is-primary");
+    }
     this.action(actions, session.pinned ? "取消置顶" : "置顶", "切换会话置顶状态", async () => {
       await this.library.setPinned(session.id, !session.pinned);
       this.renderResults();

@@ -79,7 +79,7 @@ export { ReaderDataMigrator } from "./reader-data-migration";
 export { ResearchNoteService, sanitizeResearchArtifact } from "./research-notes";
 export { isJsonAdapter, ReaderDataStore } from "./reader-data-store";
 export { SessionRepository } from "./session-repository";
-export { SessionLibraryService } from "./session-library";
+export { formatCodexForkHandoff, SessionLibraryService } from "./session-library";
 export { SessionLibraryModal } from "./session-library-modal";
 export {
   buildEvidenceCitationInstructions,
@@ -129,7 +129,7 @@ export {
 export { createPDFChatModalServices } from "./modal-services";
 export { PDFChatModal } from "./pdf-chat-modal";
 export { QuickTranslateMarker } from "./quick-translate-marker";
-export { migrateSettings, normalizeCodexInputMode, normalizeCodexOutputMode, normalizeRagChunkSettings } from "./settings";
+export { createInstallationId, migrateSettings, normalizeCodexInputMode, normalizeCodexOutputMode, normalizeRagChunkSettings } from "./settings";
 export { buildTranslationMessages, splitTranslationChunks, TranslationService } from "./translation";
 export { reconcilePdfDeleteState, reconcilePdfRenameState, VaultLifecycleService } from "./vault-lifecycle";
 export type { LlmRequest, PaperContext, ResearchAction } from "./types";
@@ -197,7 +197,9 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
       () => this.settings,
       () => this.saveSettings()
     );
-    this.codexSessionManager = new CodexSessionManager(this.conversationStore);
+    this.codexSessionManager = new CodexSessionManager(this.conversationStore, undefined, {
+      installationId: this.settings.installationId,
+    });
     this.codexGlobalUnsubscribe = this.codexSessionManager.subscribeAll(
       ({ snapshot, hasSessionSubscribers }) => {
         if (snapshot.status === "running") {

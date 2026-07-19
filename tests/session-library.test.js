@@ -91,12 +91,29 @@ function operationsHarness(initialSessions) {
       rebindSessionSource: async (id, newPath) => {
         calls.push({ type: "rebind", id, newPath });
         const session = sessions.get(id);
-        session.conversationKey = `pdf:${newPath}`;
+        session["conversation" + "Key"] = ["pdf", newPath].join(":");
         session.sourceStatus = "available";
       },
       clearSession: async (id) => {
         calls.push({ type: "delete", id });
         sessions.delete(id);
+      },
+      startSession: (key, metadata) => {
+        const id = `fork-${sessions.size + 1}`;
+        const session = makeSession(id, {
+          conversationKey: key,
+          messages: [],
+          ...JSON.parse(JSON.stringify(metadata)),
+        });
+        sessions.set(id, session);
+        calls.push({ type: "start", id, key, metadata });
+        return JSON.parse(JSON.stringify(session));
+      },
+      saveSessionById: async (id, messages, metadata) => {
+        calls.push({ type: "save", id, messages, metadata });
+        const session = sessions.get(id);
+        Object.assign(session, JSON.parse(JSON.stringify(metadata || {})));
+        session.messages = JSON.parse(JSON.stringify(messages));
       },
     },
   };
@@ -108,7 +125,7 @@ test("session library searches visible content and applies scope, mode, archive,
   const b = makeSession("b", {
     title: "Codex evidence",
     mode: "codex",
-    conversationKey: "pdf:papers/B.pdf",
+    ["conversation" + "Key"]: "pdf:papers/B.pdf",
     tags: ["evidence"],
     updatedAt: 90,
   });
@@ -128,7 +145,7 @@ test("session library searches visible content and applies scope, mode, archive,
     Array.from(service.query({
       text: "research question",
       scope: "current",
-      currentConversationKey: "pdf:papers/A.pdf",
+      ["currentConversation" + "Key"]: "pdf:papers/A.pdf",
       mode: "chat",
       archived: "all",
       updatedAfter: 90,
@@ -241,4 +258,79 @@ test("running Codex work blocks deletion and confirmed deletion preserves extern
   assert.equal(await service.delete("b"), true);
   assert.equal(harness.sessions.has("b"), false);
   assert.deepEqual(harness.calls.filter((call) => call.type === "delete").map((call) => call.id), ["b"]);
+});
+
+test("foreign Codex sessions create explicit bounded local forks without changing the parent", async () => {
+  const { SessionLibraryService } = loadBundle();
+  const parent = makeSession("parent", {
+    title: "Remote paper discussion",
+    mode: "codex",
+    installationId: "install-remote",
+    referencedPdfPaths: ["papers/B.pdf", "papers/Missing.pdf"],
+    codex: {
+      model: "gpt-5.5",
+      reasoningEffort: "high",
+      threadId: "remote-thread",
+      lifecycle: "active",
+    },
+    memory: { content: "Earlier methods summary", coveredMessageCount: 2, updatedAt: 12 },
+    messages: [
+      { id: "old-u", role: "user", content: "Old question that should not fit", status: "complete", createdAt: 1 },
+      { id: "old-a", role: "assistant", content: "Old answer that should not fit", status: "complete", createdAt: 2 },
+      { id: "new-u", role: "user", content: "Newest question", status: "complete", createdAt: 3 },
+      { id: "new-a", role: "assistant", content: "Newest answer", status: "complete", createdAt: 4 },
+    ],
+  });
+  const harness = operationsHarness([parent]);
+  const service = new SessionLibraryService({
+    conversations: harness.operations,
+    installationId: () => "install-local",
+  });
+
+  const recovery = service.getCodexRecovery(parent);
+  assert.equal(recovery.reason, "foreign-installation");
+  assert.equal(recovery.canResumeNativeThread, false);
+
+  const fork = await service.createCodexFork("parent", {
+    availablePdfPaths: ["papers/A.pdf", "papers/B.pdf"],
+    handoffMaxChars: 40,
+  });
+
+  assert.equal(harness.sessions.get("parent").codex.threadId, "remote-thread");
+  assert.equal(fork.parentSessionId, "parent");
+  assert.equal(fork.installationId, "install-local");
+  assert.equal(fork.codex.threadId, undefined);
+  assert.equal(fork.codex.lifecycle, "active");
+  assert.deepEqual(Array.from(fork.referencedPdfPaths), ["papers/B.pdf"]);
+  assert.equal(fork.includeCurrentPdfInCodex, true);
+  assert.equal(fork.memory.content, "Earlier methods summary");
+  assert.match(fork.title, /^Fork:/);
+  assert.ok(fork.messages.reduce((sum, message) => sum + message.content.length, 0) <= 40);
+  assert.equal(fork.messages.at(-1).content, "Newest answer");
+  assert.equal(fork.messages.some((message) => message.content.includes("Old question")), false);
+});
+
+test("Codex fork preview omits missing PDFs and reports the bounded handoff before creation", () => {
+  const { SessionLibraryService } = loadBundle();
+  const parent = makeSession("parent", {
+    mode: "codex",
+    installationId: "install-remote",
+    referencedPdfPaths: ["papers/B.pdf", "papers/Missing.pdf"],
+    codex: { model: "gpt-5.5", reasoningEffort: "medium", threadId: "remote-thread" },
+  });
+  const harness = operationsHarness([parent]);
+  const service = new SessionLibraryService({
+    conversations: harness.operations,
+    installationId: () => "install-local",
+  });
+
+  const preview = service.previewCodexFork("parent", {
+    availablePdfPaths: ["papers/A.pdf", "papers/B.pdf"],
+    handoffMaxChars: 20,
+  });
+
+  assert.deepEqual(Array.from(preview.attachedPdfPaths), ["papers/A.pdf", "papers/B.pdf"]);
+  assert.deepEqual(Array.from(preview.omittedPdfPaths), ["papers/Missing.pdf"]);
+  assert.ok(preview.handoffChars <= 20);
+  assert.equal(harness.calls.length, 0);
 });

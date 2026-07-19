@@ -106,6 +106,7 @@ export interface ApiSessionMetadata {
 }
 
 export type PendingCodexTurnStatus = "running" | "interrupted" | "failed";
+export type CodexRecoveryReason = "foreign-installation" | "thread-unavailable";
 
 export interface PendingCodexTurn {
   turnId: string;
@@ -275,6 +276,7 @@ export interface TranslationTaskResult {
 export type ConversationKind = "chat" | "translate";
 
 export interface PDFChatSettings {
+  installationId: string;
   readerDataVersion: number;
   paperCacheQuota: {
     maxEntries: number;

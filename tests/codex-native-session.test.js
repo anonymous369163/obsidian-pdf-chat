@@ -616,6 +616,73 @@ test("CodexSessionManager resumes the persisted native thread on the next turn",
   assert.deepEqual(persistence.appended.map((entry) => entry.user), ["First", "Second"]);
 });
 
+test("CodexSessionManager refuses a foreign native thread without silently starting a new one", async () => {
+  const { CodexSessionManager } = loadBundle();
+  const persistence = createSessionPersistence();
+  const session = persistence.sessions.get("plugin-session-1");
+  session.installationId = "install-remote";
+  session.codex.threadId = "remote-thread";
+  let runnerCalls = 0;
+  const manager = new CodexSessionManager(
+    persistence,
+    async () => {
+      runnerCalls += 1;
+      return { threadId: "unexpected", markdown: "unexpected" };
+    },
+    { installationId: "install-local" }
+  );
+
+  const result = await manager.startTurn({
+    sessionId: "plugin-session-1",
+    question: "Continue remotely",
+    userContent: "Continue remotely",
+    prompt: "Continue remotely",
+    command: "codex",
+    workingDirectory: "D:/vault/papers",
+    attachedPdfPaths: [],
+    selectionChars: 0,
+    timeoutMs: 1000,
+  });
+
+  assert.equal(runnerCalls, 0);
+  assert.equal(result.status, "failed");
+  assert.equal(result.recoveryReason, "foreign-installation");
+  assert.equal(persistence.pendingWrites.length, 0);
+  assert.match(result.error, /local fork|本地分支/i);
+});
+
+test("CodexSessionManager marks an unavailable local thread for explicit recovery", async () => {
+  const { CodexSessionManager } = loadBundle();
+  const persistence = createSessionPersistence();
+  const session = persistence.sessions.get("plugin-session-1");
+  session.installationId = "install-local";
+  session.codex.threadId = "missing-thread";
+  const manager = new CodexSessionManager(
+    persistence,
+    async () => {
+      throw new Error("thread missing");
+    },
+    { installationId: "install-local" }
+  );
+
+  const result = await manager.startTurn({
+    sessionId: "plugin-session-1",
+    question: "Continue locally",
+    userContent: "Continue locally",
+    prompt: "Continue locally",
+    command: "codex",
+    workingDirectory: "D:/vault/papers",
+    attachedPdfPaths: [],
+    selectionChars: 0,
+    timeoutMs: 1000,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.recoveryReason, "thread-unavailable");
+  assert.match(result.error, /local fork|本地分支/i);
+  assert.equal(persistence.sessions.get("plugin-session-1").codex.threadId, "missing-thread");
+});
+
 test("CodexSessionManager stop aborts only the active turn and keeps the native thread active", async () => {
   const { CodexSessionManager } = loadBundle();
   const persistence = createSessionPersistence();

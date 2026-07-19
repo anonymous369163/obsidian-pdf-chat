@@ -199,13 +199,39 @@ export function normalizeRagChunkSettings(
   };
 }
 
-export function migrateSettings(savedValue: unknown, now: () => number = Date.now): SettingsMigrationResult {
+export function createInstallationId(randomId?: () => string): string {
+  const createRandom = randomId || (() => {
+    const cryptoObject = globalThis.crypto as Crypto | undefined;
+    if (typeof cryptoObject?.randomUUID === "function") return cryptoObject.randomUUID();
+    if (typeof cryptoObject?.getRandomValues === "function") {
+      const values = new Uint32Array(4);
+      cryptoObject.getRandomValues(values);
+      return Array.from(values, (value) => value.toString(16).padStart(8, "0")).join("");
+    }
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+  });
+  const token = String(createRandom() || "").trim().replace(/[^A-Za-z0-9._-]/g, "-");
+  if (!token) throw new Error("Unable to create a random installation identity");
+  return token.startsWith("install-") ? token : `install-${token}`;
+}
+
+export function migrateSettings(
+  savedValue: unknown,
+  now: () => number = Date.now,
+  createId: () => string = createInstallationId
+): SettingsMigrationResult {
   const saved =
     savedValue && typeof savedValue === "object" && !Array.isArray(savedValue)
       ? (savedValue as LegacySettings)
       : null;
   const settings = Object.assign({}, DEFAULT_SETTINGS, saved) as PDFChatSettings & LegacySettings;
   let needsSave = false;
+
+  settings.installationId =
+    typeof saved?.installationId === "string" && saved.installationId.trim()
+      ? saved.installationId.trim()
+      : createId();
+  if (!saved?.installationId || saved.installationId !== settings.installationId) needsSave = true;
 
   settings.readerDataVersion = saved?.readerDataVersion === 1 ? 1 : 0;
   if (saved && saved.readerDataVersion !== settings.readerDataVersion) needsSave = true;

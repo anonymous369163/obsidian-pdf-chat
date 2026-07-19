@@ -157,6 +157,26 @@ test("Task 5 settings preserve legacy chunk size while keeping credential-free 0
   assert.equal(fractionalNested.settings.translation.chunkChars, 8000);
 });
 
+test("installation identity is generated randomly once and then remains stable", () => {
+  const { DEFAULT_SETTINGS, migrateSettings } = loadBundle();
+  assert.equal(DEFAULT_SETTINGS.installationId, "");
+
+  let generated = 0;
+  const first = migrateSettings({}, () => 123, () => {
+    generated += 1;
+    return "install-random-abc123";
+  });
+  assert.equal(first.settings.installationId, "install-random-abc123");
+  assert.equal(first.needsSave, true);
+  assert.equal(generated, 1);
+  assert.doesNotMatch(first.settings.installationId, /vault|documents|pdf/i);
+
+  const second = migrateSettings(first.settings, () => 456, () => {
+    throw new Error("stable installation identity must not be regenerated");
+  });
+  assert.equal(second.settings.installationId, "install-random-abc123");
+});
+
 test("RAG settings normalization preserves valid boundaries and repairs invalid persisted pairs", () => {
   const { migrateSettings, normalizeRagChunkSettings } = loadBundle();
 

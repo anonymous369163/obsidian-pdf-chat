@@ -298,6 +298,7 @@ export function getConversationKey(
 }
 
 export interface ConversationSettings {
+  installationId?: string;
   conversationHistories?: Record<string, ConversationHistory>;
   conversationSessions?: Record<string, ConversationSession>;
   activeConversationSessionIds?: Record<string, string>;
@@ -373,7 +374,7 @@ export class ConversationStore {
       tags: normalizeTags(metadata.tags),
       archivedAt: metadata.archivedAt,
       parentSessionId: metadata.parentSessionId,
-      installationId: metadata.installationId,
+      installationId: metadata.installationId || settings.installationId,
       createdAt: timestamp,
       updatedAt: timestamp,
     };

@@ -692,6 +692,17 @@
   font-size: 0.72rem;
 }
 
+.pdf-chat-session-recovery {
+  width: fit-content;
+  padding: 5px 8px;
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 24%, var(--background-modifier-border));
+  border-radius: var(--pdf-chat-radius-sm);
+  background: color-mix(in srgb, var(--interactive-accent) 8%, var(--background-primary));
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  white-space: normal;
+}
+
 .pdf-chat-session-actions {
   display: flex;
   flex: 0 1 auto;
@@ -709,6 +720,26 @@
 
 .pdf-chat-session-action.is-danger {
   color: var(--text-error);
+}
+
+.pdf-chat-session-action.is-primary,
+.pdf-chat-codex-recovery-action.is-primary {
+  border-color: color-mix(in srgb, var(--interactive-accent) 42%, var(--background-modifier-border));
+  color: var(--interactive-accent);
+}
+
+.pdf-chat-codex-recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.pdf-chat-codex-recovery-action {
+  min-height: 32px;
+  padding: 5px 10px;
+  border-radius: var(--pdf-chat-radius-sm);
+  font-size: 0.8rem;
 }
 
 .pdf-chat-session-empty {
