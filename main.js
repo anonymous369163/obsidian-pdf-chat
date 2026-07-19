@@ -3420,7 +3420,10 @@ var SessionLibraryService = class {
       return {
         ...message,
         id: `${child.id}-fork-${index + 1}`,
-        evidence: (_a2 = message.evidence) == null ? void 0 : _a2.map((evidence) => ({ ...evidence }))
+        evidence: (_a2 = message.evidence) == null ? void 0 : _a2.map((evidence) => ({
+          ...evidence,
+          verification: evidence.paperPath && !available2.has(evidence.paperPath) ? "unverified" : evidence.verification
+        }))
       };
     });
     await this.dependencies.conversations.saveSessionById(child.id, messages, metadata);

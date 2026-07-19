@@ -253,7 +253,13 @@ export class SessionLibraryService {
     const messages = handoff.messages.map((message, index) => ({
       ...message,
       id: `${child.id}-fork-${index + 1}`,
-      evidence: message.evidence?.map((evidence) => ({ ...evidence })),
+      evidence: message.evidence?.map((evidence) => ({
+        ...evidence,
+        verification:
+          evidence.paperPath && !available.has(evidence.paperPath)
+            ? "unverified" as const
+            : evidence.verification,
+      })),
     }));
     await this.dependencies.conversations.saveSessionById(child.id, messages, metadata);
     return this.dependencies.conversations.getSession?.(child.id) || { ...child, messages };

@@ -278,7 +278,23 @@ test("foreign Codex sessions create explicit bounded local forks without changin
       { id: "old-u", role: "user", content: "Old question that should not fit", status: "complete", createdAt: 1 },
       { id: "old-a", role: "assistant", content: "Old answer that should not fit", status: "complete", createdAt: 2 },
       { id: "new-u", role: "user", content: "Newest question", status: "complete", createdAt: 3 },
-      { id: "new-a", role: "assistant", content: "Newest answer", status: "complete", createdAt: 4 },
+      {
+        id: "new-a",
+        role: "assistant",
+        content: "Newest answer",
+        status: "complete",
+        createdAt: 4,
+        evidence: [
+          {
+            id: "missing-evidence",
+            claim: "Missing paper claim",
+            paperPath: "papers/Missing.pdf",
+            page: 3,
+            verification: "located",
+            raw: "[Missing, p. 3]",
+          },
+        ],
+      },
     ],
   });
   const harness = operationsHarness([parent]);
@@ -307,6 +323,7 @@ test("foreign Codex sessions create explicit bounded local forks without changin
   assert.match(fork.title, /^Fork:/);
   assert.ok(fork.messages.reduce((sum, message) => sum + message.content.length, 0) <= 40);
   assert.equal(fork.messages.at(-1).content, "Newest answer");
+  assert.equal(fork.messages.at(-1).evidence[0].verification, "unverified");
   assert.equal(fork.messages.some((message) => message.content.includes("Old question")), false);
 });
 
