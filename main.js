@@ -2195,6 +2195,11 @@ var DEFAULT_SETTINGS = {
     keepTempFiles: false,
     includeSelectionContext: true
   },
+  contextBudget: {
+    maxInputChars: 6e4,
+    minRecentTurns: 6,
+    maxSelectionChars: 2e4
+  },
   // 全文摘要(浓缩上下文)相关设置:先用一个快速/便宜的模型把整篇 PDF 浓缩成摘要,
   // 缓存下来,回答局部选段问题时可以选择性地附带这份摘要作为背景,
   // 而不是把全文原样塞进上下文导致跑题或超长。
@@ -5844,6 +5849,30 @@ function legacySessionFromHistory(key, history) {
     updatedAt: timestamp
   };
 }
+function normalizePositiveInteger(value, fallback) {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
+}
+function normalizeContextBudget(value) {
+  const candidate = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const contextBudget = {
+    maxInputChars: normalizePositiveInteger(
+      candidate.maxInputChars,
+      DEFAULT_SETTINGS.contextBudget.maxInputChars
+    ),
+    minRecentTurns: normalizePositiveInteger(
+      candidate.minRecentTurns,
+      DEFAULT_SETTINGS.contextBudget.minRecentTurns
+    ),
+    maxSelectionChars: normalizePositiveInteger(
+      candidate.maxSelectionChars,
+      DEFAULT_SETTINGS.contextBudget.maxSelectionChars
+    )
+  };
+  return {
+    contextBudget,
+    changed: candidate.maxInputChars !== contextBudget.maxInputChars || candidate.minRecentTurns !== contextBudget.minRecentTurns || candidate.maxSelectionChars !== contextBudget.maxSelectionChars
+  };
+}
 function normalizeRagChunkSettings(chunkSize, chunkOverlap) {
   const ragChunkSize = typeof chunkSize === "number" && Number.isInteger(chunkSize) && chunkSize > 0 ? chunkSize : DEFAULT_SETTINGS.ragChunkSize;
   const fallbackOverlap = Math.min(DEFAULT_SETTINGS.ragChunkOverlap, ragChunkSize - 1);
@@ -5867,6 +5896,9 @@ function migrateSettings(savedValue, now = Date.now) {
   settings.conversationSessions = normalizeConversationSessions(saved && saved.conversationSessions);
   settings.activeConversationSessionIds = normalizeActiveSessionIds(saved && saved.activeConversationSessionIds);
   settings.promptHistory = normalizePromptHistory(saved && saved.promptHistory);
+  const normalizedContextBudget = normalizeContextBudget(saved == null ? void 0 : saved.contextBudget);
+  settings.contextBudget = normalizedContextBudget.contextBudget;
+  if (saved && normalizedContextBudget.changed) needsSave = true;
   for (const session of Object.values(settings.conversationSessions)) {
     if (((_a = session.pendingTurn) == null ? void 0 : _a.status) !== "running") continue;
     session.pendingTurn = {

@@ -60,6 +60,11 @@ export const DEFAULT_SETTINGS = {
     keepTempFiles: false,
     includeSelectionContext: true,
   },
+  contextBudget: {
+    maxInputChars: 60000,
+    minRecentTurns: 6,
+    maxSelectionChars: 20000,
+  },
   // 全文摘要(浓缩上下文)相关设置:先用一个快速/便宜的模型把整篇 PDF 浓缩成摘要,
   // 缓存下来,回答局部选段问题时可以选择性地附带这份摘要作为背景,
   // 而不是把全文原样塞进上下文导致跑题或超长。

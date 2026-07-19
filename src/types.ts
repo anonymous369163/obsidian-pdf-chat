@@ -40,6 +40,29 @@ export interface ConversationHistory {
 
 export type ConversationSessionMode = "chat" | "codex";
 
+export type PaperSourceStatus = "available" | "missing";
+
+export interface SessionMemory {
+  content: string;
+  coveredMessageCount: number;
+  updatedAt: number;
+}
+
+export interface ExtractionQualityReport {
+  pageCount: number;
+  extractedChars: number;
+  emptyPageRatio: number;
+  replacementCharRatio: number;
+  shortPageRatio: number;
+  quality: "good" | "mixed" | "poor";
+}
+
+export interface ContextBudgetSettings {
+  maxInputChars: number;
+  minRecentTurns: number;
+  maxSelectionChars: number;
+}
+
 export type CodexReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export type CodexVerbosity = "low" | "medium" | "high";
@@ -94,6 +117,8 @@ export interface ConversationSession {
   api?: ApiSessionMetadata;
   codex?: CodexSessionMetadata;
   pendingTurn?: PendingCodexTurn;
+  memory?: SessionMemory;
+  sourceStatus?: PaperSourceStatus;
   createdAt: number;
   updatedAt: number;
 }
@@ -110,6 +135,7 @@ export interface DocSummaryEntry {
   generatedAt: number;
   fullLength: number;
   truncated: boolean;
+  extractionQuality?: ExtractionQualityReport;
 }
 
 export interface DocChunksEntry {
@@ -117,6 +143,7 @@ export interface DocChunksEntry {
   chunks: PdfChunk[];
   fullTextLength: number;
   generatedAt: number;
+  extractionQuality?: ExtractionQualityReport;
 }
 
 export interface TranslationSettings {
@@ -181,6 +208,7 @@ export interface PDFChatSettings {
   systemPrompt: string;
   translation: TranslationSettings;
   codexDeepAnalysis: CodexDeepAnalysisSettings;
+  contextBudget: ContextBudgetSettings;
   summaryModelId: string;
   autoDocSummary: boolean;
   summaryMaxChars: number;

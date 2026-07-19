@@ -101,6 +101,41 @@ export interface NormalizedRagChunkSettings {
   changed: boolean;
 }
 
+function normalizePositiveInteger(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+function normalizeContextBudget(value: unknown): {
+  contextBudget: PDFChatSettings["contextBudget"];
+  changed: boolean;
+} {
+  const candidate =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Partial<PDFChatSettings["contextBudget"]>)
+      : {};
+  const contextBudget = {
+    maxInputChars: normalizePositiveInteger(
+      candidate.maxInputChars,
+      DEFAULT_SETTINGS.contextBudget.maxInputChars
+    ),
+    minRecentTurns: normalizePositiveInteger(
+      candidate.minRecentTurns,
+      DEFAULT_SETTINGS.contextBudget.minRecentTurns
+    ),
+    maxSelectionChars: normalizePositiveInteger(
+      candidate.maxSelectionChars,
+      DEFAULT_SETTINGS.contextBudget.maxSelectionChars
+    ),
+  };
+  return {
+    contextBudget,
+    changed:
+      candidate.maxInputChars !== contextBudget.maxInputChars ||
+      candidate.minRecentTurns !== contextBudget.minRecentTurns ||
+      candidate.maxSelectionChars !== contextBudget.maxSelectionChars,
+  };
+}
+
 export function normalizeRagChunkSettings(
   chunkSize: unknown,
   chunkOverlap: unknown
@@ -147,6 +182,9 @@ export function migrateSettings(savedValue: unknown, now: () => number = Date.no
   settings.conversationSessions = normalizeConversationSessions(saved && saved.conversationSessions);
   settings.activeConversationSessionIds = normalizeActiveSessionIds(saved && saved.activeConversationSessionIds);
   settings.promptHistory = normalizePromptHistory(saved && saved.promptHistory);
+  const normalizedContextBudget = normalizeContextBudget(saved?.contextBudget);
+  settings.contextBudget = normalizedContextBudget.contextBudget;
+  if (saved && normalizedContextBudget.changed) needsSave = true;
   for (const session of Object.values(settings.conversationSessions)) {
     if (session.pendingTurn?.status !== "running") continue;
     session.pendingTurn = {
