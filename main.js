@@ -25,9 +25,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
 var main_exports = {};
 __export(main_exports, {
   ActionRegistry: () => ResearchActionRegistry,
+  AtomicJsonStore: () => AtomicJsonStore,
   CodexSessionManager: () => CodexSessionManager,
   ConversationStore: () => ConversationStore,
   DEFAULT_SETTINGS: () => DEFAULT_SETTINGS,
+  JsonStoreError: () => JsonStoreError,
   LEGACY_0_4_0_TRANSLATE_PROMPT: () => LEGACY_0_4_0_TRANSLATE_PROMPT,
   OpenAICompatibleTransport: () => OpenAICompatibleTransport,
   PDFChatModal: () => PDFChatModal,
@@ -6922,6 +6924,141 @@ var VaultLifecycleService = class {
       this.replaceSettings(update());
       await this.persist();
     });
+  }
+};
+
+// src/json-store.ts
+var JsonStoreError = class extends Error {
+  constructor(message, operation, options) {
+    super(message);
+    this.operation = operation;
+    __publicField(this, "cause");
+    this.name = "JsonStoreError";
+    this.cause = options == null ? void 0 : options.cause;
+  }
+};
+function parentDirectory(path) {
+  const normalized = path.replace(/\\/g, "/");
+  const separator = normalized.lastIndexOf("/");
+  return separator > 0 ? normalized.slice(0, separator) : "";
+}
+var AtomicJsonStore = class {
+  constructor(adapter, path, validate) {
+    this.adapter = adapter;
+    this.path = path;
+    this.validate = validate;
+    __publicField(this, "writeQueue", Promise.resolve());
+  }
+  parseAndValidate(raw) {
+    try {
+      return this.validate(JSON.parse(raw));
+    } catch (error) {
+      throw new JsonStoreError("JSON document validation failed", "validation", { cause: error });
+    }
+  }
+  serialize(value) {
+    let validated;
+    try {
+      validated = this.validate(value);
+    } catch (error) {
+      throw new JsonStoreError("JSON document validation failed", "validation", { cause: error });
+    }
+    return JSON.stringify(validated, null, 2) + "\n";
+  }
+  async ensureParentDirectory() {
+    const directory = parentDirectory(this.path);
+    if (!directory || await this.adapter.exists(directory)) return;
+    const parts = directory.split("/").filter(Boolean);
+    let current = directory.startsWith("/") ? "/" : "";
+    for (const part of parts) {
+      current = current && current !== "/" ? `${current}/${part}` : `${current}${part}`;
+      if (!await this.adapter.exists(current)) await this.adapter.mkdir(current);
+    }
+  }
+  async readValidated(path) {
+    const raw = await this.adapter.read(path);
+    return this.parseAndValidate(raw);
+  }
+  async read() {
+    return this.readWithBackup();
+  }
+  async readWithBackup() {
+    const backupPath = `${this.path}.bak`;
+    const primaryExists = await this.adapter.exists(this.path);
+    if (primaryExists) {
+      try {
+        return await this.readValidated(this.path);
+      } catch (error) {
+        void error;
+      }
+    }
+    if (!await this.adapter.exists(backupPath)) {
+      if (!primaryExists) return null;
+      throw new JsonStoreError("JSON document and backup are unreadable", "read");
+    }
+    try {
+      const backup = await this.readValidated(backupPath);
+      await this.ensureParentDirectory();
+      await this.adapter.write(this.path, this.serialize(backup));
+      return backup;
+    } catch (error) {
+      if (error instanceof JsonStoreError) throw error;
+      throw new JsonStoreError("JSON backup recovery failed", "read", { cause: error });
+    }
+  }
+  write(value) {
+    const operation = this.writeQueue.then(() => this.writeNow(value));
+    this.writeQueue = operation.catch(() => void 0);
+    return operation;
+  }
+  async safeRemove(path) {
+    try {
+      if (await this.adapter.exists(path)) await this.adapter.remove(path);
+    } catch (error) {
+      void error;
+    }
+  }
+  async writeNow(value) {
+    const serialized = this.serialize(value);
+    const tempPath = `${this.path}.tmp`;
+    const backupPath = `${this.path}.bak`;
+    let rotatedPrimary = false;
+    try {
+      await this.ensureParentDirectory();
+      await this.safeRemove(tempPath);
+      await this.adapter.write(tempPath, serialized);
+      await this.readValidated(tempPath);
+      if (await this.adapter.exists(this.path)) {
+        let primaryIsValid = false;
+        try {
+          await this.readValidated(this.path);
+          primaryIsValid = true;
+        } catch (error) {
+          void error;
+        }
+        if (primaryIsValid) {
+          await this.safeRemove(backupPath);
+          await this.adapter.rename(this.path, backupPath);
+          rotatedPrimary = true;
+        } else {
+          await this.safeRemove(this.path);
+        }
+      }
+      await this.adapter.rename(tempPath, this.path);
+      await this.readValidated(this.path);
+    } catch (error) {
+      if (rotatedPrimary && !await this.adapter.exists(this.path) && await this.adapter.exists(backupPath)) {
+        try {
+          const backup = await this.readValidated(backupPath);
+          await this.adapter.write(this.path, this.serialize(backup));
+        } catch (restoreError) {
+          void restoreError;
+        }
+      }
+      await this.safeRemove(tempPath);
+      if (error instanceof JsonStoreError) throw error;
+      throw new JsonStoreError("Atomic JSON write or replace failed", "write", { cause: error });
+    }
   }
 };
 

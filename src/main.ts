@@ -69,6 +69,7 @@ export {
 } from "./codex-cli";
 export { CodexSessionManager } from "./codex-session-manager";
 export { assessExtractionQuality } from "./extraction-quality";
+export { AtomicJsonStore, JsonStoreError } from "./json-store";
 export { composeBoundedContext, summarizeSessionMemory } from "./context-composer";
 export {
   requestSelectionLimitDecision,
