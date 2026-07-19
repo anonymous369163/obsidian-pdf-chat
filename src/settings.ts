@@ -167,6 +167,9 @@ export function migrateSettings(savedValue: unknown, now: () => number = Date.no
   const settings = Object.assign({}, DEFAULT_SETTINGS, saved) as PDFChatSettings & LegacySettings;
   let needsSave = false;
 
+  settings.readerDataVersion = saved?.readerDataVersion === 1 ? 1 : 0;
+  if (saved && saved.readerDataVersion !== settings.readerDataVersion) needsSave = true;
+
   settings.models =
     saved && Array.isArray(saved.models) && saved.models.length
       ? saved.models.map((model) => ({ ...model }))

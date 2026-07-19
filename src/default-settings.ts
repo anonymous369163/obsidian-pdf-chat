@@ -7,6 +7,7 @@ export const LEGACY_0_4_0_TRANSLATE_PROMPT =
   "3. 只输出翻译结果,不要输出原文、不要复述要求、不要加额外解释或总结。";
 
 export const DEFAULT_SETTINGS = {
+  readerDataVersion: 0,
   models: [
     {
       id: "openai-compatible",

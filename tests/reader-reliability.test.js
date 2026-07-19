@@ -94,6 +94,8 @@ test("0.8.2 settings add bounded context defaults without deleting legacy state"
     minRecentTurns: 6,
     maxSelectionChars: 20000,
   });
+  assert.equal(DEFAULT_SETTINGS.readerDataVersion, 0);
+  assert.equal(migrated.settings.readerDataVersion, 0);
   assert.equal(migrated.needsSave, true);
 });
 

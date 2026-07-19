@@ -36,6 +36,7 @@ __export(main_exports, {
   PaperAssetRepository: () => PaperAssetRepository,
   PaperContextService: () => PaperContextService,
   QuickTranslateMarker: () => QuickTranslateMarker,
+  ReaderDataMigrator: () => ReaderDataMigrator,
   ResearchActionRegistry: () => ResearchActionRegistry,
   SelectionLimitModal: () => SelectionLimitModal,
   SessionRepository: () => SessionRepository,
@@ -2180,6 +2181,7 @@ function resolveContinueModelId(settings) {
 // src/default-settings.ts
 var LEGACY_0_4_0_TRANSLATE_PROMPT = "\u8BF7\u628A\u3010\u6211\u5F53\u524D\u9009\u4E2D\u5E76\u60F3\u8BA8\u8BBA\u7684\u539F\u6587\u7247\u6BB5\u3011\u5B8C\u6574\u7FFB\u8BD1\u6210\u4E2D\u6587\u3002\n1. \u9010\u6BB5\u5BF9\u5E94\u539F\u6587\u5206\u6BB5,\u4E0D\u8981\u5408\u5E76\u6216\u7701\u7565\u6BB5\u843D\u3002\n2. \u4E13\u4E1A\u672F\u8BED\u53EF\u4FDD\u7559\u82F1\u6587\u539F\u8BCD(\u62EC\u53F7\u6807\u6CE8\u5373\u53EF),\u516C\u5F0F\u3001\u4EE3\u7801\u3001\u53D8\u91CF\u540D\u3001\u56FE\u8868\u7F16\u53F7\u7B49\u4FDD\u6301\u539F\u6837\u4E0D\u7FFB\u8BD1\u3002\n3. \u53EA\u8F93\u51FA\u7FFB\u8BD1\u7ED3\u679C,\u4E0D\u8981\u8F93\u51FA\u539F\u6587\u3001\u4E0D\u8981\u590D\u8FF0\u8981\u6C42\u3001\u4E0D\u8981\u52A0\u989D\u5916\u89E3\u91CA\u6216\u603B\u7ED3\u3002";
 var DEFAULT_SETTINGS = {
+  readerDataVersion: 0,
   models: [
     {
       id: "openai-compatible",
@@ -6236,6 +6238,8 @@ function migrateSettings(savedValue, now = Date.now) {
   const saved = savedValue && typeof savedValue === "object" && !Array.isArray(savedValue) ? savedValue : null;
   const settings = Object.assign({}, DEFAULT_SETTINGS, saved);
   let needsSave = false;
+  settings.readerDataVersion = (saved == null ? void 0 : saved.readerDataVersion) === 1 ? 1 : 0;
+  if (saved && saved.readerDataVersion !== settings.readerDataVersion) needsSave = true;
   settings.models = saved && Array.isArray(saved.models) && saved.models.length ? saved.models.map((model) => ({ ...model })) : DEFAULT_SETTINGS.models.map((model) => ({ ...model }));
   settings.promptPresets = saved && Array.isArray(saved.promptPresets) && saved.promptPresets.length ? saved.promptPresets.map((preset) => ({ ...preset })) : DEFAULT_SETTINGS.promptPresets.map((preset) => ({ ...preset }));
   settings.docSummaries = saved && saved.docSummaries && typeof saved.docSummaries === "object" ? { ...saved.docSummaries } : {};
@@ -7252,8 +7256,160 @@ var PaperAssetRepository = class {
   }
 };
 
-// src/session-repository.ts
+// src/reader-data-migration.ts
 function clone2(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+function validateMeta(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Invalid reader data metadata");
+  }
+  const candidate = value;
+  if (candidate.version !== 1) throw new Error("Unsupported reader data metadata");
+  if (candidate.migration === void 0) return { version: 1 };
+  if (!candidate.migration || typeof candidate.migration !== "object" || Array.isArray(candidate.migration)) {
+    throw new Error("Invalid reader data migration checkpoint");
+  }
+  const migration = candidate.migration;
+  if (typeof migration.sourceVersion !== "string" || migration.state !== "writing" && migration.state !== "validated" && migration.state !== "complete") {
+    throw new Error("Invalid reader data migration checkpoint");
+  }
+  return {
+    version: 1,
+    migration: {
+      sourceVersion: migration.sourceVersion,
+      state: migration.state,
+      completedAt: typeof migration.completedAt === "number" && Number.isFinite(migration.completedAt) ? migration.completedAt : void 0
+    }
+  };
+}
+function validateSnapshot(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Invalid legacy reader data snapshot");
+  }
+  const candidate = value;
+  if (candidate.version !== 1) throw new Error("Unsupported legacy reader data snapshot");
+  return {
+    version: 1,
+    conversationHistories: candidate.conversationHistories && typeof candidate.conversationHistories === "object" ? clone2(candidate.conversationHistories) : {},
+    conversationSessions: normalizeConversationSessions(candidate.conversationSessions),
+    activeConversationSessionIds: candidate.activeConversationSessionIds && typeof candidate.activeConversationSessionIds === "object" ? clone2(candidate.activeConversationSessionIds) : {},
+    docSummaries: candidate.docSummaries && typeof candidate.docSummaries === "object" ? clone2(candidate.docSummaries) : {},
+    docChunks: candidate.docChunks && typeof candidate.docChunks === "object" ? clone2(candidate.docChunks) : {}
+  };
+}
+function buildSnapshot(settings) {
+  return validateSnapshot({
+    version: 1,
+    conversationHistories: settings.conversationHistories,
+    conversationSessions: settings.conversationSessions,
+    activeConversationSessionIds: settings.activeConversationSessionIds,
+    docSummaries: settings.docSummaries,
+    docChunks: settings.docChunks
+  });
+}
+function strippedSettings(settings) {
+  return {
+    ...clone2(settings),
+    readerDataVersion: 1,
+    conversationHistories: {},
+    conversationSessions: {},
+    docSummaries: {},
+    docChunks: {}
+  };
+}
+var ReaderDataMigrator = class {
+  constructor(adapter, sessions, papers, commitSettings, now = Date.now, root = "reader-data") {
+    this.sessions = sessions;
+    this.papers = papers;
+    this.commitSettings = commitSettings;
+    this.now = now;
+    this.root = root;
+    __publicField(this, "metaStore");
+    __publicField(this, "snapshotStore");
+    this.metaStore = new AtomicJsonStore(adapter, `${root}/meta.json`, validateMeta);
+    this.snapshotStore = new AtomicJsonStore(
+      adapter,
+      `${root}/migration/legacy-reader-data.json`,
+      validateSnapshot
+    );
+  }
+  paperPaths(snapshot) {
+    return Array.from(
+      /* @__PURE__ */ new Set([...Object.keys(snapshot.docSummaries), ...Object.keys(snapshot.docChunks)])
+    ).sort();
+  }
+  validateEntities(snapshot) {
+    for (const session of Object.values(snapshot.conversationSessions)) {
+      const saved = this.sessions.get(session.id);
+      if (!saved || saved.id !== session.id) throw new Error("Conversation migration validation failed");
+    }
+    for (const vaultPath of this.paperPaths(snapshot)) {
+      const saved = this.papers.get(vaultPath);
+      if (!saved || saved.vaultPath !== vaultPath) throw new Error("Paper migration validation failed");
+    }
+  }
+  async writeEntities(snapshot) {
+    for (const session of Object.values(snapshot.conversationSessions)) {
+      await this.sessions.save(session);
+    }
+    for (const vaultPath of this.paperPaths(snapshot)) {
+      await this.papers.save(vaultPath, {
+        summary: snapshot.docSummaries[vaultPath],
+        chunks: snapshot.docChunks[vaultPath]
+      });
+    }
+  }
+  async migrate(settings) {
+    var _a, _b;
+    const legacy = clone2(settings);
+    try {
+      const meta = await this.metaStore.readWithBackup();
+      if (settings.readerDataVersion === 1 && ((_a = meta == null ? void 0 : meta.migration) == null ? void 0 : _a.state) === "complete") {
+        await this.sessions.initialize();
+        await this.papers.initialize();
+        return { migrated: false, fallback: false, settings: clone2(settings) };
+      }
+      await this.sessions.initialize();
+      await this.papers.initialize();
+      const snapshot = buildSnapshot(settings);
+      const sourceVersion = String(settings.readerDataVersion || 0);
+      if (((_b = meta == null ? void 0 : meta.migration) == null ? void 0 : _b.state) !== "validated") {
+        await this.metaStore.write({
+          version: 1,
+          migration: { sourceVersion, state: "writing" }
+        });
+        await this.snapshotStore.write(snapshot);
+        await this.writeEntities(snapshot);
+        this.validateEntities(snapshot);
+        await this.metaStore.write({
+          version: 1,
+          migration: { sourceVersion, state: "validated" }
+        });
+      } else {
+        this.validateEntities(snapshot);
+      }
+      const migrated = strippedSettings(settings);
+      await this.commitSettings(migrated);
+      await this.metaStore.write({
+        version: 1,
+        migration: { sourceVersion, state: "complete", completedAt: this.now() }
+      });
+      return { migrated: true, fallback: false, settings: migrated };
+    } catch (error) {
+      void error;
+      return {
+        migrated: false,
+        fallback: true,
+        settings: legacy,
+        error: "Reader data migration incomplete"
+      };
+    }
+  }
+};
+
+// src/session-repository.ts
+function clone3(value) {
   return JSON.parse(JSON.stringify(value));
 }
 function isAbsolutePath3(value) {
@@ -7377,22 +7533,22 @@ var SessionRepository = class {
   }
   async loadAll() {
     const result = {};
-    for (const [id, session] of this.sessions) result[id] = clone2(session);
+    for (const [id, session] of this.sessions) result[id] = clone3(session);
     return result;
   }
   get(id) {
     const session = this.sessions.get(id);
-    return session ? clone2(session) : null;
+    return session ? clone3(session) : null;
   }
   list() {
-    return Array.from(this.indexEntries.values()).map(clone2).sort((left, right) => Number(right.pinned) - Number(left.pinned) || right.updatedAt - left.updatedAt || left.id.localeCompare(right.id));
+    return Array.from(this.indexEntries.values()).map(clone3).sort((left, right) => Number(right.pinned) - Number(left.pinned) || right.updatedAt - left.updatedAt || left.id.localeCompare(right.id));
   }
   async save(input) {
     const session = validateSession(input);
     const existing = this.indexEntries.get(session.id);
     const fileName = (existing == null ? void 0 : existing.fileName) || this.chooseFileName(session.id);
     await this.entityStore(fileName).write(session);
-    this.sessions.set(session.id, clone2(session));
+    this.sessions.set(session.id, clone3(session));
     this.indexEntries.set(session.id, {
       ...this.indexEntry(session, fileName),
       pinned: (existing == null ? void 0 : existing.pinned) || false,
@@ -7419,7 +7575,7 @@ var SessionRepository = class {
     assertRelativeVaultPath2(newPath);
     for (const session of Array.from(this.sessions.values())) {
       let changed = false;
-      const next = clone2(session);
+      const next = clone3(session);
       if (next.conversationKey === ["pdf", oldPath].join(":")) {
         next.conversationKey = ["pdf", newPath].join(":");
         next.sourceStatus = "available";

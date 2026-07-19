@@ -229,6 +229,7 @@ export interface TranslationTaskResult {
 export type ConversationKind = "chat" | "translate";
 
 export interface PDFChatSettings {
+  readerDataVersion: number;
   models: ModelProfile[];
   activeModelId: string;
   temperature: number;
