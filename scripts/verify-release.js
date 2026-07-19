@@ -3,7 +3,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-const RELEASE_VERSION = "0.8.2";
+const RELEASE_VERSION = "0.8.3";
 const MIN_APP_VERSION = "1.4.0";
 
 function readJson(root, filename) {

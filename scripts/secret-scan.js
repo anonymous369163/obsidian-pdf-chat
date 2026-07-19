@@ -212,8 +212,13 @@ function scanText(text, filePath) {
 
 function isForbiddenFilename(filePath) {
   const basename = path.basename(filePath).toLowerCase();
+  const segments = path
+    .normalize(filePath)
+    .split(path.sep)
+    .map((segment) => segment.toLowerCase());
   return (
     basename === "data.json" ||
+    (segments.includes("reader-data") && basename.endsWith(".json")) ||
     basename === ".env" ||
     basename.startsWith(".env.") ||
     basename.endsWith(".key") ||

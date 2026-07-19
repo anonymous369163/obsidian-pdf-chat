@@ -16,13 +16,22 @@ PDF Chat is a dependency-light Obsidian plugin organized around typed service bo
 - `src/codex-session-manager.ts` owns background Codex turns, native thread IDs, pending-turn journals, throttled progress persistence, global/UI subscriptions, and session-safe result persistence.
 - `src/multi-paper.ts` owns vault PDF search, ordinary API multi-paper context, and the advanced one-shot `debug-full` compatibility path.
 - `src/actions.ts` registers typed `ResearchAction` implementations, while `src/translation.ts` owns the dedicated academic-translation pipeline.
-- `src/conversation.ts`, `src/settings.ts`, and `src/default-settings.ts` own local persistence, migration, and safe empty defaults.
+- `src/json-store.ts` provides validated atomic replace and backup recovery on Obsidian's adapter.
+- `src/session-repository.ts` and `src/paper-asset-repository.ts` store independent session and paper entities plus small indexes.
+- `src/reader-data-migration.ts` checkpoints the legacy migration; `src/reader-data-store.ts` hydrates compatibility maps, synchronizes changed entities, enforces cache quota, and produces small settings snapshots.
+- `src/conversation.ts`, `src/settings.ts`, and `src/default-settings.ts` own normalized runtime state, settings migration, and safe empty defaults.
 
 ## Context flow
 
 The paper service should extract once, cache by document identity and modification time, then fan out the same context to summary, full-text, and RAG consumers. `PaperContext` carries the active file, selection, and conversation identity. UI actions produce typed requests; `LlmRequest` carries messages, the selected model profile, cancellation, streaming callbacks, and bounded overrides. A `ResearchAction` invokes a focused service operation instead of reaching into modal internals.
 
-This separation keeps extraction, retrieval, model transport, conversations, and UI independently testable. Local `data.json` is persistence, not a release artifact.
+This separation keeps extraction, retrieval, model transport, conversations, and UI independently testable. Local `data.json` and `reader-data/` are persistence, not release artifacts.
+
+## Layered reader storage
+
+`data.json` remains the local plaintext settings authority for API credentials, endpoints, model profiles, prompt history, active-session routing, and cache limits. Large reader state lives beside it under `reader-data/`: session transcripts use one validated JSON entity per discussion, while summaries and RAG chunks use one regenerable paper entity per vault-relative PDF path. Index files contain only lookup metadata.
+
+Migration follows write → read-back validation → settings checkpoint → complete-meta ordering. The sanitized migration backup contains reader state only, never model profiles, endpoints, prompts, or credentials. Atomic writes rotate a validated primary to `.bak`; failure before the final settings checkpoint leaves legacy maps available. Cache quota eviction is deterministic LRU, protects the active PDF, and applies only to regenerable paper entities. Sessions and evidence are never quota-evicted.
 
 Normal API context is assembled per turn rather than accumulated in model history. The persisted transcript and `PDFChatModal.messages` contain only visible user/assistant content. Current full text, BM25 evidence, and referenced-paper material are hidden request payloads; `composeBoundedContext` reserves the current question, keeps recent complete turns, and uses a low-temperature summary-model call only when older visible turns must be omitted. The resulting request has a hard character budget, while the transcript remains lossless and exportable.
 

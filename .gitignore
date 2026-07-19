@@ -1,5 +1,6 @@
 # Obsidian local plugin data
 data.json
+reader-data/
 
 # Dependencies / build artifacts
 node_modules/

@@ -755,10 +755,10 @@ test("fresh and continue modals select chat models independently and never resto
   assert.deepEqual(readKeys, ["pdf:demo.pdf", "pdf:demo.pdf"]);
 });
 
-test("0.8.2 documentation describes marker, bounded reader reliability, isolated history/model choice, and private plaintext limits", () => {
+test("0.8.3 documentation describes marker, bounded reader reliability, layered storage, and private plaintext limits", () => {
   const readme = fs.readFileSync(path.join(projectRoot, "README.md"), "utf8").toLowerCase();
   for (const phrase of [
-    "0.8.2",
+    "0.8.3",
     "native codex thread",
     "codex exec resume",
     "quick-translate marker",

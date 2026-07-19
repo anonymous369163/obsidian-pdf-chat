@@ -15,6 +15,40 @@ function sha256Bytes(bytes) {
   return crypto.createHash("sha256").update(bytes).digest("hex");
 }
 
+function hashDirectoryTree(directoryPath, label, allowMissing = true) {
+  const rootStats = lstatIfExists(directoryPath);
+  if (!rootStats) {
+    if (allowMissing) return null;
+    throw new Error(`${label} must be a real directory`);
+  }
+  if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
+    throw new Error(`${label} must be a real directory, not a link`);
+  }
+  const hash = crypto.createHash("sha256");
+  const visit = (currentPath, relativePath) => {
+    hash.update(`D\0${relativePath.replace(/\\/g, "/")}\0`);
+    const names = fs.readdirSync(currentPath).sort((left, right) => left.localeCompare(right));
+    for (const name of names) {
+      const childPath = path.join(currentPath, name);
+      const childRelative = relativePath ? path.join(relativePath, name) : name;
+      const stats = fs.lstatSync(childPath);
+      if (stats.isSymbolicLink()) throw new Error(`${label} must not contain links`);
+      if (stats.isDirectory()) {
+        visit(childPath, childRelative);
+        continue;
+      }
+      if (!stats.isFile() || stats.nlink !== 1) {
+        throw new Error(`${label} files must be regular single-link files`);
+      }
+      const bytes = fs.readFileSync(childPath);
+      hash.update(`F\0${childRelative.replace(/\\/g, "/")}\0${bytes.length}\0`);
+      hash.update(bytes);
+    }
+  };
+  visit(directoryPath, "");
+  return hash.digest("hex");
+}
+
 function lstatIfExists(filePath) {
   try {
     return fs.lstatSync(filePath);
@@ -100,6 +134,7 @@ function preflightTarget(targetDir) {
   const manifest = readManifest(path.join(targetDir, "manifest.json"), "target");
   if (manifest.id !== "pdf-chat") throw new Error('expected target manifest id "pdf-chat"');
   assertRegularUnlinked(path.join(targetDir, "data.json"), "target data.json", true);
+  hashDirectoryTree(path.join(targetDir, "reader-data"), "target reader-data", true);
 }
 
 function defaultBackupRoot() {
@@ -250,6 +285,7 @@ function validateReleaseSnapshot(directory, label) {
     );
   }
   assertRegularUnlinked(path.join(directory, "data.json"), `${label} data.json`, true);
+  return hashDirectoryTree(path.join(directory, "reader-data"), `${label} reader-data`, true);
 }
 
 function rollbackReleaseFiles(targetDir, backupDir, fileOps) {
@@ -311,12 +347,17 @@ function deployRelease(options) {
 
   const fileOps = createFileOps(options.fileOps);
   const dataPath = path.join(targetDir, "data.json");
+  const readerDataPath = path.join(targetDir, "reader-data");
+  const readerDataHashBefore = hashDirectoryTree(readerDataPath, "target reader-data", true);
   const now = options.now ? options.now() : new Date();
   const backupDir = nextBackupDirectory(backupRoot, now);
   fs.mkdirSync(backupRoot, { recursive: true });
   try {
     fileOps.copyTree(targetDir, backupDir);
-    validateReleaseSnapshot(backupDir, "backup");
+    const backupReaderDataHash = validateReleaseSnapshot(backupDir, "backup");
+    if (backupReaderDataHash !== readerDataHashBefore) {
+      throw new Error("reader-data backup verification failed");
+    }
   } catch (error) {
     throw deploymentFailure(error, backupDir, []);
   }
@@ -358,10 +399,15 @@ function deployRelease(options) {
 
     const dataHashAfter = fs.existsSync(dataPath) ? fileOps.hashFile(dataPath) : null;
     if (dataHashBefore !== dataHashAfter) throw new Error("data.json changed during deployment");
+    const readerDataHashAfter = hashDirectoryTree(readerDataPath, "target reader-data", true);
+    if (readerDataHashBefore !== readerDataHashAfter) {
+      throw new Error("reader-data changed during deployment");
+    }
 
     result = {
       backupDir,
       dataStatus: dataHashBefore === null ? "absent" : "preserved",
+      readerDataStatus: readerDataHashBefore === null ? "absent" : "preserved",
       files,
     };
   } catch (error) {
@@ -409,6 +455,7 @@ function runCli() {
     console.log("Pre-deploy backup created.");
     for (const file of result.files) console.log(`${file.filename}: ${file.status}`);
     console.log(`data.json: ${result.dataStatus}`);
+    console.log(`reader-data: ${result.readerDataStatus}`);
   } catch (error) {
     console.error(error instanceof Error ? error.message : "local deployment failed");
     process.exitCode = 1;
@@ -424,5 +471,6 @@ module.exports = {
   deployRelease,
   isInside,
   parseTarget,
+  hashDirectoryTree,
   sha256File,
 };

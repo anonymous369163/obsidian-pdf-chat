@@ -1,6 +1,6 @@
 ﻿# Obsidian PDF Chat
 
-Version 0.8.2 hardens the long-term reading workflow around the native Codex thread foundation. PDF rename/delete events preserve discussions, cross-PDF resume is saved before navigation, normal API chat uses bounded context with rolling visible-history memory, oversized selection sends require an explicit decision, and extraction quality warnings prevent weak PDF text from being labelled as full-text reading.
+Version 0.8.3 adds layered storage for long-term reading. Small private settings remain in `data.json`, while resumable discussions and regenerable paper assets use atomic per-entity JSON under `reader-data/`. A checkpointed migration validates every entity before shrinking legacy settings and keeps a sanitized migration backup for explicit recovery.
 
 PDF Chat turns an Obsidian PDF view into a compact research workbench. Select paper text, open the workbench, and ask questions without leaving the document. User and assistant messages are selectable and copyable, and the most recent conversation is restored per-PDF.
 
@@ -15,6 +15,7 @@ PDF Chat turns an Obsidian PDF view into a compact research workbench. Select pa
 - Continue the same discussion after a PDF rename. Deleting a PDF removes only regenerable summary/RAG caches while retaining its transcript as a missing-source session.
 - Choose what to do with an oversized selection: send it once in full, send only the configured prefix, or cancel without starting an API/Codex request.
 - Use extraction quality status to spot empty, scanned, or corrupted PDF text. Poor extraction disables automatic full-text mode and recommends Codex direct-PDF reading or OCR while leaving manual RAG available.
+- Keep large libraries responsive with a cache quota (100 papers / 100 MiB by default). LRU cleanup removes only regenerable summaries and RAG indexes, protects the active paper, and never evicts sessions or answers.
 - Type `@` in the composer to search vault PDFs and attach up to three referenced papers to the current question. The candidate list supports ArrowUp/ArrowDown, Enter, Tab, and Escape.
 - Type `/codex` to enter CODEX MODE. The current PDF is attached by default, referenced PDFs can be added with `@`, and each chip can be removed before the next turn.
 - Use `/refs`, `/unref <name-or-number>`, or `/clearrefs` to remove PDFs referenced by the current discussion.
@@ -67,13 +68,17 @@ Copy exactly these three release files into `<vault>/.obsidian/plugins/pdf-chat/
 - `manifest.json`
 - `styles.css`
 
-Restart Obsidian or reload community plugins, then enable **PDF Chat**. Do not distribute `data.json` with those files.
+Restart Obsidian or reload community plugins, then enable **PDF Chat**. Do not distribute `data.json` or the local `reader-data/` directory with those files.
 
 ## Model configuration and local data
 
 Configure your own API keys, endpoints, and model profiles in **Settings → PDF Chat**. Public endpoint, API-key, and model defaults are empty; the project does not ship a credential or private provider configuration.
 
-Obsidian stores API keys, endpoints, model profiles, summaries, retrieval caches, prompt history, resumable chat sessions, and separate translation history as local plaintext in the ignored `data.json` file. Never commit or share it. If a former locally hardcoded `main.js` was shared outside a trusted machine, rotate those provider keys before using them again.
+Obsidian stores API keys, endpoints, model profiles, prompt history, and small routing settings as local plaintext in the ignored `data.json` file. Layered storage keeps resumable chat/Codex sessions in `reader-data/sessions/` and regenerable summaries/RAG indexes in `reader-data/papers/`; these JSON files are also local plaintext. Never commit or share `data.json` or `reader-data/`. If a former locally hardcoded `main.js` was shared outside a trusted machine, rotate those provider keys before using them again.
+
+The first 0.8.3 start writes a sanitized migration backup at `reader-data/migration/legacy-reader-data.json`, then validates the new entities before removing large legacy maps from `data.json`. A failed migration falls back to the untouched legacy data for that run. Settings show cache usage, cache quota, an action that clears only regenerable paper assets, and a separate action for deleting the migration backup.
+
+Synchronizing the full Obsidian vault (including `.obsidian/plugins/pdf-chat/data.json` and `.obsidian/plugins/pdf-chat/reader-data/`) restores plugin settings, transcripts, paper caches, and plugin session metadata on another machine. Native Codex thread bodies remain in that machine's Codex home, so a transcript is still readable after sync but `codex exec resume` may require a new thread. Downgrade warning: versions before 0.8.3 do not read layered `reader-data`; keep the migration backup or an external plugin-directory backup before downgrading.
 
 For public forks and release branches, enable [GitHub Secret Scanning and Push Protection](https://docs.github.com/en/code-security/secret-scanning/introduction/about-secret-scanning) as an additional safeguard.
 
@@ -89,7 +94,7 @@ Install dependencies with `npm ci`. The supported commands are:
 - `npm run verify` — typecheck, build, test, scan, validate release metadata and JavaScript syntax, and check diff whitespace.
 - `npm run deploy:local -- --target <path>` — verify first, then deploy to an existing `pdf-chat` plugin directory.
 
-The repository root is the single source for local deployment. The deploy command validates the target manifest, creates an external backup, copies only the three release files, verifies their SHA-256 hashes, and confirms that an existing target `data.json` did not change. You can provide the target with `PDF_CHAT_PLUGIN_DIR` instead of `--target`.
+The repository root is the single source for local deployment. The deploy command validates the target manifest, creates an external backup, copies only the three release files, verifies their SHA-256 hashes, and confirms byte-for-byte that existing `data.json` and `reader-data/` stayed unchanged. You can provide the target with `PDF_CHAT_PLUGIN_DIR` instead of `--target`.
 
 See [Architecture](docs/architecture.md) for module boundaries and extension guidance.
 

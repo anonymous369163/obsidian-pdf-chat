@@ -309,17 +309,24 @@ test("secret scanner detects non-empty API keys under quoted object fields", () 
 test("secret scanner rejects forbidden tracked filename shapes", (t) => {
   const { scanFile } = require("../scripts/secret-scan");
   const directory = makeTempDirectory(t);
-  const filenames = ["data.json", ".env.local", "server.key", "certificate.pem"];
+  const filenames = [
+    "data.json",
+    ".env.local",
+    "server.key",
+    "certificate.pem",
+    "reader-data/sessions/session-local.json",
+  ];
   const findings = [];
   for (const filename of filenames) {
     const filePath = path.join(directory, filename);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, "");
     findings.push(...scanFile(filePath, directory));
   }
 
   assert.deepEqual(
     findings.map((finding) => [finding.file, finding.line, finding.ruleId]),
-    filenames.map((filename) => [filename, 1, "forbidden.file"])
+    filenames.map((filename) => [filename.replace(/\\/g, "/"), 1, "forbidden.file"])
   );
 });
 
@@ -352,6 +359,12 @@ test("local deployment preserves private data and verifies all release hashes", 
   fs.writeFileSync(path.join(sourceRoot, "not-a-release-file.txt"), "do not deploy\n");
   const privateBytes = Buffer.from(JSON.stringify({ conversation: "local-only" }));
   fs.writeFileSync(path.join(targetDir, "data.json"), privateBytes);
+  const readerDataDir = path.join(targetDir, "reader-data", "sessions");
+  fs.mkdirSync(readerDataDir, { recursive: true });
+  const readerDataBytes = Buffer.from('{"version":1,"messages":["local-only"]}\n');
+  fs.writeFileSync(path.join(readerDataDir, "session-local.json"), readerDataBytes);
+  fs.mkdirSync(path.join(sourceRoot, "reader-data"), { recursive: true });
+  fs.writeFileSync(path.join(sourceRoot, "reader-data", "must-not-deploy.json"), "untrusted\n");
   fs.writeFileSync(path.join(targetDir, "unrelated.txt"), "keep me\n");
   const privateHashBefore = sha256File(path.join(targetDir, "data.json"));
 
@@ -375,9 +388,19 @@ test("local deployment preserves private data and verifies all release hashes", 
   );
   assert.equal(sha256File(path.join(targetDir, "data.json")), privateHashBefore);
   assert.deepEqual(fs.readFileSync(path.join(targetDir, "data.json")), privateBytes);
+  assert.deepEqual(
+    fs.readFileSync(path.join(targetDir, "reader-data", "sessions", "session-local.json")),
+    readerDataBytes
+  );
+  assert.equal(fs.existsSync(path.join(targetDir, "reader-data", "must-not-deploy.json")), false);
+  assert.equal(result.readerDataStatus, "preserved");
   assert.equal(fs.readFileSync(path.join(targetDir, "unrelated.txt"), "utf8"), "keep me\n");
   assert.equal(fs.existsSync(path.join(targetDir, "not-a-release-file.txt")), false);
   assert.deepEqual(fs.readFileSync(path.join(result.backupDir, "data.json")), privateBytes);
+  assert.deepEqual(
+    fs.readFileSync(path.join(result.backupDir, "reader-data", "sessions", "session-local.json")),
+    readerDataBytes
+  );
 });
 
 test("local deployment rejects a wrong plugin ID before writing anything", (t) => {
