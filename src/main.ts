@@ -31,6 +31,7 @@ import type {
   ConversationKind,
   DocChunksEntry,
   DocSummaryEntry,
+  ExtractionQualityReport,
   LlmCompatibilityOptions,
   LlmMessage,
   LlmRequest,
@@ -67,6 +68,7 @@ export {
   runCodexVersionCheck,
 } from "./codex-cli";
 export { CodexSessionManager } from "./codex-session-manager";
+export { assessExtractionQuality } from "./extraction-quality";
 export { composeBoundedContext, summarizeSessionMemory } from "./context-composer";
 export {
   requestSelectionLimitDecision,
@@ -416,7 +418,7 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
 
   async generateDocSummary(
     file: TFile
-  ): Promise<{ summary: string; fullLength: number; truncated: boolean }> {
+  ): Promise<{ summary: string; fullLength: number; truncated: boolean; extractionQuality: ExtractionQualityReport }> {
     return this.paperContextService!.generateDocSummary(file);
   }
 
@@ -432,7 +434,11 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
     return this.paperContextService!.getOrCreateDocSummary(file, forceRefresh);
   }
 
-  async generateDocChunks(file: TFile): Promise<{ chunks: PdfChunk[]; fullTextLength: number }> {
+  async generateDocChunks(file: TFile): Promise<{
+    chunks: PdfChunk[];
+    fullTextLength: number;
+    extractionQuality: ExtractionQualityReport;
+  }> {
     return this.paperContextService!.generateDocChunks(file);
   }
 

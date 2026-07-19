@@ -37,6 +37,7 @@ __export(main_exports, {
   SelectionLimitModal: () => SelectionLimitModal,
   TranslationService: () => TranslationService,
   VaultLifecycleService: () => VaultLifecycleService,
+  assessExtractionQuality: () => assessExtractionQuality,
   bm25Retrieve: () => bm25Retrieve,
   bm25RetrieveMulti: () => bm25RetrieveMulti,
   buildCodexDebugFullMarkdownPrompt: () => buildCodexDebugFullMarkdownPrompt,
@@ -2310,6 +2311,44 @@ var DEFAULT_SETTINGS = {
   ]
 };
 
+// src/extraction-quality.ts
+var SHORT_PAGE_CHARS = 80;
+function ratio(count, total) {
+  return total > 0 ? count / total : 0;
+}
+function assessExtractionQuality(pages) {
+  const normalizedPages = Array.isArray(pages) ? pages : [];
+  const pageCount = normalizedPages.length;
+  const pageTexts = normalizedPages.map((page) => String((page == null ? void 0 : page.text) || "").trim());
+  const extractedChars = pageTexts.reduce((sum, text) => sum + text.length, 0);
+  const emptyPages = pageTexts.filter((text) => !text).length;
+  const shortPages = pageTexts.filter((text) => text.length < SHORT_PAGE_CHARS).length;
+  const replacementChars = pageTexts.reduce((sum, text) => {
+    var _a, _b;
+    const replacementCount = ((_a = text.match(/\uFFFD/g)) == null ? void 0 : _a.length) || 0;
+    const controlCount = ((_b = text.match(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g)) == null ? void 0 : _b.length) || 0;
+    return sum + replacementCount + controlCount;
+  }, 0);
+  const emptyPageRatio = ratio(emptyPages, pageCount);
+  const shortPageRatio = ratio(shortPages, pageCount);
+  const replacementCharRatio = ratio(replacementChars, extractedChars);
+  const averageChars = ratio(extractedChars, pageCount);
+  let quality = "good";
+  if (pageCount === 0 || extractedChars < Math.max(200, pageCount * 40) || emptyPageRatio >= 0.5 || shortPageRatio >= 0.75 || replacementCharRatio >= 0.02) {
+    quality = "poor";
+  } else if (emptyPageRatio >= 0.2 || shortPageRatio >= 0.4 || replacementCharRatio >= 5e-3 || averageChars < 300) {
+    quality = "mixed";
+  }
+  return {
+    pageCount,
+    extractedChars,
+    emptyPageRatio,
+    replacementCharRatio,
+    shortPageRatio,
+    quality
+  };
+}
+
 // src/paper-context.ts
 function getActivePdfFile(app) {
   const leaf = app.workspace.activeLeaf;
@@ -2461,7 +2500,10 @@ var PaperContextService = class {
   }
   async generateDocSummary(file) {
     const settings = this.getSettings();
-    const fullText = await this.extractFullText(file);
+    const pages = await this.extractPages(file);
+    const extractionQuality = assessExtractionQuality(pages);
+    const fullText = pages.map((page) => `[\u7B2C${page.page}\u9875]
+${page.text}`).join("\n\n").trim();
     let textForSummary = fullText;
     let truncated = false;
     const maxChars = settings.summaryMaxChars || DEFAULT_SETTINGS.summaryMaxChars;
@@ -2480,15 +2522,15 @@ var PaperContextService = class {
       maxTokensOverride: settings.summaryMaxTokens || DEFAULT_SETTINGS.summaryMaxTokens,
       stream: false
     });
-    return { summary, fullLength: fullText.length, truncated };
+    return { summary, fullLength: fullText.length, truncated, extractionQuality };
   }
   async getOrCreateDocSummary(file, forceRefresh) {
     const settings = this.getSettings();
     const mtime = file.stat && file.stat.mtime;
     const cached = settings.docSummaries[file.path];
     if (!forceRefresh && cached && cached.mtime === mtime) return cached;
-    const { summary, fullLength, truncated } = await this.generateDocSummary(file);
-    const entry = { mtime, summary, generatedAt: Date.now(), fullLength, truncated };
+    const { summary, fullLength, truncated, extractionQuality } = await this.generateDocSummary(file);
+    const entry = { mtime, summary, generatedAt: Date.now(), fullLength, truncated, extractionQuality };
     settings.docSummaries[file.path] = entry;
     await this.persistSettings();
     return entry;
@@ -2502,7 +2544,7 @@ var PaperContextService = class {
       settings.ragChunkOverlap
     );
     const fullTextLength = pages.reduce((total, page) => total + (page.text ? page.text.length : 0), 0);
-    return { chunks, fullTextLength };
+    return { chunks, fullTextLength, extractionQuality: assessExtractionQuality(pages) };
   }
   async planRagQueries(question) {
     const settings = this.getSettings();
@@ -2529,8 +2571,8 @@ var PaperContextService = class {
       }
       return cached;
     }
-    const { chunks, fullTextLength } = await this.generateDocChunks(file);
-    const entry = { mtime, chunks, fullTextLength, generatedAt: Date.now() };
+    const { chunks, fullTextLength, extractionQuality } = await this.generateDocChunks(file);
+    const entry = { mtime, chunks, fullTextLength, generatedAt: Date.now(), extractionQuality };
     settings.docChunks[file.path] = entry;
     await this.persistSettings();
     return entry;
@@ -4901,15 +4943,20 @@ ${selectionContext}`;
     this.plugin.saveSettings();
   }
   refreshSummaryStatus() {
+    var _a;
     if (!this.summaryStatusEl || !this.pdfFile) return;
     const cached = this.plugin.settings.docSummaries[this.pdfFile.path];
     if (cached && cached.summary) {
       this.docSummaryEntry = cached;
       const date = new Date(cached.generatedAt);
       const truncatedNote = cached.truncated ? " \xB7 \u539F\u6587\u8FC7\u957F,\u4EC5\u6458\u8981\u4E86\u524D\u9762\u90E8\u5206" : "";
-      this.summaryStatusEl.setText("\u6458\u8981\u5DF2\u7F13\u5B58");
-      this.setChipState(this.summaryStatusEl, "success");
-      this.summaryStatusEl.setAttr("aria-label", `\u6458\u8981\u5DF2\u7F13\u5B58 \xB7 ${date.toLocaleString()}${truncatedNote}`);
+      const weakExtraction = ((_a = cached.extractionQuality) == null ? void 0 : _a.quality) === "poor";
+      this.summaryStatusEl.setText(weakExtraction ? "\u6458\u8981\u8BC1\u636E\u8F83\u5F31" : "\u6458\u8981\u5DF2\u7F13\u5B58");
+      this.setChipState(this.summaryStatusEl, weakExtraction ? "pending" : "success");
+      this.summaryStatusEl.setAttr(
+        "aria-label",
+        weakExtraction ? `PDF \u6587\u672C\u63D0\u53D6\u8F83\u5DEE\uFF0C\u6458\u8981\u53EF\u80FD\u4E0D\u5B8C\u6574 \xB7 ${date.toLocaleString()} \xB7 \u5EFA\u8BAE\u4F7F\u7528 Codex \u76F4\u63A5\u9605\u8BFB PDF \u6216\u5148\u505A OCR` : `\u6458\u8981\u5DF2\u7F13\u5B58 \xB7 ${date.toLocaleString()}${truncatedNote}`
+      );
     } else {
       this.docSummaryEntry = null;
       this.summaryStatusEl.setText("\u6458\u8981\u672A\u751F\u6210");
@@ -4958,14 +5005,23 @@ ${selectionContext}`;
     }
   }
   refreshRagStatus() {
+    var _a;
     if (!this.ragStatusEl || !this.pdfFile) return;
     const cached = this.plugin.settings.docChunks[this.pdfFile.path];
     if (cached && cached.chunks && cached.chunks.length) {
       this.docChunksEntry = cached;
       const threshold = this.plugin.settings.ragFullTextThreshold || DEFAULT_SETTINGS.ragFullTextThreshold;
-      this.useFullTextMode = !!(cached.fullTextLength && cached.fullTextLength <= threshold);
+      const weakExtraction = ((_a = cached.extractionQuality) == null ? void 0 : _a.quality) === "poor";
+      this.useFullTextMode = !weakExtraction && !!(cached.fullTextLength && cached.fullTextLength <= threshold);
       const date = new Date(cached.generatedAt);
-      if (this.useFullTextMode) {
+      if (weakExtraction) {
+        this.ragStatusEl.setText("\u6587\u672C\u63D0\u53D6\u8F83\u5DEE");
+        this.setChipState(this.ragStatusEl, "pending");
+        this.ragStatusEl.setAttr(
+          "aria-label",
+          `PDF \u6587\u672C\u63D0\u53D6\u8F83\u5DEE\uFF0C\u5DF2\u7981\u7528\u81EA\u52A8\u5168\u6587\u76F4\u8BFB \xB7 ${date.toLocaleString()} \xB7 \u53EF\u5C1D\u8BD5 RAG\uFF0C\u5EFA\u8BAE\u4F7F\u7528 Codex \u76F4\u63A5\u9605\u8BFB PDF \u6216\u5148\u505A OCR`
+        );
+      } else if (this.useFullTextMode) {
         this.ragStatusEl.setText("\u5168\u6587\u76F4\u8BFB");
         this.setChipState(this.ragStatusEl, "accent");
         this.ragStatusEl.setAttr(

@@ -1,9 +1,11 @@
 import type { App, TFile } from "obsidian";
 import { DEFAULT_SETTINGS } from "./default-settings";
+import { assessExtractionQuality } from "./extraction-quality";
 import type { OpenAICompatibleTransport } from "./llm-transport";
 import type {
   DocChunksEntry,
   DocSummaryEntry,
+  ExtractionQualityReport,
   ModelProfile,
   PaperContext,
   PdfChunk,
@@ -223,9 +225,16 @@ export class PaperContextService {
     return extractPdfFullText(this.app, file);
   }
 
-  async generateDocSummary(file: TFile): Promise<{ summary: string; fullLength: number; truncated: boolean }> {
+  async generateDocSummary(file: TFile): Promise<{
+    summary: string;
+    fullLength: number;
+    truncated: boolean;
+    extractionQuality: ExtractionQualityReport;
+  }> {
     const settings = this.getSettings();
-    const fullText = await this.extractFullText(file);
+    const pages = await this.extractPages(file);
+    const extractionQuality = assessExtractionQuality(pages);
+    const fullText = pages.map((page) => `[第${page.page}页]\n${page.text}`).join("\n\n").trim();
     let textForSummary = fullText;
     let truncated = false;
     const maxChars = settings.summaryMaxChars || DEFAULT_SETTINGS.summaryMaxChars;
@@ -246,7 +255,7 @@ export class PaperContextService {
       maxTokensOverride: settings.summaryMaxTokens || DEFAULT_SETTINGS.summaryMaxTokens,
       stream: false,
     });
-    return { summary, fullLength: fullText.length, truncated };
+    return { summary, fullLength: fullText.length, truncated, extractionQuality };
   }
 
   async getOrCreateDocSummary(file: TFile, forceRefresh: boolean): Promise<DocSummaryEntry> {
@@ -254,14 +263,18 @@ export class PaperContextService {
     const mtime = file.stat && file.stat.mtime;
     const cached = settings.docSummaries[file.path];
     if (!forceRefresh && cached && cached.mtime === mtime) return cached;
-    const { summary, fullLength, truncated } = await this.generateDocSummary(file);
-    const entry = { mtime, summary, generatedAt: Date.now(), fullLength, truncated };
+    const { summary, fullLength, truncated, extractionQuality } = await this.generateDocSummary(file);
+    const entry = { mtime, summary, generatedAt: Date.now(), fullLength, truncated, extractionQuality };
     settings.docSummaries[file.path] = entry;
     await this.persistSettings();
     return entry;
   }
 
-  async generateDocChunks(file: TFile): Promise<{ chunks: PdfChunk[]; fullTextLength: number }> {
+  async generateDocChunks(file: TFile): Promise<{
+    chunks: PdfChunk[];
+    fullTextLength: number;
+    extractionQuality: ExtractionQualityReport;
+  }> {
     const settings = this.getSettings();
     const pages = await extractPdfPages(this.app, file);
     const chunks = chunkPdfPages(
@@ -270,7 +283,7 @@ export class PaperContextService {
       settings.ragChunkOverlap
     );
     const fullTextLength = pages.reduce((total, page) => total + (page.text ? page.text.length : 0), 0);
-    return { chunks, fullTextLength };
+    return { chunks, fullTextLength, extractionQuality: assessExtractionQuality(pages) };
   }
 
   async planRagQueries(question: string): Promise<string[]> {
@@ -302,8 +315,8 @@ export class PaperContextService {
       }
       return cached;
     }
-    const { chunks, fullTextLength } = await this.generateDocChunks(file);
-    const entry = { mtime, chunks, fullTextLength, generatedAt: Date.now() };
+    const { chunks, fullTextLength, extractionQuality } = await this.generateDocChunks(file);
+    const entry = { mtime, chunks, fullTextLength, generatedAt: Date.now(), extractionQuality };
     settings.docChunks[file.path] = entry;
     await this.persistSettings();
     return entry;

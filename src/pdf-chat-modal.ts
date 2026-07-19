@@ -1968,9 +1968,15 @@ export class PDFChatModal extends Modal {
       this.docSummaryEntry = cached;
       const date = new Date(cached.generatedAt);
       const truncatedNote = cached.truncated ? " · 原文过长,仅摘要了前面部分" : "";
-      this.summaryStatusEl.setText("摘要已缓存");
-      this.setChipState(this.summaryStatusEl, "success");
-      this.summaryStatusEl.setAttr("aria-label", `摘要已缓存 · ${date.toLocaleString()}${truncatedNote}`);
+      const weakExtraction = cached.extractionQuality?.quality === "poor";
+      this.summaryStatusEl.setText(weakExtraction ? "摘要证据较弱" : "摘要已缓存");
+      this.setChipState(this.summaryStatusEl, weakExtraction ? "pending" : "success");
+      this.summaryStatusEl.setAttr(
+        "aria-label",
+        weakExtraction
+          ? `PDF 文本提取较差，摘要可能不完整 · ${date.toLocaleString()} · 建议使用 Codex 直接阅读 PDF 或先做 OCR`
+          : `摘要已缓存 · ${date.toLocaleString()}${truncatedNote}`
+      );
     } else {
       this.docSummaryEntry = null;
       this.summaryStatusEl.setText("摘要未生成");
@@ -2028,9 +2034,17 @@ export class PDFChatModal extends Modal {
     if (cached && cached.chunks && cached.chunks.length) {
       this.docChunksEntry = cached;
       const threshold = this.plugin.settings.ragFullTextThreshold || DEFAULT_SETTINGS.ragFullTextThreshold;
-      this.useFullTextMode = !!(cached.fullTextLength && cached.fullTextLength <= threshold);
+      const weakExtraction = cached.extractionQuality?.quality === "poor";
+      this.useFullTextMode = !weakExtraction && !!(cached.fullTextLength && cached.fullTextLength <= threshold);
       const date = new Date(cached.generatedAt);
-      if (this.useFullTextMode) {
+      if (weakExtraction) {
+        this.ragStatusEl.setText("文本提取较差");
+        this.setChipState(this.ragStatusEl, "pending");
+        this.ragStatusEl.setAttr(
+          "aria-label",
+          `PDF 文本提取较差，已禁用自动全文直读 · ${date.toLocaleString()} · 可尝试 RAG，建议使用 Codex 直接阅读 PDF 或先做 OCR`
+        );
+      } else if (this.useFullTextMode) {
         this.ragStatusEl.setText("全文直读");
         this.setChipState(this.ragStatusEl, "accent");
         this.ragStatusEl.setAttr(

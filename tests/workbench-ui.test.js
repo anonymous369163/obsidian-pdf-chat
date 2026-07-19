@@ -1760,6 +1760,36 @@ test("oversized selection prefix is the only selected passage sent to the API", 
   assert.doesNotMatch(request.messages[0].content, /Selected source/);
 });
 
+test("poor PDF extraction never claims full-text reading and shows a recovery hint", () => {
+  const { modal } = createModalHarness({
+    settingsPatch: {
+      docChunks: {
+        "papers/demo.pdf": {
+          mtime: 1,
+          generatedAt: 2,
+          fullTextLength: 1200,
+          chunks: [{ idx: 0, page: 1, text: "weak extracted text" }],
+          extractionQuality: {
+            pageCount: 10,
+            extractedChars: 1200,
+            emptyPageRatio: 0.7,
+            replacementCharRatio: 0,
+            shortPageRatio: 0.8,
+            quality: "poor",
+          },
+        },
+      },
+    },
+  });
+
+  modal.refreshRagStatus();
+
+  assert.equal(modal.useFullTextMode, false);
+  assert.equal(modal.ragStatusEl.textContent, "文本提取较差");
+  assert.match(modal.ragStatusEl.getAttribute("aria-label"), /Codex|OCR/);
+  assert.doesNotMatch(modal.composerStatusEl.textContent, /全文上下文已启用/);
+});
+
 test("settings preserve every legacy control in the correct ordered section and callbacks", async () => {
   const { bundle, settingTabs } = loadBundle();
   const PluginClass = bundle.default || bundle;
