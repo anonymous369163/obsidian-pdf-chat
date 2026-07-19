@@ -604,6 +604,135 @@
   color: var(--text-faint);
 }
 
+.pdf-chat-session-library-modal .modal-content {
+  max-width: min(920px, 94vw);
+}
+
+.pdf-chat-session-library {
+  display: grid;
+  gap: 14px;
+}
+
+.pdf-chat-session-library > h2,
+.pdf-chat-session-library-description {
+  margin: 0;
+}
+
+.pdf-chat-session-library-description {
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.pdf-chat-session-library-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) repeat(3, minmax(120px, auto));
+  gap: 8px;
+  align-items: end;
+}
+
+.pdf-chat-session-search,
+.pdf-chat-session-filter select {
+  width: 100%;
+  min-height: 38px;
+  border-radius: var(--pdf-chat-radius-md);
+}
+
+.pdf-chat-session-filter {
+  display: grid;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.pdf-chat-session-results {
+  display: grid;
+  max-height: min(62vh, 680px);
+  gap: 9px;
+  overflow: auto;
+}
+
+.pdf-chat-session-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  padding: 13px 14px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--pdf-chat-radius-lg);
+  background: var(--background-primary);
+}
+
+.pdf-chat-session-summary {
+  display: grid;
+  flex: 1 1 320px;
+  min-width: 0;
+  gap: 4px;
+}
+
+.pdf-chat-session-title,
+.pdf-chat-session-meta,
+.pdf-chat-session-tags {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-chat-session-meta,
+.pdf-chat-session-tags {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.pdf-chat-session-missing {
+  width: fit-content;
+  padding: 2px 7px;
+  border-radius: var(--pdf-chat-radius-sm);
+  background: var(--background-modifier-error);
+  color: var(--text-on-accent);
+  font-size: 0.72rem;
+}
+
+.pdf-chat-session-actions {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.pdf-chat-session-action {
+  min-height: 32px;
+  padding: 4px 8px;
+  border-radius: var(--pdf-chat-radius-sm);
+  font-size: 0.78rem;
+}
+
+.pdf-chat-session-action.is-danger {
+  color: var(--text-error);
+}
+
+.pdf-chat-session-empty {
+  padding: 28px;
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: var(--pdf-chat-radius-lg);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+@media (max-width: 720px) {
+  .pdf-chat-session-library-controls {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .pdf-chat-session-search {
+    grid-column: 1 / -1;
+  }
+
+  .pdf-chat-session-actions {
+    justify-content: flex-start;
+  }
+}
+
 .pdf-chat-message-content ul,
 .pdf-chat-message-content ol {
   margin-block: 0.4em 0.75em;

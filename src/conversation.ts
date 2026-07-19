@@ -434,11 +434,16 @@ export class ConversationStore {
     const sessions = normalizeConversationSessions(settings.conversationSessions);
     if (activeId && sessions[activeId]) {
       const active = sessions[activeId];
-      if (active.codex?.lifecycle !== "closed") return cloneSession(active);
+      if (!active.archivedAt && active.codex?.lifecycle !== "closed") return cloneSession(active);
       delete settings.activeConversationSessionIds![key];
     }
     const newest = Object.values(sessions)
-      .filter((session) => session.conversationKey === key && session.codex?.lifecycle !== "closed")
+      .filter(
+        (session) =>
+          session.conversationKey === key &&
+          !session.archivedAt &&
+          session.codex?.lifecycle !== "closed"
+      )
       .sort((left, right) => right.updatedAt - left.updatedAt)[0];
     if (newest) {
       settings.activeConversationSessionIds![key] = newest.id;
@@ -670,6 +675,58 @@ export class ConversationStore {
     await this.persistSettings();
   }
 
+  async archiveSession(id: string): Promise<void> {
+    const settings = this.ensureContainers();
+    const session = this.getSession(id);
+    if (!session) return;
+    const timestamp = this.now();
+    session.archivedAt = timestamp;
+    session.updatedAt = timestamp;
+    settings.conversationSessions![id] = cloneSession(session);
+    if (settings.activeConversationSessionIds?.[session.conversationKey] === id) {
+      delete settings.activeConversationSessionIds[session.conversationKey];
+    }
+    await this.persistSettings();
+  }
+
+  async rebindSessionSource(id: string, newPath: string): Promise<void> {
+    const path = (newPath || "").trim().replace(/\\/g, "/");
+    if (
+      !path ||
+      !path.toLowerCase().endsWith(".pdf") ||
+      /^(?:[A-Za-z]:|\/)/.test(path) ||
+      path.split("/").includes("..")
+    ) {
+      throw new Error("Rebind requires a vault-relative PDF path");
+    }
+    const settings = this.ensureContainers();
+    const session = this.getSession(id);
+    if (!session) throw new Error(`Conversation session not found: ${id}`);
+    const oldKey = session.conversationKey;
+    const oldPath = oldKey.startsWith("pdf:") ? oldKey.slice("pdf:".length) : "";
+    session.conversationKey = ["pdf", path].join(":");
+    session.sourceStatus = "available";
+    session.messages = session.messages.map((message) => ({
+      ...message,
+      ...(message.evidence?.length
+        ? {
+            evidence: message.evidence.map((evidence) =>
+              evidence.paperPath === oldPath
+                ? { ...evidence, verification: "unverified" as const }
+                : { ...evidence }
+            ),
+          }
+        : {}),
+    }));
+    session.updatedAt = this.now();
+    settings.conversationSessions![id] = cloneSession(session);
+    if (settings.activeConversationSessionIds?.[oldKey] === id) {
+      delete settings.activeConversationSessionIds[oldKey];
+      settings.activeConversationSessionIds[session.conversationKey] = id;
+    }
+    await this.persistSettings();
+  }
+
   async clearSession(id: string): Promise<void> {
     const settings = this.ensureContainers();
     const session = this.getSession(id);
@@ -688,6 +745,7 @@ export class ConversationStore {
     const session = sessions[id];
     if (!session) return null;
     if (session.codex) session.codex = { ...session.codex, lifecycle: "active" };
+    session.archivedAt = undefined;
     settings.activeConversationSessionIds![session.conversationKey] = session.id;
     settings.conversationSessions![session.id] = cloneSession(session);
     return cloneSession(session);

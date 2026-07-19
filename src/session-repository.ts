@@ -176,6 +176,65 @@ export class SessionRepository {
     await this.persistIndex();
   }
 
+  async updateMetadata(
+    id: string,
+    patch: Partial<Pick<ConversationSession, "title" | "pinned" | "tags">>
+  ): Promise<void> {
+    const session = this.get(id);
+    if (!session) throw new Error(`Conversation session not found: ${id}`);
+    if (typeof patch.title === "string" && patch.title.trim()) session.title = patch.title.trim();
+    if (typeof patch.pinned === "boolean") session.pinned = patch.pinned;
+    if (Array.isArray(patch.tags)) {
+      session.tags = Array.from(
+        new Set(patch.tags.filter((tag) => typeof tag === "string" && tag.trim()).map((tag) => tag.trim().toLowerCase()))
+      );
+    }
+    session.updatedAt = Date.now();
+    await this.save(session);
+  }
+
+  async archive(id: string): Promise<void> {
+    const session = this.get(id);
+    if (!session) return;
+    session.archivedAt = Date.now();
+    session.updatedAt = session.archivedAt;
+    await this.save(session);
+  }
+
+  async reactivate(id: string): Promise<void> {
+    const session = this.get(id);
+    if (!session) return;
+    session.archivedAt = undefined;
+    session.updatedAt = Date.now();
+    await this.save(session);
+  }
+
+  async rebindSource(id: string, newPath: string): Promise<void> {
+    assertRelativeVaultPath(newPath);
+    if (!newPath.toLowerCase().endsWith(".pdf")) throw new Error("Session source must be a PDF");
+    const session = this.get(id);
+    if (!session) throw new Error(`Conversation session not found: ${id}`);
+    const oldPath = session.conversationKey.startsWith("pdf:")
+      ? session.conversationKey.slice("pdf:".length)
+      : "";
+    session.conversationKey = ["pdf", newPath].join(":");
+    session.sourceStatus = "available";
+    session.messages = session.messages.map((message) => ({
+      ...message,
+      ...(message.evidence?.length
+        ? {
+            evidence: message.evidence.map((evidence) =>
+              evidence.paperPath === oldPath
+                ? { ...evidence, verification: "unverified" as const }
+                : { ...evidence }
+            ),
+          }
+        : {}),
+    }));
+    session.updatedAt = Date.now();
+    await this.save(session);
+  }
+
   private async removeFileSet(path: string): Promise<void> {
     for (const candidate of [path, `${path}.bak`, `${path}.tmp`]) {
       if (await this.adapter.exists(candidate)) await this.adapter.remove(candidate);

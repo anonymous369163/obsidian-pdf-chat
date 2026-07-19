@@ -24,6 +24,8 @@ import {
   type ContextComposition,
 } from "./context-composer";
 import { createPDFChatModalServices } from "./modal-services";
+import { SessionLibraryService } from "./session-library";
+import { SessionLibraryModal } from "./session-library-modal";
 import {
   requestSelectionLimitDecision,
   resolveSelectionForTurn,
@@ -434,6 +436,7 @@ export class PDFChatModal extends Modal {
     this.moreMenu = header.moreMenu;
     this.setupDragging(header.root);
     header.clearButton.addEventListener("click", () => void this.resetConversation());
+    header.libraryButton.addEventListener("click", () => this.showResumeMenu());
     this.modelSelect.addEventListener("change", () => this.applyModel(this.modelSelect.value));
     this.modeSelect.addEventListener("change", () => this.applyPreset(this.modeSelect.value));
     this.zoomOutBtn.addEventListener("click", () =>
@@ -1027,31 +1030,60 @@ export class PDFChatModal extends Modal {
   }
 
   private showResumeMenu(): void {
-    const sessions = this.services.conversations.listSessions?.("") || [];
-    const currentFirst = [...sessions].sort((left, right) => {
-      const leftCurrent = left.conversationKey === this.conversationKey ? 1 : 0;
-      const rightCurrent = right.conversationKey === this.conversationKey ? 1 : 0;
-      return rightCurrent - leftCurrent || right.updatedAt - left.updatedAt;
+    const library = new SessionLibraryService({
+      conversations: this.services.conversations,
+      artifacts: this.services.artifacts,
+      codex: this.services.codex,
+      confirmDelete: (session) =>
+        window.confirm(
+          `确定删除会话“${session.title}”吗？\n\n只会删除聊天记录，不会删除 PDF 或研究笔记。`
+        ),
     });
-    const owner = this;
-    class ResumeSessionSuggestModal extends FuzzySuggestModal<ConversationSession> {
-      getItems(): ConversationSession[] {
-        return currentFirst;
-      }
+    new SessionLibraryModal(this.app, library, {
+      currentConversationKey: this.conversationKey,
+      onResume: (session) => this.resumeConversationSession(session.id),
+      onRebind: (session) => this.showSessionRebindPicker(library, session),
+    }).open();
+  }
 
-      getItemText(session: ConversationSession): string {
-        const path = session.conversationKey.replace(/^pdf:/, "");
-        const mode = session.mode === "codex" ? "Codex" : "API";
-        return `${session.title || path} · ${path} · ${mode}`;
-      }
+  private showSessionRebindPicker(
+    library: SessionLibraryService,
+    session: ConversationSession
+  ): Promise<void> {
+    return new Promise((resolve) => {
+      const files = this.app.vault
+        .getFiles()
+        .filter((file) => (file.extension || "").toLowerCase() === "pdf");
+      class RebindPdfSuggestModal extends FuzzySuggestModal<TFile> {
+        getItems(): TFile[] {
+          return files;
+        }
 
-      onChooseItem(session: ConversationSession): void {
-        void owner.resumeConversationSession(session.id);
+        getItemText(file: TFile): string {
+          return `${file.name || file.path} · ${file.path}`;
+        }
+
+        onChooseItem(file: TFile): void {
+          void library.rebind(session.id, file.path).then(
+            () => {
+              new Notice(`会话已重新绑定到 ${file.path}；旧页码证据已标记为未验证。`);
+              resolve();
+            },
+            (error) => {
+              new Notice("重新绑定 PDF 失败：" + errorMessage(error));
+              resolve();
+            }
+          );
+        }
+
+        onClose(): void {
+          resolve();
+        }
       }
-    }
-    const picker = new ResumeSessionSuggestModal(this.app);
-    picker.setPlaceholder("搜索标题、PDF 路径或 Codex/API 模式…");
-    picker.open();
+      const picker = new RebindPdfSuggestModal(this.app);
+      picker.setPlaceholder("选择新的 PDF 来源…");
+      picker.open();
+    });
   }
 
   private showTasksMenu(): void {

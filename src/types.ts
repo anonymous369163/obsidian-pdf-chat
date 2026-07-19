@@ -354,27 +354,27 @@ export interface ConversationOperations {
   getActiveSession?(key: string): ConversationSession | null;
   ensureSession?(
     key: string,
-    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "api" | "codex" | "memory" | "sourceStatus">>
+    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "api" | "codex" | "memory" | "sourceStatus" | "pinned" | "tags" | "archivedAt" | "parentSessionId" | "installationId">>
   ): ConversationSession;
   startSession?(
     key: string,
-    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "api" | "codex" | "memory" | "sourceStatus">>
+    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "api" | "codex" | "memory" | "sourceStatus" | "pinned" | "tags" | "archivedAt" | "parentSessionId" | "installationId">>
   ): ConversationSession;
   saveActiveSession?(
     key: string,
     messages: ConversationMessage[],
-    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "api" | "codex" | "memory" | "sourceStatus">>
+    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "api" | "codex" | "memory" | "sourceStatus" | "pinned" | "tags" | "archivedAt" | "parentSessionId" | "installationId">>
   ): Promise<void>;
   getSession?(id: string): ConversationSession | null;
   saveSessionById?(
     id: string,
     messages: ConversationMessage[],
-    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "api" | "codex" | "memory" | "sourceStatus">>
+    metadata?: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "api" | "codex" | "memory" | "sourceStatus" | "pinned" | "tags" | "archivedAt" | "parentSessionId" | "installationId">>
   ): Promise<void>;
   appendSessionTurn?(id: string, userContent: string, assistantContent: string): Promise<void>;
   updateSessionMetadata?(
     id: string,
-    metadata: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "api" | "codex" | "memory" | "sourceStatus">>
+    metadata: Partial<Pick<ConversationSession, "title" | "mode" | "referencedPdfPaths" | "includeCurrentPdfInCodex" | "api" | "codex" | "memory" | "sourceStatus" | "pinned" | "tags" | "archivedAt" | "parentSessionId" | "installationId">>
   ): Promise<void>;
   beginCodexTurn?(id: string, pendingTurn: PendingCodexTurn): Promise<void>;
   updateCodexTurn?(
@@ -392,6 +392,8 @@ export interface ConversationOperations {
   ): Promise<void>;
   clearSession?(id: string): Promise<void>;
   closeSession?(id: string): Promise<void>;
+  archiveSession?(id: string): Promise<void>;
+  rebindSessionSource?(id: string, newPath: string): Promise<void>;
   resumeSession?(id: string): ConversationSession | null;
   listSessions?(query?: string): ConversationSession[];
 }

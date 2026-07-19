@@ -197,6 +197,7 @@ function loadBundle(options = {}) {
   const source = fs.readFileSync(path.join(projectRoot, "main.js"), "utf8");
   const settingTabs = [];
   const fuzzyModals = [];
+  const modals = [];
 
   class Plugin {
     constructor() {
@@ -225,6 +226,7 @@ function loadBundle(options = {}) {
           return handler;
         },
       };
+      modals.push(this);
       this.close = () => {
         this.closed = true;
         this.onClose?.();
@@ -398,7 +400,7 @@ function loadBundle(options = {}) {
   };
   sandbox.exports = sandbox.module.exports;
   vm.runInNewContext(source, sandbox, { filename: path.join(projectRoot, "main.js") });
-  return { bundle: sandbox.module.exports, settingTabs, fuzzyModals };
+  return { bundle: sandbox.module.exports, settingTabs, fuzzyModals, modals };
 }
 
 function createModalHarness({
@@ -418,7 +420,7 @@ function createModalHarness({
   writeClipboard,
   saveSettings,
 } = {}) {
-  const { bundle, fuzzyModals } = loadBundle({ markdownRenderer, confirm, writeClipboard });
+  const { bundle, fuzzyModals, modals } = loadBundle({ markdownRenderer, confirm, writeClipboard });
   const settings = JSON.parse(JSON.stringify(bundle.DEFAULT_SETTINGS));
   settings.autoDocSummary = false;
   settings.autoRag = false;
@@ -482,7 +484,7 @@ function createModalHarness({
     autoTranslateOnOpen
   );
   modal.onOpen();
-  return { modal, plugin, fuzzyModals };
+  return { modal, plugin, fuzzyModals, modals };
 }
 
 test("quick-translate modal starts translation automatically instead of focusing the composer", async () => {
@@ -527,9 +529,12 @@ test("modal builds the accessible research-workbench regions and interactions", 
   const moreButton = byClass(header, "pdf-chat-more-button")[0];
   const moreMenu = byClass(header, "pdf-chat-more-menu")[0];
   const clearButton = byClass(moreMenu, "pdf-chat-reset-btn")[0];
+  const libraryButton = byClass(moreMenu, "pdf-chat-session-library-button")[0];
   assert.ok(moreButton, "missing more menu trigger");
   assert.ok(moreMenu, "missing more menu");
   assert.ok(clearButton, "clear action should live inside more menu");
+  assert.ok(libraryButton, "session library should live inside more menu");
+  assert.match(libraryButton.getAttribute("aria-label"), /会话资料库/);
   assert.equal(moreButton.getAttribute("aria-expanded"), "false");
   assert.equal(moreMenu.hasClass("is-hidden"), true);
   moreButton.dispatch("click");
@@ -1352,7 +1357,7 @@ test("/new preserves old sessions and /resume restores a searchable selected ses
     updatedAt: 2,
   };
   let activeSession = null;
-  const { modal, fuzzyModals } = createModalHarness({
+  const { modal, modals } = createModalHarness({
     conversations: {
       getActiveSession: () => null,
       listSessions: () => [session],
@@ -1361,6 +1366,7 @@ test("/new preserves old sessions and /resume restores a searchable selected ses
         activeSession = id;
         return session;
       },
+      getSession: () => session,
       saveActiveSession: async () => {},
     },
   });
@@ -1371,11 +1377,15 @@ test("/new preserves old sessions and /resume restores a searchable selected ses
 
   modal.inputEl.value = "/resume";
   await modal.handleSubmit();
-  const resumeModal = fuzzyModals.at(-1);
+  const resumeModal = modals.at(-1);
   assert.ok(resumeModal);
-  assert.match(resumeModal.placeholder, /搜索/);
-  assert.match(resumeModal.getItemText(session), /Old discussion.*demo\.pdf.*Codex/i);
-  resumeModal.onChooseItem(session);
+  assert.equal(byClass(resumeModal.contentEl, "pdf-chat-session-library").length, 1);
+  assert.match(byClass(resumeModal.contentEl, "pdf-chat-session-search")[0].getAttribute("aria-label"), /搜索会话/);
+  assert.match(byClass(resumeModal.contentEl, "pdf-chat-session-card")[0].textContent + descendants(byClass(resumeModal.contentEl, "pdf-chat-session-card")[0]).map((item) => item.textContent).join(" "), /Old discussion.*Codex.*demo\.pdf/i);
+  const resumeButton = byClass(resumeModal.contentEl, "pdf-chat-session-action").find(
+    (button) => button.textContent === "恢复"
+  );
+  resumeButton.dispatch("click");
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(activeSession, "session-old");
   assert.match(byClass(modal.contentEl, "pdf-chat-mode-badge")[0].textContent, /CODEX MODE/);

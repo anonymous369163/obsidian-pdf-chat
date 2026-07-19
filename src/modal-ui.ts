@@ -40,6 +40,7 @@ export interface WorkbenchHeaderElements {
   zoomInButton: HTMLButtonElement;
   moreButton: HTMLButtonElement;
   moreMenu: HTMLElement;
+  libraryButton: HTMLButtonElement;
   clearButton: HTMLButtonElement;
 }
 
@@ -126,6 +127,13 @@ export function buildWorkbenchHeader(
     cls: "pdf-chat-more-menu is-hidden",
     attr: { role: "menu" },
   });
+  const libraryButton = moreMenu.createEl("button", {
+    text: "会话资料库",
+    cls: "pdf-chat-menu-item pdf-chat-session-library-button",
+    attr: { type: "button" },
+  });
+  libraryButton.setAttr("role", "menuitem");
+  setElementLabel(libraryButton, "打开会话资料库");
   const clearButton = moreMenu.createEl("button", {
     text: "清空对话",
     cls: "pdf-chat-menu-item pdf-chat-reset-btn",
@@ -166,6 +174,7 @@ export function buildWorkbenchHeader(
     else openMenu();
   });
   clearButton.addEventListener("click", closeMenu);
+  libraryButton.addEventListener("click", closeMenu);
 
   return {
     root,
@@ -179,6 +188,7 @@ export function buildWorkbenchHeader(
     zoomInButton,
     moreButton,
     moreMenu,
+    libraryButton,
     clearButton,
   };
 }

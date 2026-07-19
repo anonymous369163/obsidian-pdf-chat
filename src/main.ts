@@ -79,6 +79,8 @@ export { ReaderDataMigrator } from "./reader-data-migration";
 export { ResearchNoteService, sanitizeResearchArtifact } from "./research-notes";
 export { isJsonAdapter, ReaderDataStore } from "./reader-data-store";
 export { SessionRepository } from "./session-repository";
+export { SessionLibraryService } from "./session-library";
+export { SessionLibraryModal } from "./session-library-modal";
 export {
   buildEvidenceCitationInstructions,
   composeBoundedContext,
@@ -282,6 +284,9 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
           ),
         clearSession: (id) => this.conversationStore!.clearSession(id),
         closeSession: (id) => this.conversationStore!.closeSession(id),
+        archiveSession: (id) => this.conversationStore!.archiveSession(id),
+        rebindSessionSource: (id, newPath) =>
+          this.conversationStore!.rebindSessionSource(id, newPath),
         resumeSession: (id) => this.conversationStore!.resumeSession(id),
         listSessions: (query) => this.conversationStore!.listSessions(query),
       },
