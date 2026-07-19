@@ -238,10 +238,14 @@ function scanFile(filePath, root = process.cwd()) {
 }
 
 function getDefaultScanFiles(root) {
-  const trackedOutput = execFileSync("git", ["ls-files", "-z"], {
+  const trackedOutput = execFileSync(
+    "git",
+    ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+    {
     cwd: root,
     encoding: "utf8",
-  });
+    }
+  );
   const relativePaths = trackedOutput.split("\0").filter(Boolean);
   if (fs.existsSync(path.join(root, "main.js"))) relativePaths.push("main.js");
   return Array.from(new Set(relativePaths)).map((relativePath) => path.resolve(root, relativePath));

@@ -1,4 +1,4 @@
-// PDF Chat 0.8.3
+// PDF Chat 0.9.0
 var global = globalThis;
 "use strict";
 var __defProp = Object.defineProperty;

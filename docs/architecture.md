@@ -16,6 +16,9 @@ PDF Chat is a dependency-light Obsidian plugin organized around typed service bo
 - `src/codex-session-manager.ts` owns background Codex turns, native thread IDs, pending-turn journals, throttled progress persistence, global/UI subscriptions, and session-safe result persistence.
 - `src/multi-paper.ts` owns vault PDF search, ordinary API multi-paper context, and the advanced one-shot `debug-full` compatibility path.
 - `src/actions.ts` registers typed `ResearchAction` implementations, while `src/translation.ts` owns the dedicated academic-translation pipeline.
+- `src/evidence.ts` parses conservative paper citations and opens only validated vault PDF pages; `src/research-notes.ts` builds sanitized reading notes and serializes vault writes.
+- `src/session-library.ts` and `src/session-library-modal.ts` own discussion search, organization, export, source rebinding, deletion guards, and explicit Codex fork recovery.
+- `src/research-capabilities.ts` defines the provider-neutral, credential-blind `ResearchCapabilityRegistry` contract for optional external research services.
 - `src/json-store.ts` provides validated atomic replace and backup recovery on Obsidian's adapter.
 - `src/session-repository.ts` and `src/paper-asset-repository.ts` store independent session and paper entities plus small indexes.
 - `src/reader-data-migration.ts` checkpoints the legacy migration; `src/reader-data-store.ts` hydrates compatibility maps, synchronizes changed entities, enforces cache quota, and produces small settings snapshots.
@@ -46,11 +49,18 @@ The default Codex path is deliberately small:
 - Each turn sends only the user's question, explicitly attached PDF paths, and the selected passage when enabled. A greeting does not require PDF reading.
 - `CodexSessionManager` outlives individual modals. Esc removes only the UI subscriber; X aborts the current turn and marks the plugin session closed. Completed background results are appended by exact session ID, never by whichever modal happens to be open. A persisted pending-turn journal lets startup migration mark abandoned work as interrupted without storing selected text or absolute paths.
 - Normal API chat may still use summaries and local retrieval for referenced PDFs, but `@PDF` means “attach this paper,” not “force a comparison.”
+- Each installation has a random persisted identity. A session with a native thread owned by another installation cannot be resumed silently. The session library offers history-only viewing or an explicit local fork with a fresh native thread, a parent-session link, available relative PDF paths, rolling memory, and the newest visible turns that fit the handoff budget.
 
 Absolute paths exist only in the in-memory Codex prompt. `data.json` stores the native thread ID, model choice, relative PDF paths, and visible transcript; it never stores absolute PDF paths or selected text. Codex must not receive plugin runtime data such as `data.json`, API keys, endpoints, or private model profiles. The old extracted-text package remains available only through the explicit advanced `debug-full` path.
 
+## Evidence and research artifacts
+
+Evidence is message metadata, not a claim of truth. `src/evidence.ts` assigns `located` only when an alias resolves to a selected PDF and a positive page is within any known page bound. Unknown, stale, or rebound citations remain `unverified`. Opening a source uses an Obsidian PDF page subpath and refuses missing files.
+
+Research notes and session exports are projections of visible content. They can contain vault-relative PDF links and validated evidence, but not system prompts, automatic full text, RAG wrappers, absolute paths, model endpoints, or credentials. Per-path write queues preserve the previous note if an append fails. Source rebinding retains historical prose while invalidating old evidence locations.
+
 ## Future integrations
 
-Related-paper discovery and PPT generation should be implemented through explicit external adapters and asynchronous jobs. They should exchange typed inputs and outputs with `ResearchAction` implementations. Do not bundle Python environments, browser automation, presentation renderers, or provider-specific job engines into the Obsidian plugin bundle.
+Related-paper discovery and PPT generation should be implemented through explicit external adapters and asynchronous jobs. `ResearchCapabilityRegistry` starts empty, so no unavailable UI is rendered. Its credential-blind request projection accepts only selected vault-relative papers, located evidence, and visible answers; it rejects settings, credentials, endpoints, absolute paths, and traversal before provider code runs. Adapters then exchange typed inputs and outputs with `ResearchAction` implementations. Do not bundle Python environments, browser automation, presentation renderers, or provider-specific job engines into the Obsidian plugin bundle.
 
 The workbench direction is inspired by [Microsoft ResearchStudio](https://github.com/microsoft/ResearchStudio). PDF Chat credits that product-level design inspiration but does not copy its implementation.

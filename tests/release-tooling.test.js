@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { execFileSync } = require("node:child_process");
 const test = require("node:test");
 
 const projectRoot = path.resolve(__dirname, "..");
@@ -401,6 +402,23 @@ test("local deployment preserves private data and verifies all release hashes", 
     fs.readFileSync(path.join(result.backupDir, "reader-data", "sessions", "session-local.json")),
     readerDataBytes
   );
+});
+
+test("default secret scan includes unignored untracked files before commit", (t) => {
+  const { getDefaultScanFiles } = require("../scripts/secret-scan");
+  const root = makeTempDirectory(t);
+  execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
+  fs.writeFileSync(path.join(root, ".gitignore"), "ignored.txt\n");
+  fs.writeFileSync(path.join(root, "tracked.js"), "const safe = true;\n");
+  execFileSync("git", ["add", ".gitignore", "tracked.js"], { cwd: root, stdio: "ignore" });
+  fs.writeFileSync(path.join(root, "untracked.js"), "const pending = true;\n");
+  fs.writeFileSync(path.join(root, "ignored.txt"), "ignored\n");
+
+  const files = getDefaultScanFiles(root).map((filePath) => path.relative(root, filePath).replace(/\\/g, "/"));
+
+  assert.ok(files.includes("tracked.js"));
+  assert.ok(files.includes("untracked.js"));
+  assert.equal(files.includes("ignored.txt"), false);
 });
 
 test("local deployment rejects a wrong plugin ID before writing anything", (t) => {

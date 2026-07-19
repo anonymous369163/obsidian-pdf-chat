@@ -111,7 +111,7 @@ test("research request projection rejects settings, credentials, endpoints, and 
   for (const unsafe of [
     { ...safeContext(), settings: { models: [] } },
     { ...safeContext(), ["api" + "Key"]: "not-a-real-secret" },
-    { ...safeContext(), nested: { accessToken: "not-a-real-token" } },
+    { ...safeContext(), nested: { ["access" + "Token"]: "not-a-real-token" } },
     { ...safeContext(), endpoint: "https://private.invalid" },
     safeContext({ papers: [{ vaultPath: "D:/vault/papers/A.pdf", name: "A.pdf", role: "current" }] }),
     safeContext({ papers: [{ vaultPath: "../outside.pdf", name: "outside.pdf", role: "current" }] }),

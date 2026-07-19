@@ -1,7 +1,7 @@
 {
   "id": "pdf-chat",
   "name": "PDF Chat",
-  "version": "0.8.3",
+  "version": "0.9.0",
   "minAppVersion": "1.4.0",
   "description": "Chat with selected text and PDFs in Obsidian using your own OpenAI-compatible API.",
   "author": "Yue Peng",
