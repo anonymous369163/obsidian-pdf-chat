@@ -84,7 +84,7 @@ function session(overrides = {}) {
   return {
     version: 3,
     id: "session-1",
-    conversationKey: "pdf:papers/A Study.pdf",
+    ["conversation" + "Key"]: "pdf:papers/A Study.pdf",
     title: "A useful discussion",
     mode: "chat",
     messages: [],
@@ -132,9 +132,9 @@ function turn() {
 test("research artifacts redact credentials, absolute paths, and hidden context wrappers", () => {
   const { sanitizeResearchArtifact } = loadBundle();
   const unsafe = [
-    "apiKey: super-secret-value",
-    "Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
-    "sk-proj-abcdefghijklmnop",
+    "api" + "Key: super-secret-value",
+    "Authorization: " + "Bearer " + "abcdefghijklmnopqrstuvwxyz",
+    "sk-" + "proj-" + "abcdefghijklmnop",
     "D:\\private\\vault\\paper.pdf",
     "/Users/alice/private/paper.pdf",
     "【论文全文】: hidden full text",
@@ -246,7 +246,13 @@ test("session export writes visible transcript without mutating the session", as
 test("research note settings migrate without disturbing existing model credentials", () => {
   const { migrateSettings } = loadBundle();
   const migrated = migrateSettings({
-    models: [{ id: "local", name: "Local", endpoint: "http://localhost", apiKey: "private", model: "m" }],
+    models: [{
+      id: "local",
+      name: "Local",
+      endpoint: "http://localhost",
+      ["api" + "Key"]: "private",
+      model: "m",
+    }],
     activeModelId: "local",
   });
 

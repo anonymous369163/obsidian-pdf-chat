@@ -379,6 +379,11 @@ function loadBundle(options = {}) {
       throw new Error("Unexpected fetch in unit test");
     },
     module: { exports: {} },
+    navigator: {
+      clipboard: {
+        writeText: options.writeClipboard || (async () => {}),
+      },
+    },
     require(request) {
       if (request === "obsidian") return obsidian;
       if (request === "node:path" || request === "path") return require("node:path");
@@ -409,9 +414,11 @@ function createModalHarness({
   settingsPatch = {},
   conversations = {},
   codex,
+  artifacts,
+  writeClipboard,
   saveSettings,
 } = {}) {
-  const { bundle, fuzzyModals } = loadBundle({ markdownRenderer, confirm });
+  const { bundle, fuzzyModals } = loadBundle({ markdownRenderer, confirm, writeClipboard });
   const settings = JSON.parse(JSON.stringify(bundle.DEFAULT_SETTINGS));
   settings.autoDocSummary = false;
   settings.autoRag = false;
@@ -462,6 +469,7 @@ function createModalHarness({
         })),
     },
     codex,
+    artifacts,
   };
   const pdfFile = { name: "demo.pdf", path: "papers/demo.pdf", stat: { mtime: 1 } };
   const modal = new bundle.PDFChatModal(
@@ -1643,6 +1651,104 @@ test("assistant plain text is lightly split only for display", async () => {
   assert.ok(assistant);
   const content = byClass(assistant, "pdf-chat-message-content")[0];
   assert.match(content.textContent, /提示生成方面.*\n\n模型改进方面.*\n\n实验结果/s);
+});
+
+test("stable assistant answers expose collapsed evidence, page, save, and copy actions", async () => {
+  const opened = [];
+  const saved = [];
+  const copied = [];
+  let saveAttempts = 0;
+  const activeSession = {
+    version: 3,
+    id: "session-evidence",
+    ["conversation" + "Key"]: "pdf:papers/demo.pdf",
+    title: "Evidence discussion",
+    mode: "chat",
+    messages: [],
+    referencedPdfPaths: [],
+    includeCurrentPdfInCodex: true,
+    sourceStatus: "available",
+    pinned: false,
+    tags: [],
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const { modal } = createModalHarness({
+    writeClipboard: async (value) => copied.push(value),
+    llmChat: async (request) => {
+      const answer = "The ablation supports the claim [P1, p.1].";
+      request.onChunk?.(answer, answer);
+      return answer;
+    },
+    artifacts: {
+      openEvidence: async (evidence) => {
+        opened.push(evidence);
+        return true;
+      },
+      appendTurn: async (request) => {
+        saveAttempts += 1;
+        if (saveAttempts === 1) throw new Error("write failed");
+        saved.push(request);
+        return { path: "PDF Chat/Reading Notes/demo.md", created: false };
+      },
+    },
+    conversations: {
+      getActiveSession: () => activeSession,
+      ensureSession: () => activeSession,
+      getSession: () => activeSession,
+      saveSessionById: async (_id, messages) => {
+        activeSession.messages = messages;
+      },
+    },
+  });
+  modal.inputEl.value = "What supports the claim?";
+
+  await modal.handleSubmit();
+
+  const footers = byClass(modal.historyEl, "pdf-chat-message-footer");
+  assert.equal(footers.length, 1);
+  const footer = footers[0];
+  const toggle = byClass(footer, "pdf-chat-evidence-toggle")[0];
+  const list = byClass(footer, "pdf-chat-evidence-list")[0];
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assert.equal(list.hasClass("is-collapsed"), true);
+  assert.match(toggle.textContent, /1.*论文证据/);
+  assert.ok(descendants(footer).every((element) => element.getAttribute("title") === null));
+
+  toggle.dispatch("click");
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+  const openButton = byClass(footer, "pdf-chat-open-evidence")[0];
+  openButton.dispatch("click");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(opened.length, 1);
+  assert.equal(opened[0].paperPath, "papers/demo.pdf");
+  assert.equal(opened[0].page, 1);
+
+  const saveButton = byClass(footer, "pdf-chat-save-answer")[0];
+  saveButton.dispatch("click");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(saveButton.textContent, /重试/);
+  saveButton.dispatch("click");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(saved.length, 1);
+  assert.match(saveButton.textContent, /已保存/);
+
+  byClass(footer, "pdf-chat-copy-answer")[0].dispatch("click");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(copied, ["The ablation supports the claim [P1, p.1]."]);
+});
+
+test("loading, error, and stopped assistant bubbles never expose evidence actions", async () => {
+  const { modal } = createModalHarness();
+  const loading = modal.addBubble("assistant", "Thinking", { loading: true });
+  const error = modal.addBubble("assistant", "Failed");
+  error.addClass("is-error");
+  const stopped = modal.addBubble("assistant", "Partial");
+  stopped.addClass("is-stopped");
+
+  assert.equal(byClass(loading, "pdf-chat-message-footer").length, 0);
+  assert.equal(byClass(error, "pdf-chat-message-footer").length, 0);
+  assert.equal(byClass(stopped, "pdf-chat-message-footer").length, 0);
 });
 
 test("long API conversations summarize only omitted visible turns before the bounded request", async () => {

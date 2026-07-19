@@ -2,7 +2,9 @@ import type {
   ConversationMessage,
   ConversationSession,
   ResearchEvidence,
+  ResearchArtifactWriteResult,
   ResearchNoteSettings,
+  SaveResearchTurnRequest,
 } from "./types";
 
 interface VaultFileLike {
@@ -15,19 +17,6 @@ interface ResearchNoteVault {
   create(path: string, content: string): Promise<unknown>;
   read(file: VaultFileLike): Promise<string>;
   modify(file: VaultFileLike, content: string): Promise<void>;
-}
-
-export interface SaveResearchTurnRequest {
-  session: ConversationSession;
-  userMessage: ConversationMessage;
-  assistantMessage: ConversationMessage;
-  includeSelectionText: boolean;
-  selection?: { text: string; paperPath?: string };
-}
-
-export interface ResearchArtifactWriteResult {
-  path: string;
-  created: boolean;
 }
 
 const HIDDEN_CONTEXT_LINE = /^(?:【(?:论文全文|全文背景摘要|从全文中按关键词检索到的可能相关片段|我当前选中并想讨论的原文片段)】|\[(?:RAG|SYSTEM|HIDDEN)[^\]]*\]).*$/gim;

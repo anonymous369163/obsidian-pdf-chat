@@ -1,4 +1,4 @@
-import type { ModelProfile, PromptPreset } from "./types";
+import type { ModelProfile, PromptPreset, ResearchEvidence } from "./types";
 
 let controlId = 0;
 
@@ -372,6 +372,130 @@ export function buildFollowupSuggestions(parent: HTMLElement, suggestions: strin
     setElementLabel(button, suggestion);
   }
   return root;
+}
+
+export interface AssistantMessageFooterOptions {
+  evidence: ResearchEvidence[];
+  onOpenEvidence(evidence: ResearchEvidence): Promise<void> | void;
+  onSave(): Promise<void>;
+  onCopy(): Promise<void>;
+}
+
+export interface AssistantMessageFooterElements {
+  root: HTMLElement;
+  evidenceToggle?: HTMLButtonElement;
+  evidenceList?: HTMLElement;
+  saveButton: HTMLButtonElement;
+  copyButton: HTMLButtonElement;
+}
+
+export function buildAssistantMessageFooter(
+  parent: HTMLElement,
+  options: AssistantMessageFooterOptions
+): AssistantMessageFooterElements {
+  const root = parent.createDiv({ cls: "pdf-chat-message-footer" });
+  const evidence = Array.isArray(options.evidence) ? options.evidence : [];
+  let evidenceToggle: HTMLButtonElement | undefined;
+  let evidenceList: HTMLElement | undefined;
+  if (evidence.length) {
+    const evidenceId = nextControlId("evidence");
+    evidenceToggle = root.createEl("button", {
+      text: `${evidence.length} 条论文证据`,
+      cls: "pdf-chat-footer-action pdf-chat-evidence-toggle",
+      attr: {
+        type: "button",
+        "aria-expanded": "false",
+        "aria-controls": evidenceId,
+      },
+    });
+    setElementLabel(evidenceToggle, `展开 ${evidence.length} 条论文证据`);
+    evidenceList = root.createDiv({
+      cls: "pdf-chat-evidence-list is-collapsed",
+      attr: { id: evidenceId },
+    });
+    for (const item of evidence) {
+      const row = evidenceList.createDiv({ cls: "pdf-chat-evidence-item" });
+      row.createEl("span", {
+        text: item.claim || item.raw,
+        cls: "pdf-chat-evidence-claim",
+      });
+      if (
+        item.verification === "located" &&
+        item.paperPath &&
+        Number.isInteger(item.page) &&
+        Number(item.page) > 0
+      ) {
+        const pageButton = row.createEl("button", {
+          text: `p.${item.page}`,
+          cls: "pdf-chat-open-evidence",
+          attr: { type: "button" },
+        });
+        setElementLabel(pageButton, `打开 ${item.paperPath} 第 ${item.page} 页`);
+        pageButton.addEventListener("click", () => void options.onOpenEvidence(item));
+      } else {
+        row.createEl("span", {
+          text: "未验证",
+          cls: "pdf-chat-evidence-unverified",
+        });
+      }
+    }
+    evidenceToggle.addEventListener("click", () => {
+      const expanded = evidenceToggle?.getAttribute("aria-expanded") !== "true";
+      evidenceToggle?.setAttr("aria-expanded", String(expanded));
+      if (evidenceToggle) {
+        setElementLabel(
+          evidenceToggle,
+          `${expanded ? "收起" : "展开"} ${evidence.length} 条论文证据`
+        );
+      }
+      evidenceList?.toggleClass("is-collapsed", !expanded);
+    });
+  }
+
+  const actionGroup = root.createDiv({ cls: "pdf-chat-message-footer-actions" });
+  const saveButton = actionGroup.createEl("button", {
+    text: "保存回答",
+    cls: "pdf-chat-footer-action pdf-chat-save-answer",
+    attr: { type: "button" },
+  });
+  const copyButton = actionGroup.createEl("button", {
+    text: "复制",
+    cls: "pdf-chat-footer-action pdf-chat-copy-answer",
+    attr: { type: "button" },
+  });
+  setElementLabel(saveButton, "保存回答到研究笔记");
+  setElementLabel(copyButton, "复制回答");
+
+  saveButton.addEventListener("click", () => {
+    saveButton.disabled = true;
+    saveButton.setText("保存中…");
+    void options.onSave().then(
+      () => {
+        saveButton.setText("已保存");
+        setElementLabel(saveButton, "回答已保存到研究笔记");
+      },
+      () => {
+        saveButton.disabled = false;
+        saveButton.setText("重试保存");
+        setElementLabel(saveButton, "保存失败，重试保存回答");
+      }
+    );
+  });
+  copyButton.addEventListener("click", () => {
+    copyButton.disabled = true;
+    void options.onCopy().then(
+      () => {
+        copyButton.setText("已复制");
+        setElementLabel(copyButton, "回答已复制");
+      },
+      () => {
+        copyButton.disabled = false;
+        copyButton.setText("重试复制");
+        setElementLabel(copyButton, "复制失败，重试复制回答");
+      }
+    );
+  });
+  return { root, evidenceToggle, evidenceList, saveButton, copyButton };
 }
 
 export function formatTranslationUserDisplay(content: string): { title: string; meta?: string } | null {

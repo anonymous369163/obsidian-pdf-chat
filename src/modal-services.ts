@@ -59,6 +59,7 @@ export function createPDFChatModalServices(
     actions: plugin.actionRegistry || createResearchActionRegistry(),
     translations: plugin.translationService || new TranslationService(llm),
     codex: plugin.codexSessionManager,
+    artifacts: plugin.researchArtifacts,
   };
   return {
     ...compatibility,
@@ -75,5 +76,6 @@ export function createPDFChatModalServices(
           : compatibility.translations.translate(request),
     },
     codex: overrides.codex || compatibility.codex,
+    artifacts: overrides.artifacts || compatibility.artifacts,
   };
 }

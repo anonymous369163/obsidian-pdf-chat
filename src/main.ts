@@ -10,10 +10,12 @@ import {
   normalizeConversationMessages,
 } from "./conversation";
 import { OpenAICompatibleTransport } from "./llm-transport";
+import { openPdfEvidence } from "./evidence";
 import { resolveContinueModelId, resolveTranslateModelId } from "./model-routing";
 import { getActivePdfFile, PaperContextService } from "./paper-context";
 import { createPDFChatModalServices } from "./modal-services";
 import { PDFChatModal } from "./pdf-chat-modal";
+import { ResearchNoteService } from "./research-notes";
 import { isJsonAdapter, ReaderDataStore } from "./reader-data-store";
 import {
   QuickTranslateMarker,
@@ -182,6 +184,7 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
   codexSessionManager?: CodexSessionManager;
   vaultLifecycleService?: VaultLifecycleService;
   readerDataStore?: ReaderDataStore;
+  researchArtifacts?: PDFChatPluginApi["researchArtifacts"];
   private codexGlobalUnsubscribe?: () => void;
   private readonly codexRunningSessionIds = new Set<string>();
 
@@ -224,6 +227,18 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
       (id) => this.getModelProfile(id)
     );
     this.translationService = new TranslationService(this.llmTransport);
+    if (this.app?.vault) {
+      const researchNoteService = new ResearchNoteService(
+        this.app.vault,
+        () => this.settings.researchNotes
+      );
+      this.researchArtifacts = {
+        appendTurn: (request) => researchNoteService.appendTurn(request),
+        exportSessionMarkdown: (session, targetPath) =>
+          researchNoteService.exportSessionMarkdown(session, targetPath),
+        openEvidence: (evidence) => openPdfEvidence(this.app, evidence),
+      };
+    }
     this.actionRegistry = createResearchActionRegistry();
     if (this.app?.vault && typeof this.app.vault.on === "function") {
       this.vaultLifecycleService = new VaultLifecycleService(
@@ -290,6 +305,7 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
       actions: this.actionRegistry,
       translations: this.translationService,
       codex: this.codexSessionManager,
+      artifacts: this.researchArtifacts,
     });
     this.addSettingTab(new PDFChatSettingTab(this.app, this));
 

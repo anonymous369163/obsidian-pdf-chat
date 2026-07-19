@@ -8,6 +8,7 @@ import {
   type TFile,
 } from "obsidian";
 import { DEFAULT_SETTINGS } from "./default-settings";
+import { parseResearchEvidence, type EvidenceSource } from "./evidence";
 import { listResearchActionsForSlot } from "./actions";
 import {
   buildCodexTurnPrompt,
@@ -51,6 +52,7 @@ import {
 } from "./multi-paper";
 import {
   buildComposer,
+  buildAssistantMessageFooter,
   buildContextPanel,
   buildFollowupSuggestions,
   buildEmptyState,
@@ -73,6 +75,7 @@ import type {
   PaperContext,
   PDFChatModalServices,
   PDFChatPluginApi,
+  ResearchEvidence,
 } from "./types";
 
 interface SubmitOptions {
@@ -166,6 +169,10 @@ async function renderMarkdownInto(
 
 function getBubbleContentEl(bubble: HTMLDivElement): HTMLElement {
   return (bubble as BubbleElement).pdfChatContentEl || bubble;
+}
+
+function byBubbleClass(bubble: HTMLDivElement, className: string): boolean {
+  return Array.from(bubble.children || []).some((child) => child.classList?.contains(className));
 }
 
 function setBubbleText(bubble: HTMLDivElement, text: string): void {
@@ -1814,18 +1821,27 @@ export class PDFChatModal extends Modal {
 
   async restoreConversationHistory(): Promise<void> {
     const renderJobs = [];
+    let precedingUserMessage: ConversationMessage | undefined;
     for (const message of this.transcript) {
       if (message.role === "user") {
         this.addBubble("user", message.content, { skipScroll: true });
+        precedingUserMessage = message;
         continue;
       }
+      if (message.status === "complete" && !message.evidence?.length) {
+        const evidence = this.parseAnswerEvidence(message.content);
+        if (evidence.length) message.evidence = evidence;
+      }
       const bubble = this.addBubble("assistant", message.content, { skipScroll: true });
+      const userMessage = precedingUserMessage;
       bubble.addClass("is-rendered");
       renderJobs.push(
         renderMarkdownIntoBubble(this.app, this.plugin, bubble, message.content).then(() => {
           if (message.status === "stopped") {
             bubble.addClass("is-stopped");
             bubble.createEl("p", { cls: "pdf-chat-stopped-label", text: "[已停止生成]" });
+          } else if (userMessage) {
+            this.attachAssistantActions(bubble, userMessage, message);
           }
         })
       );
@@ -1876,12 +1892,18 @@ export class PDFChatModal extends Modal {
   async recordTranscriptTurn(
     question: string,
     answer: string,
-    status: ConversationMessage["status"]
+    status: ConversationMessage["status"],
+    evidence: ResearchEvidence[] = []
   ): Promise<boolean> {
     if (typeof answer !== "string" || !answer.trim()) return false;
     this.transcript.push(
       { role: "user", content: question, status: "complete" },
-      { role: "assistant", content: answer, status: status === "stopped" ? "stopped" : "complete" }
+      {
+        role: "assistant",
+        content: answer,
+        status: status === "stopped" ? "stopped" : "complete",
+        ...(evidence.length ? { evidence } : {}),
+      }
     );
     await this.persistConversation();
     return true;
@@ -2124,6 +2146,86 @@ export class PDFChatModal extends Modal {
     }));
   }
 
+  private evidenceSources(): EvidenceSource[] {
+    return this.evidencePromptSources().map((source) => {
+      const summary = (this.plugin.settings.docSummaries || {})[source.paperPath];
+      const chunks = (this.plugin.settings.docChunks || {})[source.paperPath];
+      const pageCount =
+        chunks?.extractionQuality?.pageCount || summary?.extractionQuality?.pageCount;
+      return { ...source, ...(pageCount ? { pageCount } : {}) };
+    });
+  }
+
+  private parseAnswerEvidence(markdown: string): ResearchEvidence[] {
+    return parseResearchEvidence(markdown, this.evidenceSources());
+  }
+
+  private attachAssistantActions(
+    bubble: HTMLDivElement,
+    userMessage: ConversationMessage,
+    assistantMessage: ConversationMessage
+  ): void {
+    if (
+      assistantMessage.status !== "complete" ||
+      bubble.classList?.contains("is-loading") ||
+      bubble.classList?.contains("is-error") ||
+      bubble.classList?.contains("is-stopped") ||
+      typeof (bubble as HTMLDivElement & { createDiv?: unknown }).createDiv !== "function" ||
+      !canCreateBubbleChildren(bubble)
+    ) {
+      return;
+    }
+    if (byBubbleClass(bubble, "pdf-chat-message-footer")) return;
+    buildAssistantMessageFooter(bubble, {
+      evidence: assistantMessage.evidence || [],
+      onOpenEvidence: async (evidence) => {
+        const opened = await this.services.artifacts?.openEvidence(evidence);
+        if (!opened && !this.services.artifacts) {
+          new Notice("论文证据导航服务不可用，请重新加载插件。");
+        }
+      },
+      onSave: async () => {
+        const session = this.currentSessionId
+          ? this.services.conversations.getSession?.(this.currentSessionId)
+          : this.services.conversations.getActiveSession?.(this.conversationKey);
+        if (!session || !this.services.artifacts) {
+          new Notice("研究笔记服务不可用，请重新加载插件。");
+          throw new Error("Research note service is unavailable");
+        }
+        try {
+          const result = await this.services.artifacts.appendTurn({
+            session,
+            userMessage,
+            assistantMessage,
+            includeSelectionText: this.plugin.settings.researchNotes.includeSelectionText,
+            selection: this.contextText
+              ? { text: this.contextText, paperPath: this.pdfFile?.path }
+              : undefined,
+          });
+          new Notice(`回答已保存到 ${result.path}`);
+        } catch (error) {
+          new Notice("保存回答失败，可点击重试：" + errorMessage(error));
+          throw error;
+        }
+      },
+      onCopy: async () => {
+        try {
+          await navigator.clipboard.writeText(assistantMessage.content);
+        } catch (error) {
+          new Notice("复制回答失败：" + errorMessage(error));
+          throw error;
+        }
+      },
+    });
+  }
+
+  private attachLatestAssistantActions(bubble: HTMLDivElement): void {
+    const assistantMessage = this.transcript[this.transcript.length - 1];
+    const userMessage = this.transcript[this.transcript.length - 2];
+    if (userMessage?.role !== "user" || assistantMessage?.role !== "assistant") return;
+    this.attachAssistantActions(bubble, userMessage, assistantMessage);
+  }
+
   private getMultiPaperQuestion(): string {
     const typed = this.inputEl?.value?.trim();
     return typed || "请基于当前论文和已引用论文回答我的问题。";
@@ -2277,7 +2379,13 @@ export class PDFChatModal extends Modal {
     bubble.addClass("is-rendered");
     await renderMarkdownIntoBubble(this.app, this.plugin, bubble, fullText);
     this.messages.push({ role: "user", content: userLabel }, { role: "assistant", content: fullText });
-    await this.recordTranscriptTurn(userLabel, fullText, "complete");
+    await this.recordTranscriptTurn(
+      userLabel,
+      fullText,
+      "complete",
+      this.parseAnswerEvidence(fullText)
+    );
+    this.attachLatestAssistantActions(bubble);
     this.showFollowupSuggestions("chat");
     this.multiPaperStatusEl?.setText("已改用当前模型基于多论文上下文回答。");
   }
@@ -2534,7 +2642,13 @@ export class PDFChatModal extends Modal {
       loadingBubble.addClass("is-rendered");
       await renderMarkdownIntoBubble(this.app, this.plugin, loadingBubble, markdown);
       this.messages.push({ role: "user", content: userLabel }, { role: "assistant", content: markdown });
-      await this.recordTranscriptTurn(userLabel, markdown, "complete");
+      await this.recordTranscriptTurn(
+        userLabel,
+        markdown,
+        "complete",
+        this.parseAnswerEvidence(markdown)
+      );
+      this.attachLatestAssistantActions(loadingBubble);
       this.showFollowupSuggestions("chat");
       this.multiPaperStatusEl?.setText("Codex 深度分析已完成。");
     } catch (error) {
@@ -2706,6 +2820,22 @@ export class PDFChatModal extends Modal {
     if (snapshot.finalMarkdown) {
       const session = this.services.conversations.getSession?.(snapshot.sessionId);
       if (session) {
+        const assistantMessage = session.messages[session.messages.length - 1];
+        if (
+          assistantMessage?.role === "assistant" &&
+          assistantMessage.content === snapshot.finalMarkdown &&
+          !assistantMessage.evidence?.length
+        ) {
+          const evidence = this.parseAnswerEvidence(snapshot.finalMarkdown);
+          if (evidence.length) {
+            assistantMessage.evidence = evidence;
+            await this.services.conversations.saveSessionById?.(
+              session.id,
+              session.messages,
+              this.sessionMetadata()
+            );
+          }
+        }
         this.transcript = [...session.messages];
         this.messages = [
           this.buildSystemMessage(),
@@ -2732,6 +2862,7 @@ export class PDFChatModal extends Modal {
           `${this.getCodexModel()} · ${this.getCodexReasoningEffort()} · Thread ${snapshot.threadId || "unknown"}`
         );
         await renderMarkdownIntoBubble(this.app, this.plugin, bubble, snapshot.finalMarkdown);
+        this.attachLatestAssistantActions(bubble);
       }
       this.multiPaperStatusEl?.setText("Codex 本轮回答已完成。");
       this.showFollowupSuggestions("chat");
@@ -3039,7 +3170,13 @@ export class PDFChatModal extends Modal {
       loadingBubble.addClass("is-rendered");
       this.messages.push({ role: "assistant", content: fullText });
       await renderMarkdownIntoBubble(this.app, this.plugin, loadingBubble, fullText);
-      await this.recordTranscriptTurn(question, fullText, "complete");
+      await this.recordTranscriptTurn(
+        question,
+        fullText,
+        "complete",
+        this.parseAnswerEvidence(fullText)
+      );
+      this.attachLatestAssistantActions(loadingBubble);
       this.showFollowupSuggestions("chat");
     } catch (err) {
       loadingBubble.removeClass("is-loading");

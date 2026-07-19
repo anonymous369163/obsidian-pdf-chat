@@ -213,6 +213,28 @@ export interface ResearchNoteSettings {
   includeSelectionText: boolean;
 }
 
+export interface SaveResearchTurnRequest {
+  session: ConversationSession;
+  userMessage: ConversationMessage;
+  assistantMessage: ConversationMessage;
+  includeSelectionText: boolean;
+  selection?: { text: string; paperPath?: string };
+}
+
+export interface ResearchArtifactWriteResult {
+  path: string;
+  created: boolean;
+}
+
+export interface ResearchArtifactOperations {
+  appendTurn(request: SaveResearchTurnRequest): Promise<ResearchArtifactWriteResult>;
+  exportSessionMarkdown(
+    session: ConversationSession,
+    targetPath?: string
+  ): Promise<ResearchArtifactWriteResult>;
+  openEvidence(evidence: ResearchEvidence): Promise<boolean>;
+}
+
 export interface CodexDeepAnalysisSettings {
   enabled: boolean;
   command: string;
@@ -421,6 +443,7 @@ export interface PDFChatModalServices {
   actions: ResearchActionOperations;
   translations: TranslationOperations;
   codex?: CodexRuntimeOperations;
+  artifacts?: ResearchArtifactOperations;
 }
 
 export interface PDFChatModalServiceOverrides {
@@ -431,6 +454,7 @@ export interface PDFChatModalServiceOverrides {
   actions?: ResearchActionOperations;
   translations?: Partial<TranslationOperations>;
   codex?: CodexRuntimeOperations;
+  artifacts?: ResearchArtifactOperations;
 }
 
 export interface LlmCompatibilityOptions {
@@ -446,6 +470,7 @@ export interface PDFChatPluginApi extends Plugin {
   llmTransport?: LlmOperations;
   translationService?: TranslationOperations;
   codexSessionManager?: CodexRuntimeOperations;
+  researchArtifacts?: ResearchArtifactOperations;
   readerDataStore?: {
     usage(): PaperCacheUsage;
     clearPaperCache(): Promise<PaperCacheUsage>;
