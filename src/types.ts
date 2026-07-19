@@ -138,12 +138,47 @@ export interface DocSummaryEntry {
   extractionQuality?: ExtractionQualityReport;
 }
 
+export interface ConversationSessionIndexEntry {
+  id: string;
+  fileName: string;
+  title: string;
+  conversationKey: string;
+  mode: ConversationSessionMode;
+  pinned: boolean;
+  archived: boolean;
+  missing: boolean;
+  tags: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface DocChunksEntry {
   mtime?: number;
   chunks: PdfChunk[];
   fullTextLength: number;
   generatedAt: number;
   extractionQuality?: ExtractionQualityReport;
+}
+
+export interface PaperAssetEntry {
+  version: 1;
+  vaultPath: string;
+  summary?: DocSummaryEntry;
+  chunks?: DocChunksEntry;
+  updatedAt: number;
+  lastAccessedAt: number;
+  estimatedBytes: number;
+}
+
+export interface PaperCacheUsage {
+  entries: number;
+  bytes: number;
+}
+
+export interface PaperCacheQuota {
+  maxEntries: number;
+  maxBytes: number;
+  protectedPaths?: string[];
 }
 
 export interface TranslationSettings {

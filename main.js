@@ -33,10 +33,12 @@ __export(main_exports, {
   LEGACY_0_4_0_TRANSLATE_PROMPT: () => LEGACY_0_4_0_TRANSLATE_PROMPT,
   OpenAICompatibleTransport: () => OpenAICompatibleTransport,
   PDFChatModal: () => PDFChatModal,
+  PaperAssetRepository: () => PaperAssetRepository,
   PaperContextService: () => PaperContextService,
   QuickTranslateMarker: () => QuickTranslateMarker,
   ResearchActionRegistry: () => ResearchActionRegistry,
   SelectionLimitModal: () => SelectionLimitModal,
+  SessionRepository: () => SessionRepository,
   TranslationService: () => TranslationService,
   VaultLifecycleService: () => VaultLifecycleService,
   assessExtractionQuality: () => assessExtractionQuality,
@@ -7058,6 +7060,377 @@ var AtomicJsonStore = class {
       await this.safeRemove(tempPath);
       if (error instanceof JsonStoreError) throw error;
       throw new JsonStoreError("Atomic JSON write or replace failed", "write", { cause: error });
+    }
+  }
+};
+
+// src/paper-asset-repository.ts
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+function isAbsolutePath2(value) {
+  return /^(?:[A-Za-z]:[\\/]|[\\/]{1,2})/.test(value);
+}
+function assertRelativeVaultPath(value) {
+  if (!value || isAbsolutePath2(value) || value.split(/[\\/]/).includes("..")) {
+    throw new Error("Paper assets require a vault-relative path");
+  }
+}
+function validatePaperAsset(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid paper asset");
+  const candidate = value;
+  if (candidate.version !== 1 || typeof candidate.vaultPath !== "string") throw new Error("Invalid paper asset");
+  assertRelativeVaultPath(candidate.vaultPath);
+  const updatedAt = typeof candidate.updatedAt === "number" && Number.isFinite(candidate.updatedAt) ? candidate.updatedAt : 0;
+  const lastAccessedAt = typeof candidate.lastAccessedAt === "number" && Number.isFinite(candidate.lastAccessedAt) ? candidate.lastAccessedAt : updatedAt;
+  const estimatedBytes = typeof candidate.estimatedBytes === "number" && Number.isFinite(candidate.estimatedBytes) ? Math.max(0, Math.floor(candidate.estimatedBytes)) : 0;
+  return {
+    version: 1,
+    vaultPath: candidate.vaultPath,
+    summary: candidate.summary && typeof candidate.summary === "object" ? clone(candidate.summary) : void 0,
+    chunks: candidate.chunks && typeof candidate.chunks === "object" ? clone(candidate.chunks) : void 0,
+    updatedAt,
+    lastAccessedAt,
+    estimatedBytes
+  };
+}
+function validateIndex(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid paper index");
+  const candidate = value;
+  if (candidate.version !== 1 || !Array.isArray(candidate.entries)) throw new Error("Invalid paper index");
+  const entries = [];
+  for (const raw of candidate.entries) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const entry = raw;
+    if (typeof entry.vaultPath !== "string" || typeof entry.fileName !== "string") continue;
+    assertRelativeVaultPath(entry.vaultPath);
+    if (!/^[a-z0-9._-]+\.json$/i.test(entry.fileName)) continue;
+    entries.push({
+      vaultPath: entry.vaultPath,
+      fileName: entry.fileName,
+      updatedAt: typeof entry.updatedAt === "number" ? entry.updatedAt : 0,
+      lastAccessedAt: typeof entry.lastAccessedAt === "number" ? entry.lastAccessedAt : 0,
+      estimatedBytes: typeof entry.estimatedBytes === "number" ? Math.max(0, Math.floor(entry.estimatedBytes)) : 0
+    });
+  }
+  return { version: 1, entries };
+}
+var PaperAssetRepository = class {
+  constructor(adapter, root = "reader-data/papers", now = Date.now) {
+    this.adapter = adapter;
+    this.root = root;
+    this.now = now;
+    __publicField(this, "indexStore");
+    __publicField(this, "assets", /* @__PURE__ */ new Map());
+    __publicField(this, "indexEntries", /* @__PURE__ */ new Map());
+    __publicField(this, "indexWriteQueue", Promise.resolve());
+    this.indexStore = new AtomicJsonStore(adapter, `${root}/index.json`, validateIndex);
+  }
+  entityStore(fileName) {
+    return new AtomicJsonStore(this.adapter, `${this.root}/${fileName}`, validatePaperAsset);
+  }
+  chooseFileName(vaultPath) {
+    const base = `paper-${stableConversationHash(vaultPath)}`;
+    let suffix = 0;
+    while (true) {
+      const fileName = `${base}${suffix ? `-${suffix}` : ""}.json`;
+      const collision = Array.from(this.indexEntries.values()).find(
+        (entry) => entry.fileName === fileName && entry.vaultPath !== vaultPath
+      );
+      if (!collision) return fileName;
+      suffix += 1;
+    }
+  }
+  async persistIndex() {
+    const document2 = {
+      version: 1,
+      entries: Array.from(this.indexEntries.values()).sort((left, right) => left.vaultPath.localeCompare(right.vaultPath))
+    };
+    const operation = this.indexWriteQueue.then(() => this.indexStore.write(document2));
+    this.indexWriteQueue = operation.catch(() => void 0);
+    await operation;
+  }
+  async initialize() {
+    const index = await this.indexStore.readWithBackup() || { version: 1, entries: [] };
+    let repaired = false;
+    for (const entry of index.entries) {
+      const asset = await this.entityStore(entry.fileName).readWithBackup();
+      if (!asset || asset.vaultPath !== entry.vaultPath) {
+        repaired = true;
+        continue;
+      }
+      this.assets.set(asset.vaultPath, asset);
+      this.indexEntries.set(asset.vaultPath, {
+        vaultPath: asset.vaultPath,
+        fileName: entry.fileName,
+        updatedAt: asset.updatedAt,
+        lastAccessedAt: asset.lastAccessedAt,
+        estimatedBytes: asset.estimatedBytes
+      });
+    }
+    if (repaired) await this.persistIndex();
+    return Object.fromEntries(Array.from(this.assets.entries()).map(([path, value]) => [path, clone(value)]));
+  }
+  get(vaultPath) {
+    assertRelativeVaultPath(vaultPath);
+    const asset = this.assets.get(vaultPath);
+    if (!asset) return null;
+    asset.lastAccessedAt = this.now();
+    const index = this.indexEntries.get(vaultPath);
+    if (index) index.lastAccessedAt = asset.lastAccessedAt;
+    void this.persistIndex();
+    return clone(asset);
+  }
+  async save(vaultPath, input) {
+    var _a;
+    assertRelativeVaultPath(vaultPath);
+    const timestamp = this.now();
+    const existing = this.assets.get(vaultPath);
+    const fileName = ((_a = this.indexEntries.get(vaultPath)) == null ? void 0 : _a.fileName) || this.chooseFileName(vaultPath);
+    const draft = {
+      version: 1,
+      vaultPath,
+      summary: input.summary === void 0 ? existing == null ? void 0 : existing.summary : input.summary,
+      chunks: input.chunks === void 0 ? existing == null ? void 0 : existing.chunks : input.chunks,
+      updatedAt: timestamp,
+      lastAccessedAt: timestamp,
+      estimatedBytes: 0
+    };
+    draft.estimatedBytes = JSON.stringify(draft).length;
+    const asset = validatePaperAsset(draft);
+    await this.entityStore(fileName).write(asset);
+    this.assets.set(vaultPath, clone(asset));
+    this.indexEntries.set(vaultPath, {
+      vaultPath,
+      fileName,
+      updatedAt: asset.updatedAt,
+      lastAccessedAt: asset.lastAccessedAt,
+      estimatedBytes: asset.estimatedBytes
+    });
+    await this.persistIndex();
+  }
+  async removeFileSet(path) {
+    for (const candidate of [path, `${path}.bak`, `${path}.tmp`]) {
+      if (await this.adapter.exists(candidate)) await this.adapter.remove(candidate);
+    }
+  }
+  async remove(vaultPath) {
+    assertRelativeVaultPath(vaultPath);
+    const index = this.indexEntries.get(vaultPath);
+    if (!index) return;
+    await this.removeFileSet(`${this.root}/${index.fileName}`);
+    this.assets.delete(vaultPath);
+    this.indexEntries.delete(vaultPath);
+    await this.persistIndex();
+  }
+  async rename(oldPath, newPath) {
+    assertRelativeVaultPath(oldPath);
+    assertRelativeVaultPath(newPath);
+    const asset = this.assets.get(oldPath);
+    if (!asset) return;
+    await this.save(newPath, { summary: asset.summary, chunks: asset.chunks });
+    await this.remove(oldPath);
+  }
+  usage() {
+    return {
+      entries: this.assets.size,
+      bytes: Array.from(this.assets.values()).reduce((sum, asset) => sum + asset.estimatedBytes, 0)
+    };
+  }
+  async evict(options) {
+    const maxEntries = Math.max(0, Math.floor(options.maxEntries));
+    const maxBytes = Math.max(0, Math.floor(options.maxBytes));
+    const protectedPaths = new Set(options.protectedPaths || []);
+    const candidates = Array.from(this.assets.values()).filter((asset) => !protectedPaths.has(asset.vaultPath)).sort((left, right) => left.lastAccessedAt - right.lastAccessedAt || left.vaultPath.localeCompare(right.vaultPath));
+    const evicted = [];
+    while ((this.usage().entries > maxEntries || this.usage().bytes > maxBytes) && candidates.length) {
+      const candidate = candidates.shift();
+      await this.remove(candidate.vaultPath);
+      evicted.push(candidate.vaultPath);
+    }
+    return evicted;
+  }
+};
+
+// src/session-repository.ts
+function clone2(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+function isAbsolutePath3(value) {
+  return /^(?:[A-Za-z]:[\\/]|[\\/]{1,2})/.test(value);
+}
+function assertRelativeVaultPath2(value) {
+  if (!value || isAbsolutePath3(value) || value.split(/[\\/]/).includes("..")) {
+    throw new Error("Reader data requires a vault-relative path");
+  }
+}
+function validateSession(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Invalid conversation session");
+  }
+  const candidate = value;
+  const id = typeof candidate.id === "string" ? candidate.id.trim() : "";
+  if (!id) throw new Error("Invalid conversation session ID");
+  const rawKey = typeof candidate.conversationKey === "string" ? candidate.conversationKey : "";
+  if (rawKey.startsWith("pdf:")) assertRelativeVaultPath2(rawKey.slice(4));
+  if (Array.isArray(candidate.referencedPdfPaths)) {
+    for (const path of candidate.referencedPdfPaths) {
+      if (typeof path === "string") assertRelativeVaultPath2(path);
+    }
+  }
+  const normalized = normalizeConversationSessions({ [id]: value })[id];
+  if (!normalized) throw new Error("Invalid conversation session");
+  return normalized;
+}
+function validateIndex2(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Invalid session index");
+  }
+  const candidate = value;
+  if (candidate.version !== 1 || !Array.isArray(candidate.entries)) {
+    throw new Error("Invalid session index");
+  }
+  const entries = [];
+  for (const raw of candidate.entries) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const entry = raw;
+    const id = typeof entry.id === "string" ? entry.id.trim() : "";
+    const fileName = typeof entry.fileName === "string" ? entry.fileName.trim() : "";
+    const conversationKey = typeof entry.conversationKey === "string" ? entry.conversationKey : "";
+    if (!id || !/^[a-z0-9._-]+\.json$/i.test(fileName) || !conversationKey) continue;
+    if (conversationKey.startsWith("pdf:")) assertRelativeVaultPath2(conversationKey.slice(4));
+    entries.push({
+      id,
+      fileName,
+      title: typeof entry.title === "string" ? entry.title : id,
+      conversationKey,
+      mode: entry.mode === "codex" ? "codex" : "chat",
+      pinned: entry.pinned === true,
+      archived: entry.archived === true,
+      missing: entry.missing === true,
+      tags: Array.isArray(entry.tags) ? entry.tags.filter((tag) => typeof tag === "string" && !!tag.trim()).map((tag) => tag.trim()) : [],
+      createdAt: typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt) ? entry.createdAt : 0,
+      updatedAt: typeof entry.updatedAt === "number" && Number.isFinite(entry.updatedAt) ? entry.updatedAt : 0
+    });
+  }
+  return { version: 1, entries };
+}
+var SessionRepository = class {
+  constructor(adapter, root = "reader-data/sessions") {
+    this.adapter = adapter;
+    this.root = root;
+    __publicField(this, "indexStore");
+    __publicField(this, "sessions", /* @__PURE__ */ new Map());
+    __publicField(this, "indexEntries", /* @__PURE__ */ new Map());
+    __publicField(this, "initialized", false);
+    this.indexStore = new AtomicJsonStore(adapter, `${root}/index.json`, validateIndex2);
+  }
+  entityStore(fileName) {
+    return new AtomicJsonStore(this.adapter, `${this.root}/${fileName}`, validateSession);
+  }
+  chooseFileName(id) {
+    const base = `session-${stableConversationHash(id)}`;
+    let suffix = 0;
+    while (true) {
+      const fileName = `${base}${suffix ? `-${suffix}` : ""}.json`;
+      const collision = Array.from(this.indexEntries.values()).find(
+        (entry) => entry.fileName === fileName && entry.id !== id
+      );
+      if (!collision) return fileName;
+      suffix += 1;
+    }
+  }
+  indexEntry(session, fileName) {
+    return {
+      id: session.id,
+      fileName,
+      title: session.title,
+      conversationKey: session.conversationKey,
+      mode: session.mode,
+      pinned: false,
+      archived: false,
+      missing: session.sourceStatus === "missing",
+      tags: [],
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt
+    };
+  }
+  async persistIndex() {
+    await this.indexStore.write({ version: 1, entries: this.list() });
+  }
+  async initialize() {
+    if (this.initialized) return this.loadAll();
+    this.initialized = true;
+    const index = await this.indexStore.readWithBackup() || { version: 1, entries: [] };
+    let repaired = false;
+    for (const entry of index.entries) {
+      const entity = await this.entityStore(entry.fileName).readWithBackup();
+      if (!entity || entity.id !== entry.id) {
+        repaired = true;
+        continue;
+      }
+      this.sessions.set(entity.id, entity);
+      this.indexEntries.set(entity.id, this.indexEntry(entity, entry.fileName));
+    }
+    if (repaired) await this.persistIndex();
+    return this.loadAll();
+  }
+  async loadAll() {
+    const result = {};
+    for (const [id, session] of this.sessions) result[id] = clone2(session);
+    return result;
+  }
+  get(id) {
+    const session = this.sessions.get(id);
+    return session ? clone2(session) : null;
+  }
+  list() {
+    return Array.from(this.indexEntries.values()).map(clone2).sort((left, right) => Number(right.pinned) - Number(left.pinned) || right.updatedAt - left.updatedAt || left.id.localeCompare(right.id));
+  }
+  async save(input) {
+    const session = validateSession(input);
+    const existing = this.indexEntries.get(session.id);
+    const fileName = (existing == null ? void 0 : existing.fileName) || this.chooseFileName(session.id);
+    await this.entityStore(fileName).write(session);
+    this.sessions.set(session.id, clone2(session));
+    this.indexEntries.set(session.id, {
+      ...this.indexEntry(session, fileName),
+      pinned: (existing == null ? void 0 : existing.pinned) || false,
+      archived: (existing == null ? void 0 : existing.archived) || false,
+      tags: (existing == null ? void 0 : existing.tags) || []
+    });
+    await this.persistIndex();
+  }
+  async removeFileSet(path) {
+    for (const candidate of [path, `${path}.bak`, `${path}.tmp`]) {
+      if (await this.adapter.exists(candidate)) await this.adapter.remove(candidate);
+    }
+  }
+  async remove(id) {
+    const entry = this.indexEntries.get(id);
+    if (!entry) return;
+    await this.removeFileSet(`${this.root}/${entry.fileName}`);
+    this.sessions.delete(id);
+    this.indexEntries.delete(id);
+    await this.persistIndex();
+  }
+  async rekeyPdf(oldPath, newPath) {
+    assertRelativeVaultPath2(oldPath);
+    assertRelativeVaultPath2(newPath);
+    for (const session of Array.from(this.sessions.values())) {
+      let changed = false;
+      const next = clone2(session);
+      if (next.conversationKey === ["pdf", oldPath].join(":")) {
+        next.conversationKey = ["pdf", newPath].join(":");
+        next.sourceStatus = "available";
+        changed = true;
+      }
+      const references = next.referencedPdfPaths.map((path) => path === oldPath ? newPath : path);
+      if (references.some((path, index) => path !== next.referencedPdfPaths[index])) {
+        next.referencedPdfPaths = Array.from(new Set(references));
+        changed = true;
+      }
+      if (changed) await this.save(next);
     }
   }
 };

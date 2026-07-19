@@ -70,6 +70,8 @@ export {
 export { CodexSessionManager } from "./codex-session-manager";
 export { assessExtractionQuality } from "./extraction-quality";
 export { AtomicJsonStore, JsonStoreError } from "./json-store";
+export { PaperAssetRepository } from "./paper-asset-repository";
+export { SessionRepository } from "./session-repository";
 export { composeBoundedContext, summarizeSessionMemory } from "./context-composer";
 export {
   requestSelectionLimitDecision,
