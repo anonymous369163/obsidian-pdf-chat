@@ -63,3 +63,11 @@ test("the npm and CI TypeScript configuration enables full strict mode", () => {
 
   assert.equal(tsconfig.compilerOptions.strict, true);
 });
+
+test("the generated root bundle keeps LF bytes across Windows checkouts", () => {
+  const attributesPath = path.join(projectRoot, ".gitattributes");
+  assert.ok(fs.existsSync(attributesPath), "expected .gitattributes to pin release line endings");
+  const attributes = fs.readFileSync(attributesPath, "utf8");
+
+  assert.match(attributes, /^main\.js\s+text\s+eol=lf$/m);
+});
