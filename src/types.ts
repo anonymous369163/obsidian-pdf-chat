@@ -475,6 +475,9 @@ export interface PDFChatPluginApi extends Plugin {
   translationService?: TranslationOperations;
   codexSessionManager?: CodexRuntimeOperations;
   researchArtifacts?: ResearchArtifactOperations;
+  researchCapabilities?: {
+    listAvailable(): Promise<Array<{ kind: "related-papers" | "presentation"; id: string; label: string }>>;
+  };
   readerDataStore?: {
     usage(): PaperCacheUsage;
     clearPaperCache(): Promise<PaperCacheUsage>;

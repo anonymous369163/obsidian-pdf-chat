@@ -39,6 +39,7 @@ __export(main_exports, {
   ReaderDataMigrator: () => ReaderDataMigrator,
   ReaderDataStore: () => ReaderDataStore,
   ResearchActionRegistry: () => ResearchActionRegistry,
+  ResearchCapabilityRegistry: () => ResearchCapabilityRegistry,
   ResearchNoteService: () => ResearchNoteService,
   SelectionLimitModal: () => SelectionLimitModal,
   SessionLibraryModal: () => SessionLibraryModal,
@@ -88,8 +89,10 @@ __export(main_exports, {
   parseCodexAnalysisOutput: () => parseCodexAnalysisOutput,
   parseCodexMarkdownOutput: () => parseCodexMarkdownOutput,
   parseResearchEvidence: () => parseResearchEvidence,
+  projectResearchCapabilityContext: () => projectResearchCapabilityContext,
   reconcilePdfDeleteState: () => reconcilePdfDeleteState,
   reconcilePdfRenameState: () => reconcilePdfRenameState,
+  registerAvailableResearchCapabilityActions: () => registerAvailableResearchCapabilityActions,
   removeCodexAnalysisTempDir: () => removeCodexAnalysisTempDir,
   renderCodexAnalysisMarkdown: () => renderCodexAnalysisMarkdown,
   requestSelectionLimitDecision: () => requestSelectionLimitDecision,
@@ -153,6 +156,26 @@ function createResearchActionRegistry() {
       await translate();
     }
   });
+}
+async function registerAvailableResearchCapabilityActions(actions, capabilities, handlers) {
+  for (const capability of await capabilities.listAvailable()) {
+    if (capability.kind === "related-papers") {
+      actions.register({
+        id: `related-papers:${capability.id}`,
+        name: capability.label,
+        slot: "context",
+        execute: (context) => handlers.onRelatedPapers(capability.id, context)
+      });
+    } else {
+      actions.register({
+        id: `presentation:${capability.id}`,
+        name: capability.label,
+        slot: "context",
+        execute: (context) => handlers.onPresentation(capability.id, context)
+      });
+    }
+  }
+  return actions;
 }
 
 // src/multi-paper.ts
@@ -3347,7 +3370,7 @@ var SessionLibraryService = class {
   }
   previewCodexFork(id, request) {
     const session = this.requireSession(id);
-    const available = new Set(request.availablePdfPaths.filter(Boolean));
+    const available2 = new Set(request.availablePdfPaths.filter(Boolean));
     const currentPath = primaryPdfPath(session);
     const candidates = [
       ...session.includeCurrentPdfInCodex && currentPath ? [currentPath] : [],
@@ -3355,8 +3378,8 @@ var SessionLibraryService = class {
     ].filter((path, index, all) => all.indexOf(path) === index);
     const handoff = selectForkHandoff(session, request.handoffMaxChars);
     return {
-      attachedPdfPaths: candidates.filter((path) => available.has(path)),
-      omittedPdfPaths: candidates.filter((path) => !available.has(path)),
+      attachedPdfPaths: candidates.filter((path) => available2.has(path)),
+      omittedPdfPaths: candidates.filter((path) => !available2.has(path)),
       handoffChars: handoff.chars,
       messageCount: handoff.messages.length
     };
@@ -3369,16 +3392,16 @@ var SessionLibraryService = class {
     }
     const installationId = ((_b = (_a = this.dependencies).installationId) == null ? void 0 : _b.call(_a).trim()) || "";
     if (!installationId) throw new Error("\u7F3A\u5C11\u672C\u673A\u5B89\u88C5\u6807\u8BC6\uFF0C\u65E0\u6CD5\u5B89\u5168\u521B\u5EFA Codex \u5206\u652F");
-    const available = new Set(request.availablePdfPaths.filter(Boolean));
+    const available2 = new Set(request.availablePdfPaths.filter(Boolean));
     const currentPath = primaryPdfPath(parent);
     const handoff = selectForkHandoff(parent, request.handoffMaxChars);
-    const referencedPdfPaths = (parent.referencedPdfPaths || []).filter((path) => available.has(path));
+    const referencedPdfPaths = (parent.referencedPdfPaths || []).filter((path) => available2.has(path));
     const metadata = {
       title: `Fork: ${parent.title}`.slice(0, 120),
       mode: "codex",
       referencedPdfPaths,
       includeCurrentPdfInCodex: Boolean(
-        parent.includeCurrentPdfInCodex && currentPath && available.has(currentPath)
+        parent.includeCurrentPdfInCodex && currentPath && available2.has(currentPath)
       ),
       codex: {
         model: ((_c = parent.codex) == null ? void 0 : _c.model) || "",
@@ -7127,6 +7150,131 @@ ${block}
   }
 };
 
+// src/research-capabilities.ts
+var UNSAFE_FIELD = /(?:^|[_-])(?:settings?|config|endpoint|credential|secret|password|token|api[_-]?key|access[_-]?key)(?:$|[_-])/i;
+function compactFieldName(value) {
+  return value.replace(/[^a-z0-9]/gi, "").toLowerCase();
+}
+function assertCredentialBlind(value, seen = /* @__PURE__ */ new WeakSet()) {
+  if (!value || typeof value !== "object") return;
+  if (seen.has(value)) return;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) assertCredentialBlind(item, seen);
+    return;
+  }
+  for (const [field, nested] of Object.entries(value)) {
+    const compact = compactFieldName(field);
+    if (UNSAFE_FIELD.test(field) || ["settings", "configuration", "endpoint", "apikey", "accesstoken", "refreshtoken", "bearertoken"].includes(compact)) {
+      throw new Error(`Unsafe settings or credential field rejected: ${field}`);
+    }
+    assertCredentialBlind(nested, seen);
+  }
+}
+function normalizeVaultPdfPath(value) {
+  if (typeof value !== "string") throw new Error("Research capability paper path must be a vault-relative path");
+  const normalized = value.trim().replace(/\\/g, "/");
+  const parts = normalized.split("/");
+  if (!normalized || normalized.startsWith("/") || normalized.startsWith("~/") || normalized.includes("://") || /^[A-Za-z]:\//.test(normalized) || parts.some((part) => part === ".." || part === ".") || !normalized.toLowerCase().endsWith(".pdf")) {
+    throw new Error("Research capability paper path must be a vault-relative PDF path");
+  }
+  return parts.filter(Boolean).join("/");
+}
+function readableString(value, maxChars) {
+  return typeof value === "string" ? value.trim().slice(0, maxChars) : "";
+}
+function projectResearchCapabilityContext(value) {
+  assertCredentialBlind(value);
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const papers = [];
+  const seenPapers = /* @__PURE__ */ new Set();
+  for (const item of Array.isArray(source.papers) ? source.papers : []) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const candidate = item;
+    const vaultPath = normalizeVaultPdfPath(candidate.vaultPath);
+    if (seenPapers.has(vaultPath)) continue;
+    seenPapers.add(vaultPath);
+    papers.push({
+      vaultPath,
+      name: readableString(candidate.name, 240) || vaultPath.split("/").pop() || vaultPath,
+      role: candidate.role === "current" ? "current" : "referenced"
+    });
+  }
+  const evidence = [];
+  const seenEvidence = /* @__PURE__ */ new Set();
+  for (const item of Array.isArray(source.evidence) ? source.evidence : []) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const candidate = item;
+    if (candidate.verification !== "located") continue;
+    const paperPath = normalizeVaultPdfPath(candidate.paperPath);
+    const page = Number(candidate.page);
+    const claim = readableString(candidate.claim, 4e3);
+    if (!claim || !Number.isInteger(page) || page < 1 || !seenPapers.has(paperPath)) continue;
+    const key = `${paperPath}:${page}:${claim}`;
+    if (seenEvidence.has(key)) continue;
+    seenEvidence.add(key);
+    evidence.push({ claim, paperPath, page, verification: "located" });
+  }
+  const visibleAnswers = (Array.isArray(source.visibleAnswers) ? source.visibleAnswers : []).map((answer) => readableString(answer, 5e4)).filter(Boolean).slice(0, 20);
+  return { papers, evidence, visibleAnswers };
+}
+function normalizeAdapterId(value) {
+  const id = typeof value === "string" ? value.trim() : "";
+  if (!id || !/^[a-z0-9][a-z0-9._-]{0,79}$/i.test(id)) {
+    throw new Error("Research capability adapter id is invalid");
+  }
+  return id;
+}
+async function available(adapter) {
+  try {
+    return await adapter.isAvailable();
+  } catch (e) {
+    return false;
+  }
+}
+var ResearchCapabilityRegistry = class {
+  constructor() {
+    __publicField(this, "relatedPaperAdapters", /* @__PURE__ */ new Map());
+    __publicField(this, "presentationAdapters", /* @__PURE__ */ new Map());
+  }
+  registerRelatedPaperSearch(adapter) {
+    const id = normalizeAdapterId(adapter.id);
+    if (this.relatedPaperAdapters.has(id)) throw new Error(`Duplicate related-paper adapter: ${id}`);
+    this.relatedPaperAdapters.set(id, { ...adapter, id });
+    return this;
+  }
+  registerPresentationGenerator(adapter) {
+    const id = normalizeAdapterId(adapter.id);
+    if (this.presentationAdapters.has(id)) throw new Error(`Duplicate presentation adapter: ${id}`);
+    this.presentationAdapters.set(id, { ...adapter, id });
+    return this;
+  }
+  async listAvailable() {
+    const result = [];
+    for (const adapter of this.relatedPaperAdapters.values()) {
+      if (await available(adapter)) result.push({ kind: "related-papers", id: adapter.id, label: adapter.label });
+    }
+    for (const adapter of this.presentationAdapters.values()) {
+      if (await available(adapter)) result.push({ kind: "presentation", id: adapter.id, label: adapter.label });
+    }
+    return result;
+  }
+  async searchRelatedPapers(adapterId, request) {
+    const adapter = this.relatedPaperAdapters.get(adapterId);
+    if (!adapter || !await available(adapter)) throw new Error(`Related-paper adapter is unavailable: ${adapterId}`);
+    const query = readableString(request.query, 4e3);
+    if (!query) throw new Error("Related-paper search query is empty");
+    return adapter.search({ query, context: projectResearchCapabilityContext(request.context) });
+  }
+  async generatePresentation(adapterId, request) {
+    const adapter = this.presentationAdapters.get(adapterId);
+    if (!adapter || !await available(adapter)) throw new Error(`Presentation adapter is unavailable: ${adapterId}`);
+    const title = readableString(request.title, 500);
+    if (!title) throw new Error("Presentation title is empty");
+    return adapter.generate({ title, context: projectResearchCapabilityContext(request.context) });
+  }
+};
+
 // src/json-store.ts
 var JsonStoreError = class extends Error {
   constructor(message, operation, options) {
@@ -9107,6 +9255,7 @@ var PDFChatPlugin = class extends import_obsidian8.Plugin {
     __publicField(this, "vaultLifecycleService");
     __publicField(this, "readerDataStore");
     __publicField(this, "researchArtifacts");
+    __publicField(this, "researchCapabilities");
     __publicField(this, "codexGlobalUnsubscribe");
     __publicField(this, "codexRunningSessionIds", /* @__PURE__ */ new Set());
   }
@@ -9165,6 +9314,7 @@ var PDFChatPlugin = class extends import_obsidian8.Plugin {
       };
     }
     this.actionRegistry = createResearchActionRegistry();
+    this.researchCapabilities = new ResearchCapabilityRegistry();
     if (((_b = this.app) == null ? void 0 : _b.vault) && typeof this.app.vault.on === "function") {
       this.vaultLifecycleService = new VaultLifecycleService(
         this.app.vault,

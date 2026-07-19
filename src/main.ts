@@ -16,6 +16,7 @@ import { getActivePdfFile, PaperContextService } from "./paper-context";
 import { createPDFChatModalServices } from "./modal-services";
 import { PDFChatModal } from "./pdf-chat-modal";
 import { ResearchNoteService } from "./research-notes";
+import { ResearchCapabilityRegistry } from "./research-capabilities";
 import { isJsonAdapter, ReaderDataStore } from "./reader-data-store";
 import {
   QuickTranslateMarker,
@@ -51,7 +52,12 @@ export {
   createCompatibilityActionRegistry,
   createResearchActionRegistry,
   ResearchActionRegistry,
+  registerAvailableResearchCapabilityActions,
 } from "./actions";
+export {
+  projectResearchCapabilityContext,
+  ResearchCapabilityRegistry,
+} from "./research-capabilities";
 export {
   cleanSelectionText,
   ConversationStore,
@@ -187,6 +193,7 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
   vaultLifecycleService?: VaultLifecycleService;
   readerDataStore?: ReaderDataStore;
   researchArtifacts?: PDFChatPluginApi["researchArtifacts"];
+  researchCapabilities?: ResearchCapabilityRegistry;
   private codexGlobalUnsubscribe?: () => void;
   private readonly codexRunningSessionIds = new Set<string>();
 
@@ -244,6 +251,7 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
       };
     }
     this.actionRegistry = createResearchActionRegistry();
+    this.researchCapabilities = new ResearchCapabilityRegistry();
     if (this.app?.vault && typeof this.app.vault.on === "function") {
       this.vaultLifecycleService = new VaultLifecycleService(
         this.app.vault,

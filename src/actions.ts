@@ -4,6 +4,12 @@ import type {
   ResearchActionOperations,
   ResearchActionSlot,
 } from "./types";
+import type { ResearchCapabilityRegistry } from "./research-capabilities";
+
+export interface ResearchCapabilityActionHandlers {
+  onRelatedPapers(adapterId: string, context: ResearchActionContext): Promise<void> | void;
+  onPresentation(adapterId: string, context: ResearchActionContext): Promise<void> | void;
+}
 
 export class ResearchActionRegistry {
   private readonly actions = new Map<string, ResearchAction>();
@@ -51,4 +57,29 @@ export function createResearchActionRegistry(): ResearchActionRegistry {
       await translate();
     },
   });
+}
+
+export async function registerAvailableResearchCapabilityActions(
+  actions: ResearchActionRegistry,
+  capabilities: ResearchCapabilityRegistry,
+  handlers: ResearchCapabilityActionHandlers
+): Promise<ResearchActionRegistry> {
+  for (const capability of await capabilities.listAvailable()) {
+    if (capability.kind === "related-papers") {
+      actions.register({
+        id: `related-papers:${capability.id}`,
+        name: capability.label,
+        slot: "context",
+        execute: (context) => handlers.onRelatedPapers(capability.id, context),
+      });
+    } else {
+      actions.register({
+        id: `presentation:${capability.id}`,
+        name: capability.label,
+        slot: "context",
+        execute: (context) => handlers.onPresentation(capability.id, context),
+      });
+    }
+  }
+  return actions;
 }
