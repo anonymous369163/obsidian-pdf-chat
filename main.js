@@ -1231,9 +1231,110 @@ function runCodexThreadTurn(execArgs, options) {
   });
 }
 
+// src/evidence.ts
+var import_obsidian2 = require("obsidian");
+var ALIAS_CITATION = /\[([A-Za-z][A-Za-z0-9_-]*)\s*,\s*p(?:age)?\.?\s*(-?\d+)\]/gi;
+var PDF_LINK_CITATION = /\[\[([^\]#|]+\.pdf)#page=(-?\d+)(?:\|[^\]]*)?\]\]/gi;
+function normalizedPath(value) {
+  return value.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+}
+function stableHash(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+function normalizeClaim(markdown, index, rawLength) {
+  const lineStart = markdown.lastIndexOf("\n", index) + 1;
+  const nextLineBreak = markdown.indexOf("\n", index + rawLength);
+  const lineEnd = nextLineBreak >= 0 ? nextLineBreak : markdown.length;
+  const cleaned = markdown.slice(lineStart, lineEnd).replace(ALIAS_CITATION, "").replace(PDF_LINK_CITATION, "").replace(/\s+/g, " ").replace(/\s+([.,!?;:。！？；：])/g, "$1").trim();
+  return cleaned || "\u8BBA\u6587\u8BC1\u636E";
+}
+function collectCandidates(markdown) {
+  const candidates = [];
+  for (const match of markdown.matchAll(ALIAS_CITATION)) {
+    candidates.push({
+      index: match.index || 0,
+      raw: match[0],
+      alias: match[1],
+      page: Number(match[2])
+    });
+  }
+  for (const match of markdown.matchAll(PDF_LINK_CITATION)) {
+    candidates.push({
+      index: match.index || 0,
+      raw: match[0],
+      path: normalizedPath(match[1]),
+      page: Number(match[2])
+    });
+  }
+  return candidates.sort((left, right) => left.index - right.index);
+}
+function validPage(page, source) {
+  if (!Number.isInteger(page) || page < 1 || !source) return false;
+  if (Number.isInteger(source.pageCount) && Number(source.pageCount) > 0) {
+    return page <= Number(source.pageCount);
+  }
+  return true;
+}
+function parseResearchEvidence(markdown, sources) {
+  if (typeof markdown !== "string" || !markdown.trim()) return [];
+  const normalizedSources = (Array.isArray(sources) ? sources : []).filter((source) => source && source.alias && source.paperPath).map((source) => ({
+    ...source,
+    alias: source.alias.trim(),
+    paperPath: normalizedPath(source.paperPath)
+  }));
+  const byAlias = new Map(normalizedSources.map((source) => [source.alias.toLowerCase(), source]));
+  const byPath = new Map(normalizedSources.map((source) => [source.paperPath.toLowerCase(), source]));
+  const seen = /* @__PURE__ */ new Set();
+  const evidence = [];
+  for (const candidate of collectCandidates(markdown)) {
+    const source = candidate.alias ? byAlias.get(candidate.alias.toLowerCase()) : byPath.get((candidate.path || "").toLowerCase());
+    const paperPath = (source == null ? void 0 : source.paperPath) || candidate.path;
+    const sourceAlias = (source == null ? void 0 : source.alias) || candidate.alias;
+    const claim = normalizeClaim(markdown, candidate.index, candidate.raw.length);
+    const verification = validPage(candidate.page, source) ? "located" : "unverified";
+    const dedupeKey = `${(paperPath || sourceAlias || "unknown").toLowerCase()}|${candidate.page}|${claim.toLowerCase()}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    evidence.push({
+      id: `evidence-${stableHash(`${dedupeKey}|${candidate.raw}`)}`,
+      claim,
+      ...paperPath ? { paperPath } : {},
+      ...Number.isInteger(candidate.page) ? { page: candidate.page } : {},
+      ...sourceAlias ? { sourceAlias } : {},
+      verification,
+      raw: candidate.raw
+    });
+  }
+  return evidence;
+}
+async function openPdfEvidence(app, evidence) {
+  if (!evidence || evidence.verification !== "located" || !evidence.paperPath || !Number.isInteger(evidence.page) || Number(evidence.page) < 1) {
+    new import_obsidian2.Notice("\u8FD9\u6761\u8BC1\u636E\u5C1A\u672A\u9A8C\u8BC1\uFF0C\u65E0\u6CD5\u5B9A\u4F4D\u5230 PDF \u9875\u9762\u3002");
+    return false;
+  }
+  const paperPath = normalizedPath(evidence.paperPath);
+  const file = app.vault.getAbstractFileByPath(paperPath);
+  if (!file || !paperPath.toLowerCase().endsWith(".pdf")) {
+    new import_obsidian2.Notice("\u8BC1\u636E\u5BF9\u5E94\u7684 PDF \u5DF2\u79FB\u52A8\u6216\u4E0D\u5B58\u5728\uFF0C\u65E0\u6CD5\u6253\u5F00\u9875\u9762\u3002");
+    return false;
+  }
+  await app.workspace.openLinkText(`${paperPath}#page=${evidence.page}`, "", false);
+  return true;
+}
+
 // src/codex-session-manager.ts
 function cloneSnapshot(snapshot) {
-  return { ...snapshot, attachedPdfPaths: [...snapshot.attachedPdfPaths] };
+  var _a;
+  return {
+    ...snapshot,
+    attachedPdfPaths: [...snapshot.attachedPdfPaths],
+    evidenceSources: (_a = snapshot.evidenceSources) == null ? void 0 : _a.map((source) => ({ ...source }))
+  };
 }
 function isAbortError(error) {
   return !!error && typeof error === "object" && error.name === "AbortError";
@@ -1316,6 +1417,7 @@ var CodexSessionManager = class {
       throw new Error("This Codex session is closed. Use /resume before continuing it.");
     }
     const managed = this.managed(request.sessionId);
+    const evidenceSources = (request.evidenceSources || []).map((source) => ({ ...source }));
     if (managed.snapshot.status === "running") {
       throw new Error("This Codex session already has a running turn");
     }
@@ -1328,7 +1430,12 @@ var CodexSessionManager = class {
         question: request.question,
         progress: recoveryMessage,
         attachedPdfPaths: [...request.attachedPdfPaths],
+        evidenceSources,
         selectionChars: request.selectionChars,
+        profile: request.profile,
+        model: request.model,
+        reasoningEffort: request.reasoningEffort,
+        verbosity: request.verbosity,
         error: recoveryMessage,
         recoveryReason: "foreign-installation"
       };
@@ -1355,7 +1462,12 @@ var CodexSessionManager = class {
       startedAt: Date.now(),
       workingDirectory: request.workingDirectory,
       attachedPdfPaths: [...request.attachedPdfPaths],
-      selectionChars: request.selectionChars
+      evidenceSources,
+      selectionChars: request.selectionChars,
+      profile: request.profile,
+      model: request.model,
+      reasoningEffort: request.reasoningEffort,
+      verbosity: request.verbosity
     };
     try {
       await this.persistence.beginCodexTurn(request.sessionId, {
@@ -1441,11 +1553,13 @@ var CodexSessionManager = class {
       }
       managed.snapshot.threadId = result.threadId;
       managed.snapshot.finalMarkdown = result.markdown;
+      const evidence = parseResearchEvidence(result.markdown, evidenceSources);
       managed.pendingResult = {
         turnId,
         userContent: request.userContent,
         assistantContent: result.markdown,
-        codex: codexMetadata()
+        codex: codexMetadata(),
+        ...evidence.length ? { evidence } : {}
       };
       await threadSave;
       await progressSave;
@@ -1454,7 +1568,8 @@ var CodexSessionManager = class {
         turnId,
         request.userContent,
         result.markdown,
-        codexMetadata()
+        codexMetadata(),
+        evidence.length ? evidence : void 0
       );
       if (managed.runToken !== runToken) return cloneSnapshot(managed.snapshot);
       managed.pendingResult = void 0;
@@ -1502,7 +1617,8 @@ var CodexSessionManager = class {
       pending.turnId,
       pending.userContent,
       pending.assistantContent,
-      pending.codex
+      pending.codex,
+      pending.evidence
     );
     managed.pendingResult = void 0;
     managed.snapshot.status = "idle";
@@ -2010,7 +2126,7 @@ var ConversationStore = class {
     settings.conversationSessions[id] = cloneSession(session);
     await this.persistSettings();
   }
-  async completeCodexTurn(id, turnId, userContent, assistantContent, codex) {
+  async completeCodexTurn(id, turnId, userContent, assistantContent, codex, evidence = []) {
     var _a;
     const settings = this.ensureContainers();
     const session = this.getSession(id);
@@ -2031,7 +2147,12 @@ var ConversationStore = class {
     session.messages = normalizeSessionMessages([
       ...session.messages,
       { role: "user", content: userContent, status: "complete" },
-      { role: "assistant", content: assistantContent, status: "complete" }
+      {
+        role: "assistant",
+        content: assistantContent,
+        status: "complete",
+        ...evidence.length ? { evidence } : {}
+      }
     ], session.id, this.now());
     if (firstUserTurn && derivedTitle) session.title = derivedTitle;
     session.codex = { ...session.codex || {}, ...codex };
@@ -2158,7 +2279,7 @@ var ConversationStore = class {
 };
 
 // src/llm-transport.ts
-var import_obsidian2 = require("obsidian");
+var import_obsidian3 = require("obsidian");
 function getDefaultFetchRequest() {
   const fetchRequest = typeof globalThis !== "undefined" ? globalThis.fetch : void 0;
   if (typeof fetchRequest !== "function") {
@@ -2170,7 +2291,7 @@ function asCompletionPayload(value) {
   return value && typeof value === "object" ? value : null;
 }
 var OpenAICompatibleTransport = class {
-  constructor(getSettings, getModelProfile, request = import_obsidian2.requestUrl, fetchRequest = getDefaultFetchRequest()) {
+  constructor(getSettings, getModelProfile, request = import_obsidian3.requestUrl, fetchRequest = getDefaultFetchRequest()) {
     this.getSettings = getSettings;
     this.getModelProfile = getModelProfile;
     this.request = request;
@@ -2313,102 +2434,6 @@ var OpenAICompatibleTransport = class {
     return full;
   }
 };
-
-// src/evidence.ts
-var import_obsidian3 = require("obsidian");
-var ALIAS_CITATION = /\[([A-Za-z][A-Za-z0-9_-]*)\s*,\s*p(?:age)?\.?\s*(-?\d+)\]/gi;
-var PDF_LINK_CITATION = /\[\[([^\]#|]+\.pdf)#page=(-?\d+)(?:\|[^\]]*)?\]\]/gi;
-function normalizedPath(value) {
-  return value.trim().replace(/\\/g, "/").replace(/^\.\//, "");
-}
-function stableHash(value) {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(36);
-}
-function normalizeClaim(markdown, index, rawLength) {
-  const lineStart = markdown.lastIndexOf("\n", index) + 1;
-  const nextLineBreak = markdown.indexOf("\n", index + rawLength);
-  const lineEnd = nextLineBreak >= 0 ? nextLineBreak : markdown.length;
-  const cleaned = markdown.slice(lineStart, lineEnd).replace(ALIAS_CITATION, "").replace(PDF_LINK_CITATION, "").replace(/\s+/g, " ").replace(/\s+([.,!?;:。！？；：])/g, "$1").trim();
-  return cleaned || "\u8BBA\u6587\u8BC1\u636E";
-}
-function collectCandidates(markdown) {
-  const candidates = [];
-  for (const match of markdown.matchAll(ALIAS_CITATION)) {
-    candidates.push({
-      index: match.index || 0,
-      raw: match[0],
-      alias: match[1],
-      page: Number(match[2])
-    });
-  }
-  for (const match of markdown.matchAll(PDF_LINK_CITATION)) {
-    candidates.push({
-      index: match.index || 0,
-      raw: match[0],
-      path: normalizedPath(match[1]),
-      page: Number(match[2])
-    });
-  }
-  return candidates.sort((left, right) => left.index - right.index);
-}
-function validPage(page, source) {
-  if (!Number.isInteger(page) || page < 1 || !source) return false;
-  if (Number.isInteger(source.pageCount) && Number(source.pageCount) > 0) {
-    return page <= Number(source.pageCount);
-  }
-  return true;
-}
-function parseResearchEvidence(markdown, sources) {
-  if (typeof markdown !== "string" || !markdown.trim()) return [];
-  const normalizedSources = (Array.isArray(sources) ? sources : []).filter((source) => source && source.alias && source.paperPath).map((source) => ({
-    ...source,
-    alias: source.alias.trim(),
-    paperPath: normalizedPath(source.paperPath)
-  }));
-  const byAlias = new Map(normalizedSources.map((source) => [source.alias.toLowerCase(), source]));
-  const byPath = new Map(normalizedSources.map((source) => [source.paperPath.toLowerCase(), source]));
-  const seen = /* @__PURE__ */ new Set();
-  const evidence = [];
-  for (const candidate of collectCandidates(markdown)) {
-    const source = candidate.alias ? byAlias.get(candidate.alias.toLowerCase()) : byPath.get((candidate.path || "").toLowerCase());
-    const paperPath = (source == null ? void 0 : source.paperPath) || candidate.path;
-    const sourceAlias = (source == null ? void 0 : source.alias) || candidate.alias;
-    const claim = normalizeClaim(markdown, candidate.index, candidate.raw.length);
-    const verification = validPage(candidate.page, source) ? "located" : "unverified";
-    const dedupeKey = `${(paperPath || sourceAlias || "unknown").toLowerCase()}|${candidate.page}|${claim.toLowerCase()}`;
-    if (seen.has(dedupeKey)) continue;
-    seen.add(dedupeKey);
-    evidence.push({
-      id: `evidence-${stableHash(`${dedupeKey}|${candidate.raw}`)}`,
-      claim,
-      ...paperPath ? { paperPath } : {},
-      ...Number.isInteger(candidate.page) ? { page: candidate.page } : {},
-      ...sourceAlias ? { sourceAlias } : {},
-      verification,
-      raw: candidate.raw
-    });
-  }
-  return evidence;
-}
-async function openPdfEvidence(app, evidence) {
-  if (!evidence || evidence.verification !== "located" || !evidence.paperPath || !Number.isInteger(evidence.page) || Number(evidence.page) < 1) {
-    new import_obsidian3.Notice("\u8FD9\u6761\u8BC1\u636E\u5C1A\u672A\u9A8C\u8BC1\uFF0C\u65E0\u6CD5\u5B9A\u4F4D\u5230 PDF \u9875\u9762\u3002");
-    return false;
-  }
-  const paperPath = normalizedPath(evidence.paperPath);
-  const file = app.vault.getAbstractFileByPath(paperPath);
-  if (!file || !paperPath.toLowerCase().endsWith(".pdf")) {
-    new import_obsidian3.Notice("\u8BC1\u636E\u5BF9\u5E94\u7684 PDF \u5DF2\u79FB\u52A8\u6216\u4E0D\u5B58\u5728\uFF0C\u65E0\u6CD5\u6253\u5F00\u9875\u9762\u3002");
-    return false;
-  }
-  await app.workspace.openLinkText(`${paperPath}#page=${evidence.page}`, "", false);
-  return true;
-}
 
 // src/model-routing.ts
 function validConfiguredId(models, configuredId) {
@@ -2764,19 +2789,45 @@ var PaperContextService = class {
     this.persistSettings = persistSettings;
     this.transport = transport;
     this.getModelProfile = getModelProfile;
+    __publicField(this, "pageExtractions", /* @__PURE__ */ new Map());
   }
   createContext(file, selectedText, conversationKey) {
     return { app: this.app, file, selectedText, conversationKey };
   }
-  extractPages(file) {
-    return extractPdfPages(this.app, file);
+  extractPages(file, forceRefresh = false) {
+    var _a;
+    const prefix = `${file.path}\0`;
+    const key = `${prefix}${((_a = file.stat) == null ? void 0 : _a.mtime) || 0}`;
+    for (const cachedKey of this.pageExtractions.keys()) {
+      if (cachedKey.startsWith(prefix) && cachedKey !== key) this.pageExtractions.delete(cachedKey);
+    }
+    if (forceRefresh) this.pageExtractions.delete(key);
+    const cached = this.pageExtractions.get(key);
+    if (cached) {
+      this.pageExtractions.delete(key);
+      this.pageExtractions.set(key, cached);
+      return cached;
+    }
+    const extraction = extractPdfPages(this.app, file).catch((error) => {
+      if (this.pageExtractions.get(key) === extraction) this.pageExtractions.delete(key);
+      throw error;
+    });
+    this.pageExtractions.set(key, extraction);
+    while (this.pageExtractions.size > 8) {
+      const oldestKey = this.pageExtractions.keys().next().value;
+      if (!oldestKey) break;
+      this.pageExtractions.delete(oldestKey);
+    }
+    return extraction;
   }
-  extractFullText(file) {
-    return extractPdfFullText(this.app, file);
+  async extractFullText(file, forceRefresh = false) {
+    const pages = await this.extractPages(file, forceRefresh);
+    return pages.map((page) => `[\u7B2C${page.page}\u9875]
+${page.text}`).join("\n\n").trim();
   }
-  async generateDocSummary(file) {
+  async generateDocSummary(file, forceRefresh = false) {
     const settings = this.getSettings();
-    const pages = await this.extractPages(file);
+    const pages = await this.extractPages(file, forceRefresh);
     const extractionQuality = assessExtractionQuality(pages);
     const fullText = pages.map((page) => `[\u7B2C${page.page}\u9875]
 ${page.text}`).join("\n\n").trim();
@@ -2805,15 +2856,15 @@ ${page.text}`).join("\n\n").trim();
     const mtime = file.stat && file.stat.mtime;
     const cached = settings.docSummaries[file.path];
     if (!forceRefresh && cached && cached.mtime === mtime) return cached;
-    const { summary, fullLength, truncated, extractionQuality } = await this.generateDocSummary(file);
+    const { summary, fullLength, truncated, extractionQuality } = await this.generateDocSummary(file, forceRefresh);
     const entry = { mtime, summary, generatedAt: Date.now(), fullLength, truncated, extractionQuality };
     settings.docSummaries[file.path] = entry;
     await this.persistSettings();
     return entry;
   }
-  async generateDocChunks(file) {
+  async generateDocChunks(file, forceRefresh = false) {
     const settings = this.getSettings();
-    const pages = await extractPdfPages(this.app, file);
+    const pages = await this.extractPages(file, forceRefresh);
     const chunks = chunkPdfPages(
       pages,
       settings.ragChunkSize,
@@ -2847,7 +2898,7 @@ ${page.text}`).join("\n\n").trim();
       }
       return cached;
     }
-    const { chunks, fullTextLength, extractionQuality } = await this.generateDocChunks(file);
+    const { chunks, fullTextLength, extractionQuality } = await this.generateDocChunks(file, forceRefresh);
     const entry = { mtime, chunks, fullTextLength, generatedAt: Date.now(), extractionQuality };
     settings.docChunks[file.path] = entry;
     await this.persistSettings();
@@ -4266,6 +4317,9 @@ var PDFChatModal = class _PDFChatModal extends import_obsidian6.Modal {
     __publicField(this, "lastCodexSnapshot");
     __publicField(this, "promptHistoryCursor", null);
     __publicField(this, "promptHistoryDraft", "");
+    __publicField(this, "codexModel");
+    __publicField(this, "codexReasoningEffort");
+    __publicField(this, "codexProfile");
     __publicField(this, "zoomOutBtn");
     __publicField(this, "zoomLabel");
     __publicField(this, "zoomInBtn");
@@ -4298,6 +4352,10 @@ var PDFChatModal = class _PDFChatModal extends import_obsidian6.Modal {
     __publicField(this, "sendBtn");
     this.plugin = plugin;
     this.services = services || createPDFChatModalServices(plugin);
+    const codexSettings = this.plugin.settings.codexDeepAnalysis || DEFAULT_SETTINGS.codexDeepAnalysis;
+    this.codexModel = codexSettings.model || DEFAULT_SETTINGS.codexDeepAnalysis.model;
+    this.codexReasoningEffort = codexSettings.reasoningEffort || DEFAULT_SETTINGS.codexDeepAnalysis.reasoningEffort;
+    this.codexProfile = codexSettings.profile || "";
     const paperContext = typeof contextText === "string" ? {
       app,
       file: pdfFile || null,
@@ -4329,10 +4387,10 @@ var PDFChatModal = class _PDFChatModal extends import_obsidian6.Modal {
     if ((activeSession == null ? void 0 : activeSession.mode) === "codex") {
       this.runtimeMode = "codex";
       if (activeSession.codex) {
-        this.plugin.settings.codexDeepAnalysis.model = activeSession.codex.model;
-        this.plugin.settings.codexDeepAnalysis.reasoningEffort = activeSession.codex.reasoningEffort;
+        this.codexModel = activeSession.codex.model;
+        this.codexReasoningEffort = activeSession.codex.reasoningEffort;
         if (activeSession.codex.profile !== void 0) {
-          this.plugin.settings.codexDeepAnalysis.profile = activeSession.codex.profile || "";
+          this.codexProfile = activeSession.codex.profile || "";
         }
       }
     }
@@ -4433,6 +4491,13 @@ ${selectionContext}`;
       }
     });
     this.inputEl.addEventListener("keydown", (evt) => {
+      if (this.runtimeMode === "codex" && evt.shiftKey && (evt.ctrlKey || evt.metaKey) && !evt.altKey && evt.key.toLowerCase() === "q") {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this.exitCodexMode();
+        new import_obsidian6.Notice("\u5DF2\u9000\u51FA Codex \u6A21\u5F0F\uFF0C\u56DE\u5230 PDF Chat API\u3002");
+        return;
+      }
       if (this.handleComposerMentionKey(evt)) return;
       if (this.handlePromptHistoryKey(evt)) return;
       if (evt.key === "Enter" && !evt.shiftKey) {
@@ -4498,10 +4563,10 @@ ${selectionContext}`;
     return this.pdfFile.name || this.pdfFile.path.split(/[\\/]/).pop() || "\u9009\u533A\u5BF9\u8BDD";
   }
   getCodexModel() {
-    return this.plugin.settings.codexDeepAnalysis.model || DEFAULT_SETTINGS.codexDeepAnalysis.model;
+    return this.codexModel;
   }
   getCodexReasoningEffort() {
-    return this.plugin.settings.codexDeepAnalysis.reasoningEffort || DEFAULT_SETTINGS.codexDeepAnalysis.reasoningEffort;
+    return this.codexReasoningEffort;
   }
   getCodexVerbosity() {
     return this.plugin.settings.codexDeepAnalysis.verbosity || DEFAULT_SETTINGS.codexDeepAnalysis.verbosity;
@@ -4524,7 +4589,7 @@ ${selectionContext}`;
   }
   codexMetaText(fallback = false) {
     if (fallback) return "Codex CLI \u4E0D\u53EF\u7528\u6216\u5931\u8D25\uFF0C\u5DF2\u6539\u7528\u5F53\u524D API \u6A21\u578B";
-    const profile = this.plugin.settings.codexDeepAnalysis.profile || "default profile";
+    const profile = this.codexProfile || "default profile";
     const context = this.shouldAttachSelectionContext() ? "selection context on" : "selection context off";
     return `requested model: ${this.getCodexModel()} \xB7 effort: ${this.getCodexReasoningEffort()} \xB7 input: ${this.codexInputModeLabel()} \xB7 ${context} \xB7 output: ${this.codexOutputModeLabel()} \xB7 profile: ${profile}`;
   }
@@ -4639,7 +4704,23 @@ ${selectionContext}`;
           this.transcript,
           this.sessionMetadata()
         )
-      ).catch(() => void 0);
+      ).catch((error) => {
+        var _a, _b, _c, _d;
+        if (!(error instanceof Error) || !/Conversation session not found/i.test(error.message)) {
+          return;
+        }
+        const recreated = (_b = (_a = this.services.conversations).ensureSession) == null ? void 0 : _b.call(_a, this.conversationKey, this.sessionMetadata());
+        if (recreated) {
+          this.currentSessionId = recreated.id;
+          this.saveSettingsInBackground();
+          return (_d = (_c = this.services.conversations).saveSessionById) == null ? void 0 : _d.call(
+            _c,
+            recreated.id,
+            this.transcript,
+            this.sessionMetadata()
+          );
+        }
+      }).catch(() => void 0);
       return;
     }
     if (!session && this.services.conversations.ensureSession) {
@@ -4739,6 +4820,8 @@ ${selectionContext}`;
     }
     this.plugin.settings.codexDeepAnalysis.model = normalizedModel;
     this.plugin.settings.codexDeepAnalysis.reasoningEffort = normalizedEffort;
+    this.codexModel = normalizedModel;
+    this.codexReasoningEffort = normalizedEffort;
     this.saveSettingsInBackground();
     this.updateRuntimeModeUi();
     this.saveSessionMetadataInBackground();
@@ -4804,7 +4887,7 @@ ${selectionContext}`;
       codex: this.runtimeMode === "codex" ? {
         model: this.getCodexModel(),
         reasoningEffort: this.getCodexReasoningEffort(),
-        profile: this.plugin.settings.codexDeepAnalysis.profile || "",
+        profile: this.codexProfile,
         threadId: existingCodex == null ? void 0 : existingCodex.threadId,
         lifecycle: (existingCodex == null ? void 0 : existingCodex.lifecycle) || "active"
       } : void 0
@@ -4813,9 +4896,9 @@ ${selectionContext}`;
   ensureCurrentSessionForWrite() {
     var _a, _b, _c, _d, _e, _f;
     if (this.currentSessionId) {
-      return ((_b = (_a = this.services.conversations).getSession) == null ? void 0 : _b.call(_a, this.currentSessionId)) || {
-        id: this.currentSessionId
-      };
+      const resolved = (_b = (_a = this.services.conversations).getSession) == null ? void 0 : _b.call(_a, this.currentSessionId);
+      if (resolved) return resolved;
+      this.currentSessionId = void 0;
     }
     const metadata = this.sessionMetadata();
     const session = this.startFresh ? (_d = (_c = this.services.conversations).startSession) == null ? void 0 : _d.call(_c, this.conversationKey, metadata) : (_f = (_e = this.services.conversations).ensureSession) == null ? void 0 : _f.call(_e, this.conversationKey, metadata);
@@ -4885,9 +4968,9 @@ ${selectionContext}`;
     }
     this.runtimeMode = session.mode === "codex" ? "codex" : "api";
     if (session.codex) {
-      this.plugin.settings.codexDeepAnalysis.model = session.codex.model;
-      this.plugin.settings.codexDeepAnalysis.reasoningEffort = session.codex.reasoningEffort;
-      this.plugin.settings.codexDeepAnalysis.profile = session.codex.profile || "";
+      this.codexModel = session.codex.model;
+      this.codexReasoningEffort = session.codex.reasoningEffort;
+      this.codexProfile = session.codex.profile || "";
     }
     if (((_d = session.api) == null ? void 0 : _d.modelId) && this.plugin.settings.models.some((model) => model.id === session.api.modelId)) {
       this.currentModelId = session.api.modelId;
@@ -5090,7 +5173,7 @@ ${selectionContext}`;
     const lines = [
       `\u5F53\u524D\u6A21\u5F0F\uFF1A${this.runtimeMode === "codex" ? "Codex CLI" : "PDF Chat API"}`,
       `API \u6A21\u578B\uFF1A${((_d = this.plugin.settings.models.find((model) => model.id === this.currentModelId)) == null ? void 0 : _d.name) || this.currentModelId}`,
-      `Codex\uFF1A${this.getCodexModel()} \xB7 ${this.getCodexReasoningEffort()} \xB7 ${this.plugin.settings.codexDeepAnalysis.profile || "default profile"}`,
+      `Codex\uFF1A${this.getCodexModel()} \xB7 ${this.getCodexReasoningEffort()} \xB7 ${this.codexProfile || "default profile"}`,
       `\u5F15\u7528 PDF\uFF1A${refs}`,
       `\u9009\u533A\u4E0A\u4E0B\u6587\uFF1A${this.shouldAttachSelectionContext() ? `\u4E0B\u4E00\u8F6E\u76F4\u63A5\u9644\u5E26 ${this.contextText.length} \u5B57` : "\u4E0D\u9644\u5E26"}`,
       `Session\uFF1A${this.currentSessionId || "\u672A\u521B\u5EFA"}`,
@@ -5112,6 +5195,7 @@ ${selectionContext}`;
         "- /codex\uFF1A\u8FDB\u5165 Codex \u6A21\u5F0F",
         "- /codex <\u95EE\u9898>\uFF1A\u8FDB\u5165 Codex \u6A21\u5F0F\u5E76\u7ACB\u5373\u8BA9 Codex \u8BFB\u53D6\u5F53\u524D/\u5F15\u7528 PDF",
         "- /exit\uFF1A\u56DE\u5230\u666E\u901A API \u804A\u5929",
+        "- Ctrl/Cmd + Shift + Q\uFF1A\u5728\u5F39\u7A97\u5185\u5FEB\u901F\u9000\u51FA Codex \u6A21\u5F0F\uFF08\u4FDD\u7559\u8F93\u5165\u8349\u7A3F\uFF09",
         "- /stop\uFF1A\u505C\u6B62\u5F53\u524D Codex turn\uFF0C\u4F46\u4FDD\u7559 thread",
         "- /model\uFF1A\u9009\u62E9\u5F53\u524D\u6A21\u5F0F\u4E0B\u7684\u6A21\u578B",
         "- /model <model> <effort>\uFF1A\u5207\u6362 Codex \u6A21\u578B\u548C\u63A8\u7406\u5F3A\u5EA6",
@@ -6282,9 +6366,10 @@ ${turnPrompt}` : turnPrompt;
       workingDirectory,
       attachedPdfPaths: this.selectedPaperFiles().map(({ file }) => file.path),
       selectionChars: selectedContext.length,
-      profile: this.plugin.settings.codexDeepAnalysis.profile || "",
+      profile: this.codexProfile,
       model: this.getCodexModel(),
       reasoningEffort: this.getCodexReasoningEffort(),
+      evidenceSources: this.evidenceSources(),
       verbosity: this.plugin.settings.codexDeepAnalysis.verbosity || DEFAULT_SETTINGS.codexDeepAnalysis.verbosity,
       timeoutMs: this.plugin.settings.codexDeepAnalysis.timeoutMs || DEFAULT_SETTINGS.codexDeepAnalysis.timeoutMs
     }).catch((error) => {
@@ -6519,14 +6604,14 @@ ${snapshot.progress || "\u6B63\u5728\u7B49\u5F85 Codex CLI \u4E8B\u4EF6\u2026"}`
     this.setAssistantBubbleMeta(
       this.codexTaskBubble,
       "Codex CLI",
-      `${this.getCodexModel()} \xB7 ${this.getCodexReasoningEffort()} \xB7 Thread ${snapshot.threadId || "starting"}`
+      `${snapshot.model || this.getCodexModel()} \xB7 ${snapshot.reasoningEffort || this.getCodexReasoningEffort()} \xB7 Thread ${snapshot.threadId || "starting"}`
     );
     (_a = this.multiPaperStatusEl) == null ? void 0 : _a.setText(
       `Codex ${snapshot.threadId ? `Thread ${snapshot.threadId.slice(0, 8)}\u2026` : "\u6B63\u5728\u542F\u52A8"} \xB7 ${formatCodexElapsed(elapsed)}`
     );
     if (this.modeBadgeEl) {
       this.modeBadgeEl.setText(
-        `CODEX MODE \xB7 ${this.getCodexModel()} \xB7 ${this.getCodexReasoningEffort()} \xB7 ${snapshot.threadId ? `Thread ${snapshot.threadId.slice(0, 8)}\u2026` : "New thread"} \xB7 Running ${formatCodexElapsed(elapsed)}`
+        `CODEX MODE \xB7 ${snapshot.model || this.getCodexModel()} \xB7 ${snapshot.reasoningEffort || this.getCodexReasoningEffort()} \xB7 ${snapshot.threadId ? `Thread ${snapshot.threadId.slice(0, 8)}\u2026` : "New thread"} \xB7 Running ${formatCodexElapsed(elapsed)}`
       );
     }
   }
@@ -6567,7 +6652,10 @@ ${snapshot.progress || "\u6B63\u5728\u7B49\u5F85 Codex CLI \u4E8B\u4EF6\u2026"}`
       if (session) {
         const assistantMessage = session.messages[session.messages.length - 1];
         if ((assistantMessage == null ? void 0 : assistantMessage.role) === "assistant" && assistantMessage.content === snapshot.finalMarkdown && !((_d = assistantMessage.evidence) == null ? void 0 : _d.length)) {
-          const evidence = this.parseAnswerEvidence(snapshot.finalMarkdown);
+          const evidence = parseResearchEvidence(
+            snapshot.finalMarkdown,
+            snapshot.evidenceSources || this.evidenceSources()
+          );
           if (evidence.length) {
             assistantMessage.evidence = evidence;
             await ((_f = (_e = this.services.conversations).saveSessionById) == null ? void 0 : _f.call(
@@ -6596,7 +6684,7 @@ ${snapshot.progress || "\u6B63\u5728\u7B49\u5F85 Codex CLI \u4E8B\u4EF6\u2026"}`
         this.setAssistantBubbleMeta(
           bubble,
           "Codex CLI",
-          `${this.getCodexModel()} \xB7 ${this.getCodexReasoningEffort()} \xB7 Thread ${snapshot.threadId || "unknown"}`
+          `${snapshot.model || this.getCodexModel()} \xB7 ${snapshot.reasoningEffort || this.getCodexReasoningEffort()} \xB7 Thread ${snapshot.threadId || "unknown"}`
         );
         await renderMarkdownIntoBubble(this.app, this.plugin, bubble, snapshot.finalMarkdown);
         this.attachLatestAssistantActions(bubble);
@@ -9345,12 +9433,13 @@ var PDFChatPlugin = class extends import_obsidian8.Plugin {
         updateSessionMetadata: (id, metadata) => this.conversationStore.updateSessionMetadata(id, metadata),
         beginCodexTurn: (id, pendingTurn) => this.conversationStore.beginCodexTurn(id, pendingTurn),
         updateCodexTurn: (id, turnId, patch, codex) => this.conversationStore.updateCodexTurn(id, turnId, patch, codex),
-        completeCodexTurn: (id, turnId, userContent, assistantContent, codex) => this.conversationStore.completeCodexTurn(
+        completeCodexTurn: (id, turnId, userContent, assistantContent, codex, evidence) => this.conversationStore.completeCodexTurn(
           id,
           turnId,
           userContent,
           assistantContent,
-          codex
+          codex,
+          evidence
         ),
         clearSession: (id) => this.conversationStore.clearSession(id),
         closeSession: (id) => this.conversationStore.closeSession(id),

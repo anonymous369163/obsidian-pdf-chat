@@ -23,7 +23,7 @@ PDF Chat turns an Obsidian PDF view into a compact research workbench. Select pa
 - Type `/codex` to enter CODEX MODE. The current PDF is attached by default, referenced PDFs can be added with `@`, and each chip can be removed before the next turn.
 - Use `/refs`, `/unref <name-or-number>`, or `/clearrefs` to remove PDFs referenced by the current discussion.
 - Use the selected-context composer toggle or `/context on|off` to decide whether the currently selected passage is included in the next Codex prompt.
-- Use `/model`, `/status`, `/help`, `/stop`, `/new`, `/resume`, `/tasks`, and `/exit` in the composer. `/resume` opens the dedicated session library; `/tasks` opens the searchable background-task picker.
+- Use `/model`, `/status`, `/help`, `/stop`, `/new`, `/resume`, `/tasks`, and `/exit` in the composer. Press `Ctrl/Cmd + Shift + Q` inside the modal to leave CODEX MODE without clearing the current draft or closing the native thread. `/resume` opens the dedicated session library; `/tasks` opens the searchable background-task picker.
 - `ArrowUp`/`ArrowDown` restores recent prompts like a terminal while preserving the unfinished draft and respecting multiline caret position.
 - Use `/doctor` for a free local Codex command/version check. `/doctor real` asks for confirmation before making two real model calls that verify a fresh native thread and `resume`.
 - Switch model profiles and research prompts from the workbench.

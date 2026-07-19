@@ -306,9 +306,14 @@ function createSessionPersistence() {
         codex: codex ? { ...session.codex, ...structuredClone(codex) } : session.codex,
       });
     },
-    async completeCodexTurn(id, turnId, user, assistant, codex) {
+    async completeCodexTurn(id, turnId, user, assistant, codex, evidence) {
       pendingWrites.push({ type: "complete", id, turnId, codex: structuredClone(codex) });
-      appended.push({ id, user, assistant });
+      appended.push({
+        id,
+        user,
+        assistant,
+        ...(evidence ? { evidence: structuredClone(evidence) } : {}),
+      });
       const session = sessions.get(id);
       sessions.set(id, { ...session, pendingTurn: undefined, codex: { ...session.codex, ...codex } });
     },
@@ -345,6 +350,49 @@ test("CodexSessionManager journals the pending turn before running and clears it
   assert.equal(persistence.pendingWrites[0].pendingTurn.status, "running");
   assert.equal(persistence.pendingWrites.at(-1).type, "complete");
   assert.equal(persistence.sessions.get("plugin-session-1").pendingTurn, undefined);
+});
+
+test("CodexSessionManager snapshots the requested identity and evidence aliases for the completed turn", async () => {
+  const { CodexSessionManager } = loadBundle();
+  const persistence = createSessionPersistence();
+  let finish;
+  const runnerDone = new Promise((resolve) => {
+    finish = resolve;
+  });
+  const manager = new CodexSessionManager(persistence, async (_args, options) => {
+    options.onThreadId?.("native-thread-snapshot");
+    await runnerDone;
+    return { threadId: "native-thread-snapshot", markdown: "Evidence [P1, p.3]." };
+  });
+  const evidenceSources = [{ alias: "P1", paperPath: "papers/original.pdf", pageCount: 10 }];
+
+  const running = manager.startTurn({
+    sessionId: "plugin-session-1",
+    question: "Use the evidence",
+    userContent: "Use the evidence",
+    prompt: "Use the evidence",
+    command: "codex",
+    workingDirectory: "D:/vault/papers",
+    attachedPdfPaths: ["papers/original.pdf"],
+    evidenceSources,
+    selectionChars: 0,
+    model: "gpt-session-a",
+    reasoningEffort: "high",
+    profile: "paper-profile",
+    verbosity: "medium",
+    timeoutMs: 1000,
+  });
+
+  evidenceSources[0].paperPath = "papers/replaced-after-start.pdf";
+  finish();
+  const snapshot = await running;
+
+  assert.equal(snapshot.model, "gpt-session-a");
+  assert.equal(snapshot.reasoningEffort, "high");
+  assert.equal(snapshot.profile, "paper-profile");
+  assert.equal(snapshot.verbosity, "medium");
+  assert.equal(persistence.appended.at(-1).evidence[0].paperPath, "papers/original.pdf");
+  assert.equal(persistence.appended.at(-1).evidence[0].page, 3);
 });
 
 test("CodexSessionManager does not leave a phantom running task when the initial journal save fails", async () => {

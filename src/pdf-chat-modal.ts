@@ -266,6 +266,9 @@ export class PDFChatModal extends Modal {
   private lastCodexSnapshot?: CodexTurnSnapshot;
   private promptHistoryCursor: number | null = null;
   private promptHistoryDraft = "";
+  private codexModel: string;
+  private codexReasoningEffort: CodexReasoningEffort;
+  private codexProfile: string;
 
   zoomOutBtn!: HTMLButtonElement;
   zoomLabel!: HTMLButtonElement;
@@ -310,6 +313,12 @@ export class PDFChatModal extends Modal {
     super(app);
     this.plugin = plugin;
     this.services = services || createPDFChatModalServices(plugin);
+    const codexSettings = this.plugin.settings.codexDeepAnalysis || DEFAULT_SETTINGS.codexDeepAnalysis;
+    this.codexModel =
+      codexSettings.model || DEFAULT_SETTINGS.codexDeepAnalysis.model;
+    this.codexReasoningEffort =
+      codexSettings.reasoningEffort || DEFAULT_SETTINGS.codexDeepAnalysis.reasoningEffort;
+    this.codexProfile = codexSettings.profile || "";
     const paperContext: PaperContext =
       typeof contextText === "string"
         ? {
@@ -364,10 +373,10 @@ export class PDFChatModal extends Modal {
     if (activeSession?.mode === "codex") {
       this.runtimeMode = "codex";
       if (activeSession.codex) {
-        this.plugin.settings.codexDeepAnalysis.model = activeSession.codex.model;
-        this.plugin.settings.codexDeepAnalysis.reasoningEffort = activeSession.codex.reasoningEffort;
+        this.codexModel = activeSession.codex.model;
+        this.codexReasoningEffort = activeSession.codex.reasoningEffort;
         if (activeSession.codex.profile !== undefined) {
-          this.plugin.settings.codexDeepAnalysis.profile = activeSession.codex.profile || "";
+          this.codexProfile = activeSession.codex.profile || "";
         }
       }
     }
@@ -479,6 +488,19 @@ export class PDFChatModal extends Modal {
       }
     });
     this.inputEl.addEventListener("keydown", (evt) => {
+      if (
+        this.runtimeMode === "codex" &&
+        evt.shiftKey &&
+        (evt.ctrlKey || evt.metaKey) &&
+        !evt.altKey &&
+        evt.key.toLowerCase() === "q"
+      ) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this.exitCodexMode();
+        new Notice("已退出 Codex 模式，回到 PDF Chat API。");
+        return;
+      }
       if (this.handleComposerMentionKey(evt)) return;
       if (this.handlePromptHistoryKey(evt)) return;
       if (evt.key === "Enter" && !evt.shiftKey) {
@@ -548,17 +570,11 @@ export class PDFChatModal extends Modal {
   }
 
   private getCodexModel(): string {
-    return (
-      this.plugin.settings.codexDeepAnalysis.model ||
-      DEFAULT_SETTINGS.codexDeepAnalysis.model
-    );
+    return this.codexModel;
   }
 
   private getCodexReasoningEffort(): CodexReasoningEffort {
-    return (
-      this.plugin.settings.codexDeepAnalysis.reasoningEffort ||
-      DEFAULT_SETTINGS.codexDeepAnalysis.reasoningEffort
-    );
+    return this.codexReasoningEffort;
   }
 
   private getCodexVerbosity(): CodexVerbosity {
@@ -590,7 +606,7 @@ export class PDFChatModal extends Modal {
 
   private codexMetaText(fallback = false): string {
     if (fallback) return "Codex CLI 不可用或失败，已改用当前 API 模型";
-    const profile = this.plugin.settings.codexDeepAnalysis.profile || "default profile";
+    const profile = this.codexProfile || "default profile";
     const context = this.shouldAttachSelectionContext() ? "selection context on" : "selection context off";
     return `requested model: ${this.getCodexModel()} · effort: ${this.getCodexReasoningEffort()} · input: ${this.codexInputModeLabel()} · ${context} · output: ${this.codexOutputModeLabel()} · profile: ${profile}`;
   }
@@ -730,7 +746,26 @@ export class PDFChatModal extends Modal {
           this.transcript,
           this.sessionMetadata()
         )
-      ).catch(() => undefined);
+      )
+        .catch((error) => {
+          if (
+            !(error instanceof Error) ||
+            !/Conversation session not found/i.test(error.message)
+          ) {
+            return;
+          }
+          const recreated = this.services.conversations.ensureSession?.(this.conversationKey, this.sessionMetadata());
+          if (recreated) {
+            this.currentSessionId = recreated.id;
+            this.saveSettingsInBackground();
+            return this.services.conversations.saveSessionById?.(
+              recreated.id,
+              this.transcript,
+              this.sessionMetadata()
+            );
+          }
+        })
+        .catch(() => undefined);
       return;
     }
     if (!session && this.services.conversations.ensureSession) {
@@ -836,6 +871,8 @@ export class PDFChatModal extends Modal {
     }
     this.plugin.settings.codexDeepAnalysis.model = normalizedModel;
     this.plugin.settings.codexDeepAnalysis.reasoningEffort = normalizedEffort as CodexReasoningEffort;
+    this.codexModel = normalizedModel;
+    this.codexReasoningEffort = normalizedEffort as CodexReasoningEffort;
     this.saveSettingsInBackground();
     this.updateRuntimeModeUi();
     this.saveSessionMetadataInBackground();
@@ -915,7 +952,7 @@ export class PDFChatModal extends Modal {
           ? {
               model: this.getCodexModel(),
               reasoningEffort: this.getCodexReasoningEffort(),
-              profile: this.plugin.settings.codexDeepAnalysis.profile || "",
+              profile: this.codexProfile,
               threadId: existingCodex?.threadId,
               lifecycle: existingCodex?.lifecycle || "active",
             }
@@ -925,9 +962,9 @@ export class PDFChatModal extends Modal {
 
   private ensureCurrentSessionForWrite(): ConversationSession | null {
     if (this.currentSessionId) {
-      return this.services.conversations.getSession?.(this.currentSessionId) || ({
-        id: this.currentSessionId,
-      } as ConversationSession);
+      const resolved = this.services.conversations.getSession?.(this.currentSessionId);
+      if (resolved) return resolved;
+      this.currentSessionId = undefined;
     }
     const metadata = this.sessionMetadata();
     const session = this.startFresh
@@ -998,9 +1035,9 @@ export class PDFChatModal extends Modal {
     }
     this.runtimeMode = session.mode === "codex" ? "codex" : "api";
     if (session.codex) {
-      this.plugin.settings.codexDeepAnalysis.model = session.codex.model;
-      this.plugin.settings.codexDeepAnalysis.reasoningEffort = session.codex.reasoningEffort;
-      this.plugin.settings.codexDeepAnalysis.profile = session.codex.profile || "";
+      this.codexModel = session.codex.model;
+      this.codexReasoningEffort = session.codex.reasoningEffort;
+      this.codexProfile = session.codex.profile || "";
     }
     if (session.api?.modelId && this.plugin.settings.models.some((model) => model.id === session.api!.modelId)) {
       this.currentModelId = session.api.modelId;
@@ -1224,7 +1261,7 @@ export class PDFChatModal extends Modal {
     const lines = [
       `当前模式：${this.runtimeMode === "codex" ? "Codex CLI" : "PDF Chat API"}`,
       `API 模型：${this.plugin.settings.models.find((model) => model.id === this.currentModelId)?.name || this.currentModelId}`,
-      `Codex：${this.getCodexModel()} · ${this.getCodexReasoningEffort()} · ${this.plugin.settings.codexDeepAnalysis.profile || "default profile"}`,
+      `Codex：${this.getCodexModel()} · ${this.getCodexReasoningEffort()} · ${this.codexProfile || "default profile"}`,
       `引用 PDF：${refs}`,
       `选区上下文：${this.shouldAttachSelectionContext() ? `下一轮直接附带 ${this.contextText.length} 字` : "不附带"}`,
       `Session：${this.currentSessionId || "未创建"}`,
@@ -1247,6 +1284,7 @@ export class PDFChatModal extends Modal {
         "- /codex：进入 Codex 模式",
         "- /codex <问题>：进入 Codex 模式并立即让 Codex 读取当前/引用 PDF",
         "- /exit：回到普通 API 聊天",
+        "- Ctrl/Cmd + Shift + Q：在弹窗内快速退出 Codex 模式（保留输入草稿）",
         "- /stop：停止当前 Codex turn，但保留 thread",
         "- /model：选择当前模式下的模型",
         "- /model <model> <effort>：切换 Codex 模型和推理强度",
@@ -2547,9 +2585,10 @@ export class PDFChatModal extends Modal {
         workingDirectory,
         attachedPdfPaths: this.selectedPaperFiles().map(({ file }) => file.path),
         selectionChars: selectedContext.length,
-        profile: this.plugin.settings.codexDeepAnalysis.profile || "",
+        profile: this.codexProfile,
         model: this.getCodexModel(),
         reasoningEffort: this.getCodexReasoningEffort(),
+        evidenceSources: this.evidenceSources(),
         verbosity:
           this.plugin.settings.codexDeepAnalysis.verbosity ||
           DEFAULT_SETTINGS.codexDeepAnalysis.verbosity,
@@ -2815,14 +2854,14 @@ export class PDFChatModal extends Modal {
     this.setAssistantBubbleMeta(
       this.codexTaskBubble,
       "Codex CLI",
-      `${this.getCodexModel()} · ${this.getCodexReasoningEffort()} · Thread ${snapshot.threadId || "starting"}`
+      `${snapshot.model || this.getCodexModel()} · ${snapshot.reasoningEffort || this.getCodexReasoningEffort()} · Thread ${snapshot.threadId || "starting"}`
     );
     this.multiPaperStatusEl?.setText(
       `Codex ${snapshot.threadId ? `Thread ${snapshot.threadId.slice(0, 8)}…` : "正在启动"} · ${formatCodexElapsed(elapsed)}`
     );
     if (this.modeBadgeEl) {
       this.modeBadgeEl.setText(
-        `CODEX MODE · ${this.getCodexModel()} · ${this.getCodexReasoningEffort()} · ${snapshot.threadId ? `Thread ${snapshot.threadId.slice(0, 8)}…` : "New thread"} · Running ${formatCodexElapsed(elapsed)}`
+        `CODEX MODE · ${snapshot.model || this.getCodexModel()} · ${snapshot.reasoningEffort || this.getCodexReasoningEffort()} · ${snapshot.threadId ? `Thread ${snapshot.threadId.slice(0, 8)}…` : "New thread"} · Running ${formatCodexElapsed(elapsed)}`
       );
     }
   }
@@ -2868,7 +2907,10 @@ export class PDFChatModal extends Modal {
           assistantMessage.content === snapshot.finalMarkdown &&
           !assistantMessage.evidence?.length
         ) {
-          const evidence = this.parseAnswerEvidence(snapshot.finalMarkdown);
+          const evidence = parseResearchEvidence(
+            snapshot.finalMarkdown,
+            snapshot.evidenceSources || this.evidenceSources()
+          );
           if (evidence.length) {
             assistantMessage.evidence = evidence;
             await this.services.conversations.saveSessionById?.(
@@ -2901,7 +2943,7 @@ export class PDFChatModal extends Modal {
         this.setAssistantBubbleMeta(
           bubble,
           "Codex CLI",
-          `${this.getCodexModel()} · ${this.getCodexReasoningEffort()} · Thread ${snapshot.threadId || "unknown"}`
+          `${snapshot.model || this.getCodexModel()} · ${snapshot.reasoningEffort || this.getCodexReasoningEffort()} · Thread ${snapshot.threadId || "unknown"}`
         );
         await renderMarkdownIntoBubble(this.app, this.plugin, bubble, snapshot.finalMarkdown);
         this.attachLatestAssistantActions(bubble);

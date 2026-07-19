@@ -284,13 +284,14 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
         beginCodexTurn: (id, pendingTurn) => this.conversationStore!.beginCodexTurn(id, pendingTurn),
         updateCodexTurn: (id, turnId, patch, codex) =>
           this.conversationStore!.updateCodexTurn(id, turnId, patch, codex),
-        completeCodexTurn: (id, turnId, userContent, assistantContent, codex) =>
+        completeCodexTurn: (id, turnId, userContent, assistantContent, codex, evidence) =>
           this.conversationStore!.completeCodexTurn(
             id,
             turnId,
             userContent,
             assistantContent,
-            codex
+            codex,
+            evidence
           ),
         clearSession: (id) => this.conversationStore!.clearSession(id),
         closeSession: (id) => this.conversationStore!.closeSession(id),

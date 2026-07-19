@@ -205,6 +205,8 @@ export type PaperServiceSettings = Pick<
 >;
 
 export class PaperContextService {
+  private readonly pageExtractions = new Map<string, Promise<PdfPageText[]>>();
+
   constructor(
     private readonly app: App,
     private readonly getSettings: () => PaperServiceSettings,
@@ -217,22 +219,45 @@ export class PaperContextService {
     return { app: this.app, file, selectedText, conversationKey };
   }
 
-  extractPages(file: TFile): Promise<PdfPageText[]> {
-    return extractPdfPages(this.app, file);
+  extractPages(file: TFile, forceRefresh = false): Promise<PdfPageText[]> {
+    const prefix = `${file.path}\u0000`;
+    const key = `${prefix}${file.stat?.mtime || 0}`;
+    for (const cachedKey of this.pageExtractions.keys()) {
+      if (cachedKey.startsWith(prefix) && cachedKey !== key) this.pageExtractions.delete(cachedKey);
+    }
+    if (forceRefresh) this.pageExtractions.delete(key);
+    const cached = this.pageExtractions.get(key);
+    if (cached) {
+      this.pageExtractions.delete(key);
+      this.pageExtractions.set(key, cached);
+      return cached;
+    }
+    const extraction = extractPdfPages(this.app, file).catch((error) => {
+      if (this.pageExtractions.get(key) === extraction) this.pageExtractions.delete(key);
+      throw error;
+    });
+    this.pageExtractions.set(key, extraction);
+    while (this.pageExtractions.size > 8) {
+      const oldestKey = this.pageExtractions.keys().next().value as string | undefined;
+      if (!oldestKey) break;
+      this.pageExtractions.delete(oldestKey);
+    }
+    return extraction;
   }
 
-  extractFullText(file: TFile): Promise<string> {
-    return extractPdfFullText(this.app, file);
+  async extractFullText(file: TFile, forceRefresh = false): Promise<string> {
+    const pages = await this.extractPages(file, forceRefresh);
+    return pages.map((page) => `[第${page.page}页]\n${page.text}`).join("\n\n").trim();
   }
 
-  async generateDocSummary(file: TFile): Promise<{
+  async generateDocSummary(file: TFile, forceRefresh = false): Promise<{
     summary: string;
     fullLength: number;
     truncated: boolean;
     extractionQuality: ExtractionQualityReport;
   }> {
     const settings = this.getSettings();
-    const pages = await this.extractPages(file);
+    const pages = await this.extractPages(file, forceRefresh);
     const extractionQuality = assessExtractionQuality(pages);
     const fullText = pages.map((page) => `[第${page.page}页]\n${page.text}`).join("\n\n").trim();
     let textForSummary = fullText;
@@ -263,20 +288,20 @@ export class PaperContextService {
     const mtime = file.stat && file.stat.mtime;
     const cached = settings.docSummaries[file.path];
     if (!forceRefresh && cached && cached.mtime === mtime) return cached;
-    const { summary, fullLength, truncated, extractionQuality } = await this.generateDocSummary(file);
+    const { summary, fullLength, truncated, extractionQuality } = await this.generateDocSummary(file, forceRefresh);
     const entry = { mtime, summary, generatedAt: Date.now(), fullLength, truncated, extractionQuality };
     settings.docSummaries[file.path] = entry;
     await this.persistSettings();
     return entry;
   }
 
-  async generateDocChunks(file: TFile): Promise<{
+  async generateDocChunks(file: TFile, forceRefresh = false): Promise<{
     chunks: PdfChunk[];
     fullTextLength: number;
     extractionQuality: ExtractionQualityReport;
   }> {
     const settings = this.getSettings();
-    const pages = await extractPdfPages(this.app, file);
+    const pages = await this.extractPages(file, forceRefresh);
     const chunks = chunkPdfPages(
       pages,
       settings.ragChunkSize,
@@ -315,7 +340,7 @@ export class PaperContextService {
       }
       return cached;
     }
-    const { chunks, fullTextLength, extractionQuality } = await this.generateDocChunks(file);
+    const { chunks, fullTextLength, extractionQuality } = await this.generateDocChunks(file, forceRefresh);
     const entry = { mtime, chunks, fullTextLength, generatedAt: Date.now(), extractionQuality };
     settings.docChunks[file.path] = entry;
     await this.persistSettings();

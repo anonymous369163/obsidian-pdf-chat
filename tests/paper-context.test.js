@@ -103,8 +103,12 @@ test("summary and chunk caches persist the extraction-quality report", async () 
     docChunks: {},
   };
   let saves = 0;
+  let binaryReads = 0;
   const service = new PaperContextService(
-    { vault: { readBinary: async () => new ArrayBuffer(8) } },
+    { vault: { readBinary: async () => {
+      binaryReads += 1;
+      return new ArrayBuffer(8);
+    } } },
     () => settings,
     async () => {
       saves += 1;
@@ -122,5 +126,6 @@ test("summary and chunk caches persist the extraction-quality report", async () 
   assert.equal(settings.docSummaries[file.path].extractionQuality.pageCount, 4);
   assert.equal(settings.docChunks[file.path].extractionQuality.pageCount, 4);
   assert.equal(saves, 2);
+  assert.equal(binaryReads, 1, "summary and RAG should share one PDF page extraction");
   assert.deepEqual(plain(chunks.extractionQuality), plain(summary.extractionQuality));
 });

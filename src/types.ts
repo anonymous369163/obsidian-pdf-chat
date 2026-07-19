@@ -390,7 +390,8 @@ export interface ConversationOperations {
     turnId: string,
     userContent: string,
     assistantContent: string,
-    codex: CodexSessionMetadata
+    codex: CodexSessionMetadata,
+    evidence?: ResearchEvidence[]
   ): Promise<void>;
   clearSession?(id: string): Promise<void>;
   closeSession?(id: string): Promise<void>;

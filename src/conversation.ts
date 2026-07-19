@@ -616,7 +616,8 @@ export class ConversationStore {
     turnId: string,
     userContent: string,
     assistantContent: string,
-    codex: ConversationSession["codex"]
+    codex: ConversationSession["codex"],
+    evidence: ResearchEvidence[] = []
   ): Promise<void> {
     const settings = this.ensureContainers();
     const session = this.getSession(id);
@@ -643,7 +644,12 @@ export class ConversationStore {
     session.messages = normalizeSessionMessages([
       ...session.messages,
       { role: "user", content: userContent, status: "complete" },
-      { role: "assistant", content: assistantContent, status: "complete" },
+      {
+        role: "assistant",
+        content: assistantContent,
+        status: "complete",
+        ...(evidence.length ? { evidence } : {}),
+      },
     ], session.id, this.now());
     if (firstUserTurn && derivedTitle) session.title = derivedTitle;
     session.codex = { ...(session.codex || {}), ...codex } as ConversationSession["codex"];

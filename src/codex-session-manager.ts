@@ -7,6 +7,7 @@ import {
   type CodexThreadTurnResult,
   type RunCodexThreadTurnOptions,
 } from "./codex-cli";
+import { parseResearchEvidence, type EvidenceSource } from "./evidence";
 import type {
   CodexReasoningEffort,
   CodexRecoveryReason,
@@ -14,6 +15,7 @@ import type {
   CodexVerbosity,
   ConversationSession,
   PendingCodexTurn,
+  ResearchEvidence,
 } from "./types";
 
 export type CodexTurnStatus = "idle" | "running" | "stopped" | "failed" | "closed";
@@ -28,7 +30,12 @@ export interface CodexTurnSnapshot {
   startedAt?: number;
   workingDirectory?: string;
   attachedPdfPaths: string[];
+  evidenceSources?: EvidenceSource[];
   selectionChars: number;
+  profile?: string;
+  model?: string;
+  reasoningEffort?: CodexReasoningEffort;
+  verbosity?: CodexVerbosity;
   finalMarkdown?: string;
   error?: string;
   recoveryReason?: CodexRecoveryReason;
@@ -42,6 +49,7 @@ export interface StartCodexTurnRequest {
   command: string;
   workingDirectory: string;
   attachedPdfPaths: string[];
+  evidenceSources?: EvidenceSource[];
   selectionChars: number;
   profile?: string;
   model?: string;
@@ -65,7 +73,8 @@ export interface CodexSessionPersistence {
     turnId: string,
     userContent: string,
     assistantContent: string,
-    codex: CodexSessionMetadata
+    codex: CodexSessionMetadata,
+    evidence?: ResearchEvidence[]
   ): Promise<void>;
   closeSession(id: string): Promise<void>;
   updateSessionMetadata?(
@@ -93,6 +102,7 @@ interface ManagedTurn {
     userContent: string;
     assistantContent: string;
     codex: CodexSessionMetadata;
+    evidence?: ResearchEvidence[];
   };
 }
 
@@ -102,7 +112,11 @@ export interface CodexSessionEvent {
 }
 
 function cloneSnapshot(snapshot: CodexTurnSnapshot): CodexTurnSnapshot {
-  return { ...snapshot, attachedPdfPaths: [...snapshot.attachedPdfPaths] };
+  return {
+    ...snapshot,
+    attachedPdfPaths: [...snapshot.attachedPdfPaths],
+    evidenceSources: snapshot.evidenceSources?.map((source) => ({ ...source })),
+  };
 }
 
 function isAbortError(error: unknown): boolean {
@@ -206,6 +220,7 @@ export class CodexSessionManager {
       throw new Error("This Codex session is closed. Use /resume before continuing it.");
     }
     const managed = this.managed(request.sessionId);
+    const evidenceSources = (request.evidenceSources || []).map((source) => ({ ...source }));
     if (managed.snapshot.status === "running") {
       throw new Error("This Codex session already has a running turn");
     }
@@ -219,7 +234,12 @@ export class CodexSessionManager {
         question: request.question,
         progress: recoveryMessage,
         attachedPdfPaths: [...request.attachedPdfPaths],
+        evidenceSources,
         selectionChars: request.selectionChars,
+        profile: request.profile,
+        model: request.model,
+        reasoningEffort: request.reasoningEffort,
+        verbosity: request.verbosity,
         error: recoveryMessage,
         recoveryReason: "foreign-installation",
       };
@@ -248,7 +268,12 @@ export class CodexSessionManager {
       startedAt: Date.now(),
       workingDirectory: request.workingDirectory,
       attachedPdfPaths: [...request.attachedPdfPaths],
+      evidenceSources,
       selectionChars: request.selectionChars,
+      profile: request.profile,
+      model: request.model,
+      reasoningEffort: request.reasoningEffort,
+      verbosity: request.verbosity,
     };
     try {
       await this.persistence.beginCodexTurn(request.sessionId, {
@@ -335,11 +360,13 @@ export class CodexSessionManager {
       }
       managed.snapshot.threadId = result.threadId;
       managed.snapshot.finalMarkdown = result.markdown;
+      const evidence = parseResearchEvidence(result.markdown, evidenceSources);
       managed.pendingResult = {
         turnId,
         userContent: request.userContent,
         assistantContent: result.markdown,
         codex: codexMetadata(),
+        ...(evidence.length ? { evidence } : {}),
       };
       await threadSave;
       await progressSave;
@@ -348,7 +375,8 @@ export class CodexSessionManager {
         turnId,
         request.userContent,
         result.markdown,
-        codexMetadata()
+        codexMetadata(),
+        evidence.length ? evidence : undefined
       );
       if (managed.runToken !== runToken) return cloneSnapshot(managed.snapshot);
       managed.pendingResult = undefined;
@@ -405,7 +433,8 @@ export class CodexSessionManager {
       pending.turnId,
       pending.userContent,
       pending.assistantContent,
-      pending.codex
+      pending.codex,
+      pending.evidence
     );
     managed.pendingResult = undefined;
     managed.snapshot.status = "idle";

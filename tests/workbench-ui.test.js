@@ -934,6 +934,24 @@ test("/codex enters a visible Codex terminal mode and subsequent input stays in 
   assert.equal(modal.contentEl.hasClass("is-codex-mode"), false);
 });
 
+test("Ctrl/Cmd+Shift+Q exits Codex mode without clearing the composer draft", async () => {
+  const { modal } = createModalHarness();
+  modal.inputEl.value = "/codex";
+  await modal.handleSubmit();
+  modal.inputEl.value = "keep this draft";
+
+  modal.inputEl.dispatch("keydown", {
+    key: "q",
+    ctrlKey: true,
+    metaKey: false,
+    shiftKey: true,
+  });
+
+  assert.equal(modal.runtimeMode, "api");
+  assert.equal(modal.inputEl.value, "keep this draft");
+  assert.match(byClass(modal.contentEl, "pdf-chat-mode-badge")[0].textContent, /API MODE/);
+});
+
 test("Codex mode sends every prompt through the PDF workspace instead of lightweight routing or API fallback", async () => {
   const deepCalls = [];
   const lightweightCalls = [];
@@ -959,6 +977,43 @@ test("Codex mode sends every prompt through the PDF workspace instead of lightwe
   assert.deepEqual(lightweightCalls, []);
   assert.deepEqual(deepCalls, ["hello"]);
   assert.match(byClass(modal.contentEl, "pdf-chat-mode-badge")[0].textContent, /CODEX MODE/);
+});
+
+test("restoring a Codex session keeps its model local instead of rewriting global defaults", () => {
+  const session = {
+    version: 1,
+    id: "plugin-session-local-model",
+    ["conversation" + "Key"]: "pdf:papers/demo.pdf",
+    title: "demo.pdf",
+    mode: "codex",
+    messages: [],
+    referencedPdfPaths: [],
+    includeCurrentPdfInCodex: true,
+    codex: { model: "gpt-session", reasoningEffort: "high", profile: "session-profile", lifecycle: "active" },
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const { modal, plugin } = createModalHarness({
+    settingsPatch: {
+      codexDeepAnalysis: {
+        ...loadBundle().bundle.DEFAULT_SETTINGS.codexDeepAnalysis,
+        model: "gpt-global",
+        reasoningEffort: "medium",
+        profile: "global-profile",
+      },
+    },
+    conversations: {
+      getActiveSession: () => session,
+      getSession: () => session,
+      ensureSession: () => session,
+    },
+  });
+
+  assert.equal(modal.getCodexModel(), "gpt-session");
+  assert.equal(modal.getCodexReasoningEffort(), "high");
+  assert.equal(plugin.settings.codexDeepAnalysis.model, "gpt-global");
+  assert.equal(plugin.settings.codexDeepAnalysis.reasoningEffort, "medium");
+  assert.equal(plugin.settings.codexDeepAnalysis.profile, "global-profile");
 });
 
 test("Codex native mode sends direct PDF paths and the current selection through the session manager", async () => {
@@ -1500,6 +1555,87 @@ test("/model switches Codex presets in Codex mode and API models in normal mode"
   modal.inputEl.value = "/model";
   await modal.handleSubmit();
   assert.equal(byClass(modal.contentEl, "pdf-chat-command-menu").length, 1);
+});
+
+test("/model then codex chat can continue with a replaced stale session id", async () => {
+  let savedById = [];
+  let ensuredId = "";
+  let started = [];
+  const staleSessionId = "stale-session";
+  const activeSession = {
+    version: 3,
+    id: staleSessionId,
+    ["conversation" + "Key"]: "pdf:papers/demo.pdf",
+    title: "demo.pdf",
+    mode: "codex",
+    messages: [{ role: "user", content: "old", status: "complete" }],
+    referencedPdfPaths: [],
+    includeCurrentPdfInCodex: true,
+    codex: { model: "legacy-model", reasoningEffort: "medium", lifecycle: "active" },
+    createdAt: 1,
+    updatedAt: 2,
+  };
+  const recreatedSession = {
+    ...activeSession,
+    id: "recreated-session",
+    codex: { model: "gpt-5.6-sol", reasoningEffort: "xhigh", lifecycle: "active" },
+    messages: [],
+  };
+  const codex = {
+    subscribe: () => () => {},
+    getSnapshot: () => ({ sessionId: recreatedSession.id, status: "idle", attachedPdfPaths: [], selectionChars: 0 }),
+    async startTurn(request) {
+      started.push(request);
+      return {
+        sessionId: request.sessionId,
+        status: "idle",
+        threadId: "test-thread",
+        attachedPdfPaths: request.attachedPdfPaths,
+        selectionChars: request.selectionChars,
+      };
+    },
+    stopTurn: () => false,
+    closeSession: async () => {},
+    reactivateSession: () => {},
+  };
+
+  const { modal, plugin } = createModalHarness({
+    app: {
+      vault: {
+        adapter: { getFullPath: (vaultPath) => `D:/vault/${vaultPath}` },
+      },
+    },
+    codex,
+    conversations: {
+      getSession: (id) => (id === recreatedSession.id ? recreatedSession : null),
+      getActiveSession: () => activeSession,
+      ensureSession: (key, metadata) => {
+        ensuredId = recreatedSession.id;
+        return recreatedSession;
+      },
+      saveSessionById: async (id) => {
+        savedById.push(id);
+        if (id === staleSessionId) {
+          throw new Error(`Conversation session not found: ${id}`);
+        }
+      },
+    },
+  });
+
+  modal.inputEl.value = "/codex";
+  await modal.handleSubmit();
+  modal.inputEl.value = "/model gpt-5.6-sol high";
+  await modal.handleSubmit();
+  modal.inputEl.value = "hello";
+  await modal.handleSubmit();
+
+  assert.equal(ensuredId, recreatedSession.id);
+  assert.equal(modal.currentSessionId, recreatedSession.id);
+  assert.equal(savedById.includes(staleSessionId), false);
+  assert.equal(started[0].sessionId, recreatedSession.id);
+  assert.equal(started[0].model, "gpt-5.6-sol");
+  assert.equal(started[0].reasoningEffort, "high");
+  assert.equal(plugin.settings.codexDeepAnalysis.model, "gpt-5.6-sol");
 });
 
 test("/new preserves old sessions and /resume restores a searchable selected session", async () => {
