@@ -96,6 +96,11 @@ test("0.8.2 settings add bounded context defaults without deleting legacy state"
   });
   assert.equal(DEFAULT_SETTINGS.readerDataVersion, 0);
   assert.equal(migrated.settings.readerDataVersion, 0);
+  assert.deepEqual(plain(DEFAULT_SETTINGS.paperCacheQuota), {
+    maxEntries: 100,
+    maxBytes: 100 * 1024 * 1024,
+  });
+  assert.deepEqual(plain(migrated.settings.paperCacheQuota), plain(DEFAULT_SETTINGS.paperCacheQuota));
   assert.equal(migrated.needsSave, true);
 });
 
@@ -119,6 +124,22 @@ test("invalid context budgets are repaired while valid custom values are preserv
     maxInputChars: 80000,
     minRecentTurns: 8,
     maxSelectionChars: 12000,
+  });
+});
+
+test("paper cache quotas repair invalid values and preserve valid limits", () => {
+  const { migrateSettings } = loadBundle();
+  const repaired = migrateSettings({ paperCacheQuota: { maxEntries: 0, maxBytes: -1 } });
+  assert.deepEqual(plain(repaired.settings.paperCacheQuota), {
+    maxEntries: 100,
+    maxBytes: 100 * 1024 * 1024,
+  });
+  assert.equal(repaired.needsSave, true);
+
+  const custom = migrateSettings({ paperCacheQuota: { maxEntries: 25, maxBytes: 8 * 1024 * 1024 } });
+  assert.deepEqual(plain(custom.settings.paperCacheQuota), {
+    maxEntries: 25,
+    maxBytes: 8 * 1024 * 1024,
   });
 });
 

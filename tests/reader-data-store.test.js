@@ -191,3 +191,48 @@ test("plugin settings lifecycle retains legacy persistence when no compatible ad
   await plugin.saveSettings();
   assert.equal(saved.at(-1).conversationSessions.s2.title, "s2");
 });
+
+test("reader data store evicts only regenerable paper assets and protects the active paper", async () => {
+  const bundle = loadBundle();
+  const adapter = new MemoryJsonAdapter();
+  let clock = 1;
+  const store = new bundle.ReaderDataStore(adapter, "reader-data", () => clock++);
+  const result = await store.initialize(legacySettings(bundle), async () => undefined);
+  result.settings.paperCacheQuota = { maxEntries: 2, maxBytes: Number.MAX_SAFE_INTEGER };
+  result.settings.docSummaries["papers/second.pdf"] = {
+    summary: "second",
+    generatedAt: 2,
+    fullLength: 100,
+    truncated: false,
+  };
+  await store.synchronize(result.settings, { protectedPaths: ["papers/s1.pdf"] });
+  result.settings.docSummaries["papers/third.pdf"] = {
+    summary: "third",
+    generatedAt: 3,
+    fullLength: 100,
+    truncated: false,
+  };
+
+  const synced = await store.synchronize(result.settings, { protectedPaths: ["papers/s1.pdf"] });
+  assert.deepEqual(Array.from(synced.evictedPaths), ["papers/second.pdf"]);
+  assert.equal(result.settings.docSummaries["papers/second.pdf"], undefined);
+  assert.equal(store.sessions.get("s1").title, "s1");
+  assert.equal(store.usage().entries, 2);
+});
+
+test("cache and migration backup cleanup are independent recovery actions", async () => {
+  const bundle = loadBundle();
+  const adapter = new MemoryJsonAdapter();
+  const store = new bundle.ReaderDataStore(adapter);
+  await store.initialize(legacySettings(bundle), async () => undefined);
+  assert.ok(adapter.files.has("reader-data/migration/legacy-reader-data.json"));
+
+  const clearedUsage = await store.clearPaperCache();
+  assert.deepEqual(plain(clearedUsage), { entries: 0, bytes: 0 });
+  assert.ok(adapter.files.has("reader-data/migration/legacy-reader-data.json"));
+  assert.equal(store.sessions.get("s1").title, "s1");
+
+  assert.equal(await store.clearMigrationSnapshot(), true);
+  assert.equal(adapter.files.has("reader-data/migration/legacy-reader-data.json"), false);
+  assert.equal(adapter.files.has("reader-data/meta.json"), true);
+});

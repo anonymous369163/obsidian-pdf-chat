@@ -1850,6 +1850,11 @@ test("settings preserve every legacy control in the correct ordered section and 
       "单块最大字符数",
       "切块重叠字符数",
       "清空已缓存的检索索引",
+      "论文缓存用量",
+      "论文缓存上限（篇）",
+      "论文缓存上限（MiB）",
+      "清空所有可重建论文缓存",
+      "删除迁移备份",
     ],
     [
       "启用 Codex CLI 深度分析",
@@ -1968,6 +1973,12 @@ test("settings preserve every legacy control in the correct ordered section and 
   assert.equal(plugin.settings.ragChunkOverlap, 0);
   ragOverlap.value = "50";
   ragOverlap.dispatch("change");
+  const cacheEntries = controlFor(sections[3], "论文缓存上限（篇）", "input");
+  cacheEntries.value = "25";
+  cacheEntries.dispatch("change");
+  const cacheMib = controlFor(sections[3], "论文缓存上限（MiB）", "input");
+  cacheMib.value = "64";
+  cacheMib.dispatch("change");
   const codexCommand = controlFor(sections[4], "Codex 命令", "input");
   codexCommand.value = "  C:/Tools/codex.exe  ";
   codexCommand.dispatch("change");
@@ -1992,6 +2003,10 @@ test("settings preserve every legacy control in the correct ordered section and 
   assert.equal(plugin.settings.ragTopK, 7);
   assert.equal(plugin.settings.ragChunkSize, 50);
   assert.equal(plugin.settings.ragChunkOverlap, 49);
+  assert.deepEqual(JSON.parse(JSON.stringify(plugin.settings.paperCacheQuota)), {
+    maxEntries: 25,
+    maxBytes: 64 * 1024 * 1024,
+  });
   assert.equal(plugin.settings.codexDeepAnalysis.command, "C:/Tools/codex.exe");
   assert.equal(plugin.settings.codexDeepAnalysis.inputMode, "debug-full");
   assert.equal(plugin.settings.codexDeepAnalysis.timeoutMs, 120000);

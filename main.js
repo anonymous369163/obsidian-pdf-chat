@@ -2184,6 +2184,10 @@ function resolveContinueModelId(settings) {
 var LEGACY_0_4_0_TRANSLATE_PROMPT = "\u8BF7\u628A\u3010\u6211\u5F53\u524D\u9009\u4E2D\u5E76\u60F3\u8BA8\u8BBA\u7684\u539F\u6587\u7247\u6BB5\u3011\u5B8C\u6574\u7FFB\u8BD1\u6210\u4E2D\u6587\u3002\n1. \u9010\u6BB5\u5BF9\u5E94\u539F\u6587\u5206\u6BB5,\u4E0D\u8981\u5408\u5E76\u6216\u7701\u7565\u6BB5\u843D\u3002\n2. \u4E13\u4E1A\u672F\u8BED\u53EF\u4FDD\u7559\u82F1\u6587\u539F\u8BCD(\u62EC\u53F7\u6807\u6CE8\u5373\u53EF),\u516C\u5F0F\u3001\u4EE3\u7801\u3001\u53D8\u91CF\u540D\u3001\u56FE\u8868\u7F16\u53F7\u7B49\u4FDD\u6301\u539F\u6837\u4E0D\u7FFB\u8BD1\u3002\n3. \u53EA\u8F93\u51FA\u7FFB\u8BD1\u7ED3\u679C,\u4E0D\u8981\u8F93\u51FA\u539F\u6587\u3001\u4E0D\u8981\u590D\u8FF0\u8981\u6C42\u3001\u4E0D\u8981\u52A0\u989D\u5916\u89E3\u91CA\u6216\u603B\u7ED3\u3002";
 var DEFAULT_SETTINGS = {
   readerDataVersion: 0,
+  paperCacheQuota: {
+    maxEntries: 100,
+    maxBytes: 100 * 1024 * 1024
+  },
   models: [
     {
       id: "openai-compatible",
@@ -6742,13 +6746,13 @@ var ReaderDataStore = class {
       docChunks: {}
     };
   }
-  synchronize(settings) {
-    if (!this.active) return Promise.resolve();
-    const operation = this.syncQueue.then(() => this.synchronizeNow(settings));
+  synchronize(settings, options = {}) {
+    if (!this.active) return Promise.resolve({ evictedPaths: [] });
+    const operation = this.syncQueue.then(() => this.synchronizeNow(settings, options));
     this.syncQueue = operation.catch(() => void 0);
     return operation;
   }
-  async synchronizeNow(settings) {
+  async synchronizeNow(settings, options) {
     const desiredSessions = normalizeConversationSessions(settings.conversationSessions);
     for (const id of this.sessionFingerprints.keys()) {
       if (!(id in desiredSessions)) await this.sessions.remove(id);
@@ -6758,6 +6762,7 @@ var ReaderDataStore = class {
       if (this.sessionFingerprints.get(id) !== nextFingerprint) await this.sessions.save(session);
     }
     const desiredPapers = this.runtimePapers(settings);
+    let wrotePaperAsset = false;
     for (const vaultPath of this.paperFingerprints.keys()) {
       if (!(vaultPath in desiredPapers)) await this.papers.remove(vaultPath);
     }
@@ -6766,8 +6771,39 @@ var ReaderDataStore = class {
       if (this.paperFingerprints.get(vaultPath) === nextFingerprint) continue;
       if (this.paperFingerprints.has(vaultPath)) await this.papers.remove(vaultPath);
       await this.papers.save(vaultPath, asset);
+      wrotePaperAsset = true;
+    }
+    const evictedPaths = wrotePaperAsset ? await this.papers.evict({
+      maxEntries: settings.paperCacheQuota.maxEntries,
+      maxBytes: settings.paperCacheQuota.maxBytes,
+      protectedPaths: options.protectedPaths
+    }) : [];
+    for (const vaultPath of evictedPaths) {
+      delete settings.docSummaries[vaultPath];
+      delete settings.docChunks[vaultPath];
     }
     this.captureBaseline(settings);
+    return { evictedPaths };
+  }
+  usage() {
+    return this.papers.usage();
+  }
+  async clearPaperCache() {
+    for (const vaultPath of Array.from(this.paperFingerprints.keys())) {
+      await this.papers.remove(vaultPath);
+    }
+    this.paperFingerprints.clear();
+    return this.papers.usage();
+  }
+  async clearMigrationSnapshot() {
+    let removed = false;
+    const path = `${this.root}/migration/legacy-reader-data.json`;
+    for (const candidate of [path, `${path}.bak`, `${path}.tmp`]) {
+      if (!await this.adapter.exists(candidate)) continue;
+      await this.adapter.remove(candidate);
+      removed = true;
+    }
+    return removed;
   }
 };
 
@@ -7006,6 +7042,23 @@ function normalizeContextBudget(value) {
     changed: candidate.maxInputChars !== contextBudget.maxInputChars || candidate.minRecentTurns !== contextBudget.minRecentTurns || candidate.maxSelectionChars !== contextBudget.maxSelectionChars
   };
 }
+function normalizePaperCacheQuota(value) {
+  const candidate = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const quota = {
+    maxEntries: normalizePositiveInteger(
+      candidate.maxEntries,
+      DEFAULT_SETTINGS.paperCacheQuota.maxEntries
+    ),
+    maxBytes: normalizePositiveInteger(
+      candidate.maxBytes,
+      DEFAULT_SETTINGS.paperCacheQuota.maxBytes
+    )
+  };
+  return {
+    quota,
+    changed: candidate.maxEntries !== quota.maxEntries || candidate.maxBytes !== quota.maxBytes
+  };
+}
 function normalizeRagChunkSettings(chunkSize, chunkOverlap) {
   const ragChunkSize = typeof chunkSize === "number" && Number.isInteger(chunkSize) && chunkSize > 0 ? chunkSize : DEFAULT_SETTINGS.ragChunkSize;
   const fallbackOverlap = Math.min(DEFAULT_SETTINGS.ragChunkOverlap, ragChunkSize - 1);
@@ -7034,6 +7087,9 @@ function migrateSettings(savedValue, now = Date.now) {
   const normalizedContextBudget = normalizeContextBudget(saved == null ? void 0 : saved.contextBudget);
   settings.contextBudget = normalizedContextBudget.contextBudget;
   if (saved && normalizedContextBudget.changed) needsSave = true;
+  const normalizedPaperCacheQuota = normalizePaperCacheQuota(saved == null ? void 0 : saved.paperCacheQuota);
+  settings.paperCacheQuota = normalizedPaperCacheQuota.quota;
+  if (saved && normalizedPaperCacheQuota.changed) needsSave = true;
   for (const session of Object.values(settings.conversationSessions)) {
     if (((_a = session.pendingTurn) == null ? void 0 : _a.status) !== "running") continue;
     session.pendingTurn = {
@@ -7346,6 +7402,7 @@ var PDFChatSettingTab = class extends import_obsidian5.PluginSettingTab {
     });
   }
   renderPaperContextSection(containerEl) {
+    var _a;
     containerEl.createEl("h4", { text: "\u5168\u6587\u6458\u8981" });
     containerEl.createEl("p", {
       text: "\u5168\u6587\u6458\u8981\u6309\u6587\u4EF6\u8DEF\u5F84\u548C\u4FEE\u6539\u65F6\u95F4\u7F13\u5B58\uFF0C\u53EF\u4F5C\u4E3A\u5F53\u524D\u9009\u533A\u4E4B\u5916\u7684\u7B80\u8981\u80CC\u666F\u3002\u4EC5\u5BF9 PDF \u751F\u6548\u3002",
@@ -7459,6 +7516,55 @@ var PDFChatSettingTab = class extends import_obsidian5.PluginSettingTab {
       (button) => button.setButtonText("\u6E05\u7A7A\u7F13\u5B58").onClick(async () => {
         this.plugin.settings.docChunks = {};
         await this.plugin.saveSettings();
+        this.display();
+      })
+    );
+    containerEl.createEl("h4", { text: "\u672C\u5730\u8BBA\u6587\u7F13\u5B58" });
+    const runtimeUsage = (_a = this.plugin.readerDataStore) == null ? void 0 : _a.usage();
+    const fallbackPaths = /* @__PURE__ */ new Set([
+      ...Object.keys(this.plugin.settings.docSummaries || {}),
+      ...Object.keys(this.plugin.settings.docChunks || {})
+    ]);
+    const usage = runtimeUsage || {
+      entries: fallbackPaths.size,
+      bytes: JSON.stringify({
+        summaries: this.plugin.settings.docSummaries || {},
+        chunks: this.plugin.settings.docChunks || {}
+      }).length
+    };
+    const usageMiB = (usage.bytes / (1024 * 1024)).toFixed(1);
+    const limitMiB = Math.round(this.plugin.settings.paperCacheQuota.maxBytes / (1024 * 1024));
+    new import_obsidian5.Setting(containerEl).setName("\u8BBA\u6587\u7F13\u5B58\u7528\u91CF").setDesc(`${usage.entries} \u7BC7 \xB7 ${usageMiB} MiB / ${limitMiB} MiB\uFF1B\u53EA\u5305\u542B\u53EF\u91CD\u65B0\u751F\u6210\u7684\u6458\u8981\u548C RAG \u7D22\u5F15\u3002`).addButton((button) => button.setButtonText("\u5237\u65B0").onClick(() => this.display()));
+    new import_obsidian5.Setting(containerEl).setName("\u8BBA\u6587\u7F13\u5B58\u4E0A\u9650\uFF08\u7BC7\uFF09").setDesc("\u5199\u5165\u65B0\u7684\u8BBA\u6587\u8D44\u4EA7\u540E\u6309\u6700\u4E45\u672A\u4F7F\u7528\u987A\u5E8F\u6E05\u7406\uFF1B\u5F53\u524D\u6B63\u5728\u9605\u8BFB\u7684\u8BBA\u6587\u4E0D\u4F1A\u88AB\u81EA\u52A8\u6E05\u7406\u3002").addText(
+      (text) => text.setValue(String(this.plugin.settings.paperCacheQuota.maxEntries)).onChange(async (value) => {
+        const parsed = Number(value.trim());
+        this.plugin.settings.paperCacheQuota.maxEntries = Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_SETTINGS.paperCacheQuota.maxEntries;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("\u8BBA\u6587\u7F13\u5B58\u4E0A\u9650\uFF08MiB\uFF09").setDesc("\u53EA\u9650\u5236\u53EF\u91CD\u5EFA\u8BBA\u6587\u7F13\u5B58\uFF0C\u4E0D\u4F1A\u5220\u9664\u5BF9\u8BDD\u3001Codex thread \u6216\u7528\u6237\u7B54\u6848\u3002").addText(
+      (text) => text.setValue(String(limitMiB)).onChange(async (value) => {
+        const parsed = Number(value.trim());
+        this.plugin.settings.paperCacheQuota.maxBytes = Number.isInteger(parsed) && parsed > 0 ? parsed * 1024 * 1024 : DEFAULT_SETTINGS.paperCacheQuota.maxBytes;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("\u6E05\u7A7A\u6240\u6709\u53EF\u91CD\u5EFA\u8BBA\u6587\u7F13\u5B58").setDesc("\u5220\u9664\u672C\u5730\u6458\u8981\u548C RAG \u7D22\u5F15\uFF1B\u4E0B\u6B21\u9700\u8981\u65F6\u4F1A\u91CD\u65B0\u751F\u6210\uFF0C\u4E0D\u5F71\u54CD\u4EFB\u4F55\u4F1A\u8BDD\u3002").addButton(
+      (button) => button.setButtonText("\u6E05\u7A7A\u8BBA\u6587\u7F13\u5B58").onClick(async () => {
+        var _a2;
+        this.plugin.settings.docSummaries = {};
+        this.plugin.settings.docChunks = {};
+        await ((_a2 = this.plugin.readerDataStore) == null ? void 0 : _a2.clearPaperCache());
+        await this.plugin.saveSettings();
+        new import_obsidian5.Notice("\u5DF2\u6E05\u7A7A\u53EF\u91CD\u5EFA\u8BBA\u6587\u7F13\u5B58\uFF1B\u5BF9\u8BDD\u8BB0\u5F55\u672A\u53D7\u5F71\u54CD\u3002");
+        this.display();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("\u5220\u9664\u8FC1\u79FB\u5907\u4EFD").setDesc("\u4EC5\u5220\u9664\u5206\u5C42\u5B58\u50A8\u8FC1\u79FB\u65F6\u751F\u6210\u7684\u8131\u654F\u9605\u8BFB\u6570\u636E\u5FEB\u7167\uFF1B\u4E0D\u4F1A\u5220\u9664\u5F53\u524D\u4F1A\u8BDD\u6216\u8BBA\u6587\u7F13\u5B58\u3002").addButton(
+      (button) => button.setButtonText("\u5220\u9664\u8FC1\u79FB\u5907\u4EFD").onClick(async () => {
+        var _a2;
+        const removed = await ((_a2 = this.plugin.readerDataStore) == null ? void 0 : _a2.clearMigrationSnapshot());
+        new import_obsidian5.Notice(removed ? "\u8FC1\u79FB\u5907\u4EFD\u5DF2\u5220\u9664\u3002" : "\u6CA1\u6709\u53EF\u5220\u9664\u7684\u8FC1\u79FB\u5907\u4EFD\u3002");
         this.display();
       })
     );
@@ -7973,8 +8079,15 @@ var PDFChatPlugin = class extends import_obsidian6.Plugin {
     const snapshot = JSON.parse(JSON.stringify(this.settings));
     const previousSave = this._saveQueue || Promise.resolve();
     const nextSave = previousSave.catch(() => void 0).then(async () => {
-      var _a;
-      await ((_a = this.readerDataStore) == null ? void 0 : _a.synchronize(snapshot));
+      var _a, _b, _c;
+      const activePdfPath = ((_a = this.app) == null ? void 0 : _a.workspace) ? (_b = getActivePdfFile(this.app)) == null ? void 0 : _b.path : void 0;
+      const synchronized = await ((_c = this.readerDataStore) == null ? void 0 : _c.synchronize(snapshot, {
+        protectedPaths: activePdfPath ? [activePdfPath] : []
+      }));
+      for (const vaultPath of (synchronized == null ? void 0 : synchronized.evictedPaths) || []) {
+        delete this.settings.docSummaries[vaultPath];
+        delete this.settings.docChunks[vaultPath];
+      }
       const persisted = this.readerDataStore ? this.readerDataStore.settingsForPersistence(snapshot) : snapshot;
       await this.saveData(persisted);
     });

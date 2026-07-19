@@ -393,6 +393,75 @@ export class PDFChatSettingTab extends PluginSettingTab {
           this.display();
         })
       );
+
+    containerEl.createEl("h4", { text: "本地论文缓存" });
+    const runtimeUsage = this.plugin.readerDataStore?.usage();
+    const fallbackPaths = new Set([
+      ...Object.keys(this.plugin.settings.docSummaries || {}),
+      ...Object.keys(this.plugin.settings.docChunks || {}),
+    ]);
+    const usage = runtimeUsage || {
+      entries: fallbackPaths.size,
+      bytes: JSON.stringify({
+        summaries: this.plugin.settings.docSummaries || {},
+        chunks: this.plugin.settings.docChunks || {},
+      }).length,
+    };
+    const usageMiB = (usage.bytes / (1024 * 1024)).toFixed(1);
+    const limitMiB = Math.round(this.plugin.settings.paperCacheQuota.maxBytes / (1024 * 1024));
+    new Setting(containerEl)
+      .setName("论文缓存用量")
+      .setDesc(`${usage.entries} 篇 · ${usageMiB} MiB / ${limitMiB} MiB；只包含可重新生成的摘要和 RAG 索引。`)
+      .addButton((button) => button.setButtonText("刷新").onClick(() => this.display()));
+    new Setting(containerEl)
+      .setName("论文缓存上限（篇）")
+      .setDesc("写入新的论文资产后按最久未使用顺序清理；当前正在阅读的论文不会被自动清理。")
+      .addText((text) =>
+        text.setValue(String(this.plugin.settings.paperCacheQuota.maxEntries)).onChange(async (value) => {
+          const parsed = Number(value.trim());
+          this.plugin.settings.paperCacheQuota.maxEntries =
+            Number.isInteger(parsed) && parsed > 0
+              ? parsed
+              : DEFAULT_SETTINGS.paperCacheQuota.maxEntries;
+          await this.plugin.saveSettings();
+        })
+      );
+    new Setting(containerEl)
+      .setName("论文缓存上限（MiB）")
+      .setDesc("只限制可重建论文缓存，不会删除对话、Codex thread 或用户答案。")
+      .addText((text) =>
+        text.setValue(String(limitMiB)).onChange(async (value) => {
+          const parsed = Number(value.trim());
+          this.plugin.settings.paperCacheQuota.maxBytes =
+            Number.isInteger(parsed) && parsed > 0
+              ? parsed * 1024 * 1024
+              : DEFAULT_SETTINGS.paperCacheQuota.maxBytes;
+          await this.plugin.saveSettings();
+        })
+      );
+    new Setting(containerEl)
+      .setName("清空所有可重建论文缓存")
+      .setDesc("删除本地摘要和 RAG 索引；下次需要时会重新生成，不影响任何会话。")
+      .addButton((button) =>
+        button.setButtonText("清空论文缓存").onClick(async () => {
+          this.plugin.settings.docSummaries = {};
+          this.plugin.settings.docChunks = {};
+          await this.plugin.readerDataStore?.clearPaperCache();
+          await this.plugin.saveSettings();
+          new Notice("已清空可重建论文缓存；对话记录未受影响。");
+          this.display();
+        })
+      );
+    new Setting(containerEl)
+      .setName("删除迁移备份")
+      .setDesc("仅删除分层存储迁移时生成的脱敏阅读数据快照；不会删除当前会话或论文缓存。")
+      .addButton((button) =>
+        button.setButtonText("删除迁移备份").onClick(async () => {
+          const removed = await this.plugin.readerDataStore?.clearMigrationSnapshot();
+          new Notice(removed ? "迁移备份已删除。" : "没有可删除的迁移备份。");
+          this.display();
+        })
+      );
   }
 
   private renderAdvancedSection(containerEl: HTMLElement): void {

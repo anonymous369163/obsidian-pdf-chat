@@ -230,6 +230,10 @@ export type ConversationKind = "chat" | "translate";
 
 export interface PDFChatSettings {
   readerDataVersion: number;
+  paperCacheQuota: {
+    maxEntries: number;
+    maxBytes: number;
+  };
   models: ModelProfile[];
   activeModelId: string;
   temperature: number;
@@ -417,6 +421,11 @@ export interface PDFChatPluginApi extends Plugin {
   llmTransport?: LlmOperations;
   translationService?: TranslationOperations;
   codexSessionManager?: CodexRuntimeOperations;
+  readerDataStore?: {
+    usage(): PaperCacheUsage;
+    clearPaperCache(): Promise<PaperCacheUsage>;
+    clearMigrationSnapshot(): Promise<boolean>;
+  };
   saveSettings(): Promise<void>;
   getConversationKey(file: TFile | null, contextText: string, kind?: ConversationKind): string;
   getConversation(key: string): ConversationMessage[];

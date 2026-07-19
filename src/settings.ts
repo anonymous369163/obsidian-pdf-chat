@@ -136,6 +136,30 @@ function normalizeContextBudget(value: unknown): {
   };
 }
 
+function normalizePaperCacheQuota(value: unknown): {
+  quota: PDFChatSettings["paperCacheQuota"];
+  changed: boolean;
+} {
+  const candidate =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Partial<PDFChatSettings["paperCacheQuota"]>)
+      : {};
+  const quota = {
+    maxEntries: normalizePositiveInteger(
+      candidate.maxEntries,
+      DEFAULT_SETTINGS.paperCacheQuota.maxEntries
+    ),
+    maxBytes: normalizePositiveInteger(
+      candidate.maxBytes,
+      DEFAULT_SETTINGS.paperCacheQuota.maxBytes
+    ),
+  };
+  return {
+    quota,
+    changed: candidate.maxEntries !== quota.maxEntries || candidate.maxBytes !== quota.maxBytes,
+  };
+}
+
 export function normalizeRagChunkSettings(
   chunkSize: unknown,
   chunkOverlap: unknown
@@ -188,6 +212,9 @@ export function migrateSettings(savedValue: unknown, now: () => number = Date.no
   const normalizedContextBudget = normalizeContextBudget(saved?.contextBudget);
   settings.contextBudget = normalizedContextBudget.contextBudget;
   if (saved && normalizedContextBudget.changed) needsSave = true;
+  const normalizedPaperCacheQuota = normalizePaperCacheQuota(saved?.paperCacheQuota);
+  settings.paperCacheQuota = normalizedPaperCacheQuota.quota;
+  if (saved && normalizedPaperCacheQuota.changed) needsSave = true;
   for (const session of Object.values(settings.conversationSessions)) {
     if (session.pendingTurn?.status !== "running") continue;
     session.pendingTurn = {

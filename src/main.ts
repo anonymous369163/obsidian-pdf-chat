@@ -411,7 +411,14 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
     const snapshot = JSON.parse(JSON.stringify(this.settings)) as PDFChatSettings;
     const previousSave = this._saveQueue || Promise.resolve();
     const nextSave = previousSave.catch(() => undefined).then(async () => {
-      await this.readerDataStore?.synchronize(snapshot);
+      const activePdfPath = this.app?.workspace ? getActivePdfFile(this.app)?.path : undefined;
+      const synchronized = await this.readerDataStore?.synchronize(snapshot, {
+        protectedPaths: activePdfPath ? [activePdfPath] : [],
+      });
+      for (const vaultPath of synchronized?.evictedPaths || []) {
+        delete this.settings.docSummaries[vaultPath];
+        delete this.settings.docChunks[vaultPath];
+      }
       const persisted = this.readerDataStore
         ? this.readerDataStore.settingsForPersistence(snapshot)
         : snapshot;

@@ -8,6 +8,10 @@ export const LEGACY_0_4_0_TRANSLATE_PROMPT =
 
 export const DEFAULT_SETTINGS = {
   readerDataVersion: 0,
+  paperCacheQuota: {
+    maxEntries: 100,
+    maxBytes: 100 * 1024 * 1024,
+  },
   models: [
     {
       id: "openai-compatible",
