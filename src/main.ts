@@ -14,11 +14,12 @@ import { resolveContinueModelId, resolveTranslateModelId } from "./model-routing
 import { getActivePdfFile, PaperContextService } from "./paper-context";
 import { createPDFChatModalServices } from "./modal-services";
 import { PDFChatModal } from "./pdf-chat-modal";
+import { isJsonAdapter, ReaderDataStore } from "./reader-data-store";
 import {
   QuickTranslateMarker,
   type QuickTranslateOpenRequest,
 } from "./quick-translate-marker";
-import { enqueueSettingsSave, migrateSettings } from "./settings";
+import { migrateSettings } from "./settings";
 import { PDFChatSettingTab } from "./settings-tab";
 import { TranslationService } from "./translation";
 import {
@@ -72,6 +73,7 @@ export { assessExtractionQuality } from "./extraction-quality";
 export { AtomicJsonStore, JsonStoreError } from "./json-store";
 export { PaperAssetRepository } from "./paper-asset-repository";
 export { ReaderDataMigrator } from "./reader-data-migration";
+export { isJsonAdapter, ReaderDataStore } from "./reader-data-store";
 export { SessionRepository } from "./session-repository";
 export { composeBoundedContext, summarizeSessionMemory } from "./context-composer";
 export {
@@ -173,6 +175,7 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
   quickTranslateMarker?: QuickTranslateMarker;
   codexSessionManager?: CodexSessionManager;
   vaultLifecycleService?: VaultLifecycleService;
+  readerDataStore?: ReaderDataStore;
   private codexGlobalUnsubscribe?: () => void;
   private readonly codexRunningSessionIds = new Set<string>();
 
@@ -376,11 +379,46 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
   async loadSettings(): Promise<void> {
     const { settings, needsSave } = migrateSettings(await this.loadData());
     this.settings = settings;
+    const adapter = this.app?.vault?.adapter;
+    if (isJsonAdapter(adapter)) {
+      const pluginId = this.manifest?.id || "pdf-chat";
+      const root = `.obsidian/plugins/${pluginId}/reader-data`;
+      const readerDataStore = new ReaderDataStore(adapter, root);
+      const initialized = await readerDataStore.initialize(
+        this.settings,
+        (persistedSettings) => this.enqueueRawDataSave(persistedSettings)
+      );
+      this.settings = initialized.settings;
+      if (initialized.fallback) {
+        this.readerDataStore = undefined;
+        new Notice("阅读数据迁移尚未完成，当前继续使用兼容存储；你的原有数据未被删除。");
+      } else {
+        this.readerDataStore = readerDataStore;
+      }
+    }
     if (needsSave) await this.saveSettings();
   }
 
+  private enqueueRawDataSave(data: unknown): Promise<void> {
+    const snapshot = JSON.parse(JSON.stringify(data)) as unknown;
+    const previousSave = this._saveQueue || Promise.resolve();
+    const nextSave = previousSave.catch(() => undefined).then(() => this.saveData(snapshot));
+    this._saveQueue = nextSave;
+    return nextSave;
+  }
+
   async saveSettings(): Promise<void> {
-    return enqueueSettingsSave(this);
+    const snapshot = JSON.parse(JSON.stringify(this.settings)) as PDFChatSettings;
+    const previousSave = this._saveQueue || Promise.resolve();
+    const nextSave = previousSave.catch(() => undefined).then(async () => {
+      await this.readerDataStore?.synchronize(snapshot);
+      const persisted = this.readerDataStore
+        ? this.readerDataStore.settingsForPersistence(snapshot)
+        : snapshot;
+      await this.saveData(persisted);
+    });
+    this._saveQueue = nextSave;
+    return nextSave;
   }
 
   getConversationKey(

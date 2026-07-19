@@ -37,6 +37,7 @@ __export(main_exports, {
   PaperContextService: () => PaperContextService,
   QuickTranslateMarker: () => QuickTranslateMarker,
   ReaderDataMigrator: () => ReaderDataMigrator,
+  ReaderDataStore: () => ReaderDataStore,
   ResearchActionRegistry: () => ResearchActionRegistry,
   SelectionLimitModal: () => SelectionLimitModal,
   SessionRepository: () => SessionRepository,
@@ -69,6 +70,7 @@ __export(main_exports, {
   extractPdfPages: () => extractPdfPages,
   getConversationKey: () => getConversationKey,
   isCodexThreadUnavailableError: () => isCodexThreadUnavailableError,
+  isJsonAdapter: () => isJsonAdapter,
   migrateSettings: () => migrateSettings,
   normalizeCodexInputMode: () => normalizeCodexInputMode,
   normalizeCodexOutputMode: () => normalizeCodexOutputMode,
@@ -5988,951 +5990,6 @@ ${c.text}`).join("\n\n---\n\n");
   }
 };
 
-// src/quick-translate-marker.ts
-var MARKER_GAP = 8;
-var SELECTION_DEBOUNCE_MS = 150;
-function readSelection(doc) {
-  var _a;
-  const selection = (_a = doc.defaultView) == null ? void 0 : _a.getSelection();
-  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
-  const text = cleanSelectionText(selection.toString());
-  if (!text) return null;
-  const range = selection.getRangeAt(selection.rangeCount - 1);
-  const rectangles = Array.from(range.getClientRects());
-  const rect = rectangles.length ? rectangles[rectangles.length - 1] : range.getBoundingClientRect();
-  if (!rect) return null;
-  return { selection, snapshot: { text, rect } };
-}
-function clamp(value, minimum, maximum) {
-  return Math.min(Math.max(value, minimum), Math.max(minimum, maximum));
-}
-var QuickTranslateMarker = class {
-  constructor(dependencies) {
-    this.dependencies = dependencies;
-    __publicField(this, "attached", /* @__PURE__ */ new Map());
-    __publicField(this, "markerEl", null);
-    __publicField(this, "markerDocument", null);
-    __publicField(this, "pendingTimer", null);
-    __publicField(this, "setTimer");
-    __publicField(this, "clearTimer");
-    var _a, _b;
-    this.setTimer = (_a = dependencies.setTimer) != null ? _a : ((callback, delay) => setTimeout(callback, delay));
-    this.clearTimer = (_b = dependencies.clearTimer) != null ? _b : ((timer) => clearTimeout(timer));
-  }
-  attach(doc) {
-    if (!doc || this.attached.has(doc)) return;
-    const selectionChange = () => this.scheduleUpdate(doc);
-    const mouseDown = (event) => {
-      const target = event.target;
-      if (this.markerEl && target && this.markerEl.contains(target)) return;
-      this.hide();
-    };
-    const scroll = () => this.hide();
-    const keyDown = (event) => {
-      if (event.key === "Escape") this.hide();
-    };
-    doc.addEventListener("selectionchange", selectionChange);
-    doc.addEventListener("mousedown", mouseDown, true);
-    doc.addEventListener("scroll", scroll, true);
-    doc.addEventListener("keydown", keyDown);
-    this.attached.set(doc, { selectionChange, mouseDown, scroll, keyDown });
-  }
-  hide() {
-    this.cancelPendingUpdate();
-    if (this.markerEl) this.markerEl.hidden = true;
-  }
-  detach(doc) {
-    var _a;
-    const listeners = this.attached.get(doc);
-    if (!listeners) return;
-    doc.removeEventListener("selectionchange", listeners.selectionChange);
-    doc.removeEventListener("mousedown", listeners.mouseDown, true);
-    doc.removeEventListener("scroll", listeners.scroll, true);
-    doc.removeEventListener("keydown", listeners.keyDown);
-    this.attached.delete(doc);
-    if (this.markerDocument === doc) {
-      this.cancelPendingUpdate();
-      (_a = this.markerEl) == null ? void 0 : _a.remove();
-      this.markerEl = null;
-      this.markerDocument = null;
-    }
-  }
-  destroy() {
-    var _a;
-    this.cancelPendingUpdate();
-    for (const doc of Array.from(this.attached.keys())) this.detach(doc);
-    (_a = this.markerEl) == null ? void 0 : _a.remove();
-    this.markerEl = null;
-    this.markerDocument = null;
-  }
-  scheduleUpdate(doc) {
-    this.cancelPendingUpdate();
-    this.pendingTimer = this.setTimer(() => {
-      this.pendingTimer = null;
-      this.updateFromSelection(doc);
-    }, SELECTION_DEBOUNCE_MS);
-  }
-  cancelPendingUpdate() {
-    if (this.pendingTimer === null) return;
-    this.clearTimer(this.pendingTimer);
-    this.pendingTimer = null;
-  }
-  updateFromSelection(doc) {
-    if (!this.dependencies.isEnabled() || !this.dependencies.getActivePdfFile()) {
-      this.hide();
-      return;
-    }
-    const selectionState = readSelection(doc);
-    if (!selectionState || this.dependencies.isSelectionInsideActivePdf && !this.dependencies.isSelectionInsideActivePdf(selectionState.selection, doc)) {
-      this.hide();
-      return;
-    }
-    const marker = this.ensureMarker(doc);
-    marker.hidden = false;
-    this.position(marker, doc, selectionState.snapshot.rect);
-  }
-  ensureMarker(doc) {
-    var _a;
-    if (this.markerEl && this.markerDocument === doc) return this.markerEl;
-    (_a = this.markerEl) == null ? void 0 : _a.remove();
-    const marker = doc.createElement("button");
-    marker.type = "button";
-    marker.className = "pdf-chat-quick-translate-marker";
-    marker.textContent = "\u8BD1";
-    marker.setAttribute("aria-label", "\u7FFB\u8BD1\u5F53\u524D PDF \u9009\u533A");
-    marker.addEventListener("mousedown", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-    });
-    marker.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      this.openCurrentSelection(doc);
-    });
-    doc.body.appendChild(marker);
-    this.markerEl = marker;
-    this.markerDocument = doc;
-    return marker;
-  }
-  openCurrentSelection(doc) {
-    const selectionState = readSelection(doc);
-    const file = this.dependencies.getActivePdfFile();
-    if (!this.dependencies.isEnabled() || !selectionState || !file || this.dependencies.isSelectionInsideActivePdf && !this.dependencies.isSelectionInsideActivePdf(selectionState.selection, doc)) {
-      this.hide();
-      return;
-    }
-    this.hide();
-    this.dependencies.openModal({
-      file,
-      selectedText: selectionState.snapshot.text,
-      startFresh: true,
-      autoTranslateOnOpen: true
-    });
-  }
-  position(marker, doc, selectionRect) {
-    var _a, _b, _c, _d;
-    const viewportWidth = (_b = (_a = doc.defaultView) == null ? void 0 : _a.innerWidth) != null ? _b : doc.documentElement.clientWidth;
-    const viewportHeight = (_d = (_c = doc.defaultView) == null ? void 0 : _c.innerHeight) != null ? _d : doc.documentElement.clientHeight;
-    const markerRect = marker.getBoundingClientRect();
-    const width = markerRect.width || 32;
-    const height = markerRect.height || 32;
-    let left = selectionRect.right + MARKER_GAP;
-    if (left + width + MARKER_GAP > viewportWidth) {
-      left = selectionRect.left - width - MARKER_GAP;
-    }
-    let top = selectionRect.top - height - MARKER_GAP;
-    if (top < MARKER_GAP) top = selectionRect.bottom + MARKER_GAP;
-    marker.style.left = `${clamp(left, MARKER_GAP, viewportWidth - width - MARKER_GAP)}px`;
-    marker.style.top = `${clamp(top, MARKER_GAP, viewportHeight - height - MARKER_GAP)}px`;
-  }
-};
-
-// src/settings.ts
-function normalizePromptHistory(value) {
-  if (!Array.isArray(value)) return [];
-  const result = [];
-  for (const item of value) {
-    if (typeof item !== "string") continue;
-    const text = item.trim();
-    if (!text || result[result.length - 1] === text) continue;
-    result.push(text);
-  }
-  return result.slice(-100);
-}
-function normalizeActiveSessionIds(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const normalized = {};
-  for (const [key, id] of Object.entries(value)) {
-    if (typeof id === "string" && key.trim() && id.trim()) normalized[key] = id.trim();
-  }
-  return normalized;
-}
-function normalizeReasoningEffort2(value) {
-  return value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" ? value : DEFAULT_SETTINGS.codexDeepAnalysis.reasoningEffort;
-}
-function normalizeVerbosity(value) {
-  return value === "low" || value === "medium" || value === "high" ? value : DEFAULT_SETTINGS.codexDeepAnalysis.verbosity;
-}
-function normalizeCodexInputMode(value) {
-  if (value === "debug-full" || value === "text-fallback") return "debug-full";
-  return value === "pdf-only" ? "pdf-only" : DEFAULT_SETTINGS.codexDeepAnalysis.inputMode;
-}
-function normalizeCodexOutputMode(value) {
-  return value === "json-schema" ? "json-schema" : DEFAULT_SETTINGS.codexDeepAnalysis.outputMode;
-}
-var LEGACY_CODEX_TIMEOUT_MS = 6e5;
-function legacySessionFromHistory(key, history) {
-  const messages = normalizeConversationMessages(history.messages);
-  if (!messages.length) return null;
-  const id = `legacy-${stableConversationHash(key)}`;
-  const timestamp = typeof history.updatedAt === "number" && Number.isFinite(history.updatedAt) ? history.updatedAt : 0;
-  return {
-    version: 2,
-    id,
-    conversationKey: key,
-    title: key.replace(/^pdf:/, ""),
-    mode: "chat",
-    messages,
-    referencedPdfPaths: [],
-    includeCurrentPdfInCodex: true,
-    createdAt: timestamp,
-    updatedAt: timestamp
-  };
-}
-function normalizePositiveInteger(value, fallback) {
-  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
-}
-function normalizeContextBudget(value) {
-  const candidate = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  const contextBudget = {
-    maxInputChars: normalizePositiveInteger(
-      candidate.maxInputChars,
-      DEFAULT_SETTINGS.contextBudget.maxInputChars
-    ),
-    minRecentTurns: normalizePositiveInteger(
-      candidate.minRecentTurns,
-      DEFAULT_SETTINGS.contextBudget.minRecentTurns
-    ),
-    maxSelectionChars: normalizePositiveInteger(
-      candidate.maxSelectionChars,
-      DEFAULT_SETTINGS.contextBudget.maxSelectionChars
-    )
-  };
-  return {
-    contextBudget,
-    changed: candidate.maxInputChars !== contextBudget.maxInputChars || candidate.minRecentTurns !== contextBudget.minRecentTurns || candidate.maxSelectionChars !== contextBudget.maxSelectionChars
-  };
-}
-function normalizeRagChunkSettings(chunkSize, chunkOverlap) {
-  const ragChunkSize = typeof chunkSize === "number" && Number.isInteger(chunkSize) && chunkSize > 0 ? chunkSize : DEFAULT_SETTINGS.ragChunkSize;
-  const fallbackOverlap = Math.min(DEFAULT_SETTINGS.ragChunkOverlap, ragChunkSize - 1);
-  const ragChunkOverlap = typeof chunkOverlap === "number" && Number.isInteger(chunkOverlap) && chunkOverlap >= 0 && chunkOverlap < ragChunkSize ? chunkOverlap : fallbackOverlap;
-  return {
-    ragChunkSize,
-    ragChunkOverlap,
-    changed: chunkSize !== ragChunkSize || chunkOverlap !== ragChunkOverlap
-  };
-}
-function migrateSettings(savedValue, now = Date.now) {
-  var _a, _b, _c;
-  const saved = savedValue && typeof savedValue === "object" && !Array.isArray(savedValue) ? savedValue : null;
-  const settings = Object.assign({}, DEFAULT_SETTINGS, saved);
-  let needsSave = false;
-  settings.readerDataVersion = (saved == null ? void 0 : saved.readerDataVersion) === 1 ? 1 : 0;
-  if (saved && saved.readerDataVersion !== settings.readerDataVersion) needsSave = true;
-  settings.models = saved && Array.isArray(saved.models) && saved.models.length ? saved.models.map((model) => ({ ...model })) : DEFAULT_SETTINGS.models.map((model) => ({ ...model }));
-  settings.promptPresets = saved && Array.isArray(saved.promptPresets) && saved.promptPresets.length ? saved.promptPresets.map((preset) => ({ ...preset })) : DEFAULT_SETTINGS.promptPresets.map((preset) => ({ ...preset }));
-  settings.docSummaries = saved && saved.docSummaries && typeof saved.docSummaries === "object" ? { ...saved.docSummaries } : {};
-  settings.docChunks = saved && saved.docChunks && typeof saved.docChunks === "object" ? { ...saved.docChunks } : {};
-  settings.conversationHistories = normalizeConversationHistories(saved && saved.conversationHistories);
-  settings.conversationSessions = normalizeConversationSessions(saved && saved.conversationSessions);
-  settings.activeConversationSessionIds = normalizeActiveSessionIds(saved && saved.activeConversationSessionIds);
-  settings.promptHistory = normalizePromptHistory(saved && saved.promptHistory);
-  const normalizedContextBudget = normalizeContextBudget(saved == null ? void 0 : saved.contextBudget);
-  settings.contextBudget = normalizedContextBudget.contextBudget;
-  if (saved && normalizedContextBudget.changed) needsSave = true;
-  for (const session of Object.values(settings.conversationSessions)) {
-    if (((_a = session.pendingTurn) == null ? void 0 : _a.status) !== "running") continue;
-    session.pendingTurn = {
-      ...session.pendingTurn,
-      status: "interrupted",
-      progress: session.pendingTurn.progress || "Obsidian \u6216 PDF Chat \u5728\u4EFB\u52A1\u5B8C\u6210\u524D\u9000\u51FA"
-    };
-    needsSave = true;
-  }
-  for (const [key, history] of Object.entries(settings.conversationHistories)) {
-    const hasSession = Object.values(settings.conversationSessions).some((session2) => session2.conversationKey === key);
-    if (hasSession) continue;
-    const session = legacySessionFromHistory(key, history);
-    if (!session) continue;
-    settings.conversationSessions[session.id] = session;
-    settings.activeConversationSessionIds[key] = session.id;
-    needsSave = true;
-  }
-  const normalizedRag = normalizeRagChunkSettings(settings.ragChunkSize, settings.ragChunkOverlap);
-  settings.ragChunkSize = normalizedRag.ragChunkSize;
-  settings.ragChunkOverlap = normalizedRag.ragChunkOverlap;
-  if (normalizedRag.changed) needsSave = true;
-  const hasTranslationObject = Boolean(
-    saved && saved.translation && typeof saved.translation === "object" && !Array.isArray(saved.translation)
-  );
-  const nestedChunkChars = (_b = saved == null ? void 0 : saved.translation) == null ? void 0 : _b.chunkChars;
-  const validNestedChunkChars = typeof nestedChunkChars === "number" && Number.isInteger(nestedChunkChars) && nestedChunkChars > 0 ? nestedChunkChars : null;
-  const legacyChunkChars = saved == null ? void 0 : saved.translateChunkMaxChars;
-  const validLegacyChunkChars = typeof legacyChunkChars === "number" && Number.isInteger(legacyChunkChars) && legacyChunkChars > 0 ? legacyChunkChars : null;
-  if (nestedChunkChars !== void 0 && validNestedChunkChars === null) needsSave = true;
-  if (hasTranslationObject) {
-    settings.translation = {
-      ...DEFAULT_SETTINGS.translation,
-      ...saved.translation,
-      chunkChars: (_c = validNestedChunkChars != null ? validNestedChunkChars : validLegacyChunkChars) != null ? _c : DEFAULT_SETTINGS.translation.chunkChars
-    };
-  } else {
-    const legacyInstruction = typeof (saved == null ? void 0 : saved.translatePrompt) === "string" ? saved.translatePrompt : "";
-    settings.translation = {
-      ...DEFAULT_SETTINGS.translation,
-      additionalInstruction: legacyInstruction.trim() && legacyInstruction !== LEGACY_0_4_0_TRANSLATE_PROMPT ? legacyInstruction : "",
-      chunkChars: validLegacyChunkChars != null ? validLegacyChunkChars : DEFAULT_SETTINGS.translation.chunkChars
-    };
-    needsSave = true;
-  }
-  const savedCodex = saved && saved.codexDeepAnalysis && typeof saved.codexDeepAnalysis === "object" && !Array.isArray(saved.codexDeepAnalysis) ? saved.codexDeepAnalysis : {};
-  const savedCodexTimeout = typeof savedCodex.timeoutMs === "number" && Number.isFinite(savedCodex.timeoutMs) && savedCodex.timeoutMs >= 3e4 ? Math.floor(savedCodex.timeoutMs) : null;
-  const normalizedCodexTimeout = savedCodexTimeout === null || savedCodexTimeout === LEGACY_CODEX_TIMEOUT_MS ? DEFAULT_SETTINGS.codexDeepAnalysis.timeoutMs : savedCodexTimeout;
-  if (savedCodexTimeout !== normalizedCodexTimeout) needsSave = true;
-  settings.codexDeepAnalysis = {
-    ...DEFAULT_SETTINGS.codexDeepAnalysis,
-    ...savedCodex,
-    enabled: savedCodex.enabled === true,
-    command: typeof savedCodex.command === "string" && savedCodex.command.trim() ? savedCodex.command.trim() : DEFAULT_SETTINGS.codexDeepAnalysis.command,
-    profile: typeof savedCodex.profile === "string" ? savedCodex.profile.trim() : "",
-    model: typeof savedCodex.model === "string" && savedCodex.model.trim() ? savedCodex.model.trim() : DEFAULT_SETTINGS.codexDeepAnalysis.model,
-    reasoningEffort: normalizeReasoningEffort2(savedCodex.reasoningEffort),
-    verbosity: normalizeVerbosity(savedCodex.verbosity),
-    inputMode: normalizeCodexInputMode(savedCodex.inputMode),
-    outputMode: normalizeCodexOutputMode(savedCodex.outputMode),
-    modelPresets: Array.isArray(savedCodex.modelPresets) && savedCodex.modelPresets.length ? savedCodex.modelPresets.filter(
-      (preset) => !!preset && typeof preset === "object" && typeof preset.model === "string" && !!preset.model.trim()
-    ).map((preset) => ({
-      model: preset.model.trim(),
-      reasoningEffort: normalizeReasoningEffort2(preset.reasoningEffort),
-      label: typeof preset.label === "string" && preset.label.trim() ? preset.label.trim() : `${preset.model.trim()} \xB7 ${normalizeReasoningEffort2(preset.reasoningEffort)}`
-    })) : DEFAULT_SETTINGS.codexDeepAnalysis.modelPresets.map((preset) => ({ ...preset })),
-    timeoutMs: normalizedCodexTimeout,
-    keepTempFiles: savedCodex.keepTempFiles === true,
-    includeSelectionContext: typeof savedCodex.includeSelectionContext === "boolean" ? savedCodex.includeSelectionContext : DEFAULT_SETTINGS.codexDeepAnalysis.includeSelectionContext
-  };
-  if (saved && (saved.endpoint || saved.apiKey || saved.model) && !(saved.models && saved.models.length)) {
-    const migrated = {
-      id: "migrated-" + now(),
-      name: "\u8FC1\u79FB\u81EA\u65E7\u8BBE\u7F6E",
-      endpoint: saved.endpoint || DEFAULT_SETTINGS.models[0].endpoint,
-      apiKey: saved.apiKey || DEFAULT_SETTINGS.models[0].apiKey,
-      model: saved.model || DEFAULT_SETTINGS.models[0].model
-    };
-    settings.models = [migrated, ...DEFAULT_SETTINGS.models.map((model) => ({ ...model }))];
-    settings.activeModelId = migrated.id;
-    needsSave = true;
-  }
-  if (!settings.models.length) {
-    settings.models = DEFAULT_SETTINGS.models.map((model) => ({ ...model }));
-    needsSave = true;
-  }
-  if (!settings.models.find((model) => model.id === settings.activeModelId)) {
-    settings.activeModelId = settings.models[0].id;
-    needsSave = true;
-  }
-  if (settings.endpoint !== void 0 || settings.apiKey !== void 0 || settings.model !== void 0) {
-    delete settings.endpoint;
-    delete settings.apiKey;
-    delete settings.model;
-    needsSave = true;
-  }
-  if (settings.translatePrompt !== void 0) {
-    delete settings.translatePrompt;
-    needsSave = true;
-  }
-  if (settings.translateChunkMaxChars !== void 0) {
-    delete settings.translateChunkMaxChars;
-    needsSave = true;
-  }
-  return { settings, needsSave };
-}
-function enqueueSettingsSave(owner) {
-  const previousSave = owner._saveQueue || Promise.resolve();
-  const nextSave = previousSave.catch(() => void 0).then(() => owner.saveData(owner.settings));
-  owner._saveQueue = nextSave;
-  return nextSave;
-}
-
-// src/settings-tab.ts
-var import_obsidian5 = require("obsidian");
-
-// src/settings-ui.ts
-function createSettingsSection(parent, title) {
-  const section = parent.createEl("section", {
-    cls: "pdf-chat-settings-section",
-    attr: { "aria-labelledby": `pdf-chat-settings-${title}` }
-  });
-  const compatibleSection = section;
-  if (typeof compatibleSection.createEl !== "function") return parent;
-  section.createEl("h3", {
-    text: title,
-    attr: { id: `pdf-chat-settings-${title}` }
-  });
-  return section;
-}
-
-// src/settings-tab.ts
-function labelExtraButton(button, label) {
-  if (!button.extraSettingsEl) return;
-  button.extraSettingsEl.setAttr("aria-label", label);
-}
-var PDFChatSettingTab = class extends import_obsidian5.PluginSettingTab {
-  constructor(app, plugin) {
-    super(app, plugin);
-    __publicField(this, "plugin");
-    this.plugin = plugin;
-  }
-  display() {
-    const { containerEl } = this;
-    containerEl.empty();
-    containerEl.createEl("h2", { text: "PDF Chat \u8BBE\u7F6E" });
-    this.renderModelSection(createSettingsSection(containerEl, "\u6A21\u578B"));
-    this.renderChatSection(createSettingsSection(containerEl, "\u804A\u5929"));
-    this.renderTranslationSection(createSettingsSection(containerEl, "\u7FFB\u8BD1"));
-    this.renderPaperContextSection(createSettingsSection(containerEl, "\u8BBA\u6587\u4E0A\u4E0B\u6587"));
-    this.renderAdvancedSection(createSettingsSection(containerEl, "\u9AD8\u7EA7"));
-  }
-  renderModelSection(containerEl) {
-    containerEl.createEl("p", {
-      text: "\u65E5\u5E38\u53EA\u9700\u8981\u7EF4\u62A4\u4E3B\u8981 API \u6A21\u578B\uFF1B\u591A\u6A21\u578B\u914D\u7F6E\u4ECD\u7136\u4FDD\u7559\u5728\u4E0B\u65B9\u9AD8\u7EA7\u6298\u53E0\u533A\u3002",
-      cls: "setting-item-description"
-    });
-    const renderModelConfig = (targetEl, model, index) => {
-      const isActive = model.id === this.plugin.settings.activeModelId;
-      const header = new import_obsidian5.Setting(targetEl).setName(`\u6A21\u578B ${index + 1}${isActive ? " \xB7 \u9ED8\u8BA4" : ""}`);
-      header.addText(
-        (text) => text.setPlaceholder("\u540D\u79F0").setValue(model.name).onChange(async (value) => {
-          model.name = value;
-          await this.plugin.saveSettings();
-        })
-      );
-      if (!isActive) {
-        header.addExtraButton((button) => {
-          labelExtraButton(button, "\u8BBE\u4E3A\u9ED8\u8BA4");
-          button.setIcon("star").onClick(async () => {
-            this.plugin.settings.activeModelId = model.id;
-            await this.plugin.saveSettings();
-            this.display();
-          });
-        });
-      }
-      header.addExtraButton((button) => {
-        labelExtraButton(button, "\u5220\u9664\u8FD9\u4E2A\u6A21\u578B");
-        button.setIcon("trash").onClick(async () => {
-          if (this.plugin.settings.models.length <= 1) {
-            new import_obsidian5.Notice("\u81F3\u5C11\u8981\u4FDD\u7559\u4E00\u4E2A\u6A21\u578B\u914D\u7F6E");
-            return;
-          }
-          this.plugin.settings.models.splice(index, 1);
-          if (this.plugin.settings.activeModelId === model.id) {
-            this.plugin.settings.activeModelId = this.plugin.settings.models[0].id;
-          }
-          await this.plugin.saveSettings();
-          this.display();
-        });
-      });
-      new import_obsidian5.Setting(targetEl).setName("Endpoint").addText(
-        (text) => text.setPlaceholder("OpenAI \u517C\u5BB9\u7684 chat/completions \u63A5\u53E3\u5730\u5740").setValue(model.endpoint).onChange(async (value) => {
-          model.endpoint = value.trim();
-          await this.plugin.saveSettings();
-        })
-      );
-      new import_obsidian5.Setting(targetEl).setName("API Key").addText((text) => {
-        text.inputEl.type = "password";
-        text.setValue(model.apiKey).onChange(async (value) => {
-          model.apiKey = value.trim();
-          await this.plugin.saveSettings();
-        });
-      });
-      new import_obsidian5.Setting(targetEl).setName("\u6A21\u578B\u540D(model \u5B57\u6BB5)").addText(
-        (text) => text.setValue(model.model).onChange(async (value) => {
-          model.model = value.trim();
-          await this.plugin.saveSettings();
-        })
-      );
-      targetEl.createEl("hr");
-    };
-    const activeIndex = Math.max(
-      0,
-      this.plugin.settings.models.findIndex((model) => model.id === this.plugin.settings.activeModelId)
-    );
-    const activeModel = this.plugin.settings.models[activeIndex] || this.plugin.settings.models[0];
-    if (activeModel) renderModelConfig(containerEl, activeModel, activeIndex);
-    const maybeAdvancedEl = containerEl.createEl("details", { cls: "pdf-chat-settings-advanced-models" });
-    const advancedEl = maybeAdvancedEl && typeof maybeAdvancedEl.createEl === "function" ? maybeAdvancedEl : containerEl;
-    if (advancedEl !== containerEl) {
-      advancedEl.createEl("summary", { text: "\u9AD8\u7EA7\u6A21\u578B\u914D\u7F6E" });
-    }
-    this.plugin.settings.models.forEach((model, index) => {
-      if (index === activeIndex) return;
-      renderModelConfig(advancedEl, model, index);
-    });
-    new import_obsidian5.Setting(advancedEl).addButton(
-      (button) => button.setButtonText("+ \u6DFB\u52A0\u6A21\u578B").setCta().onClick(async () => {
-        this.plugin.settings.models.push({
-          id: "model-" + Date.now(),
-          name: "\u65B0\u6A21\u578B",
-          endpoint: "",
-          apiKey: "",
-          model: ""
-        });
-        await this.plugin.saveSettings();
-        this.display();
-      })
-    );
-  }
-  renderChatSection(containerEl) {
-    new import_obsidian5.Setting(containerEl).setName("\u6D41\u5F0F\u8F93\u51FA").setDesc("\u5F00\u542F\u540E\u7B54\u6848\u4F1A\u4E00\u8FB9\u751F\u6210\u4E00\u8FB9\u663E\u793A\uFF1B\u5173\u95ED\u5219\u7B49\u751F\u6210\u5B8C\u518D\u4E00\u6B21\u6027\u663E\u793A").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.stream).onChange(async (value) => {
-        this.plugin.settings.stream = value;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian5.Setting(containerEl).setName("Temperature").addText(
-      (text) => text.setValue(String(this.plugin.settings.temperature)).onChange(async (value) => {
-        const parsed = parseFloat(value);
-        this.plugin.settings.temperature = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.temperature;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian5.Setting(containerEl).setName("Max Tokens").addText(
-      (text) => text.setValue(String(this.plugin.settings.maxTokens)).onChange(async (value) => {
-        const parsed = parseInt(value, 10);
-        this.plugin.settings.maxTokens = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.maxTokens;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian5.Setting(containerEl).setName("\u7EE7\u7EED\u5BF9\u8BDD\u4F7F\u7528\u7684\u6A21\u578B").setDesc("\u7559\u7A7A\u65F6\u4F18\u5148\u9009\u62E9 id\u3001\u6A21\u578B\u540D\u6216\u663E\u793A\u540D\u79F0\u4E2D\u5305\u542B GLM \u7684\u6A21\u578B\uFF0C\u7136\u540E\u56DE\u9000\u5230\u9ED8\u8BA4\u6A21\u578B\u3002").addDropdown((dropdown) => {
-      dropdown.addOption("", "\u81EA\u52A8\uFF08\u4F18\u5148 GLM\uFF09");
-      this.plugin.settings.models.forEach((model) => dropdown.addOption(model.id, model.name));
-      dropdown.setValue(this.plugin.settings.continueModelId);
-      dropdown.onChange(async (value) => {
-        this.plugin.settings.continueModelId = value;
-        await this.plugin.saveSettings();
-      });
-    });
-    new import_obsidian5.Setting(containerEl).setName("\u7CFB\u7EDF\u63D0\u793A\u8BCD").setDesc("\u4F1A\u81EA\u52A8\u9644\u52A0\u9009\u4E2D\u7684\u539F\u6587\u7247\u6BB5\u5728\u5176\u540E").addTextArea((text) => {
-      text.inputEl.rows = 6;
-      text.setValue(this.plugin.settings.systemPrompt).onChange(async (value) => {
-        this.plugin.settings.systemPrompt = value;
-        await this.plugin.saveSettings();
-      });
-    });
-  }
-  renderTranslationSection(containerEl) {
-    new import_obsidian5.Setting(containerEl).setName("\u7FFB\u8BD1\u4F7F\u7528\u7684\u6A21\u578B").setDesc("\u7559\u7A7A\u65F6\u4F18\u5148\u9009\u62E9 id\u3001\u6A21\u578B\u540D\u6216\u663E\u793A\u540D\u79F0\u4E2D\u5305\u542B DeepSeek \u7684\u6A21\u578B\uFF0C\u7136\u540E\u56DE\u9000\u5230\u9ED8\u8BA4\u6A21\u578B\u3002").addDropdown((dropdown) => {
-      dropdown.addOption("", "\u81EA\u52A8\uFF08\u4F18\u5148 DeepSeek\uFF09");
-      this.plugin.settings.models.forEach((model) => dropdown.addOption(model.id, model.name));
-      dropdown.setValue(this.plugin.settings.translateModelId);
-      dropdown.onChange(async (value) => {
-        this.plugin.settings.translateModelId = value;
-        await this.plugin.saveSettings();
-      });
-    });
-    new import_obsidian5.Setting(containerEl).setName("\u5212\u8BCD\u540E\u81EA\u52A8\u51FA\u73B0\u300C\u8BD1\u300D\u60AC\u6D6E\u56FE\u6807").setDesc("\u4EC5\u5728\u6D3B\u52A8\u89C6\u56FE\u662F PDF \u4E14\u9009\u533A\u975E\u7A7A\u65F6\u663E\u793A\uFF1B\u70B9\u51FB\u540E\u6253\u5F00\u65B0\u5F39\u7A97\u5E76\u81EA\u52A8\u7FFB\u8BD1\u3002").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.quickTranslateMarkerEnabled).onChange(async (value) => {
-        this.plugin.settings.quickTranslateMarkerEnabled = value;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian5.Setting(containerEl).setName("\u7FFB\u8BD1\u76EE\u6807\u8BED\u8A00").setDesc("\u7528\u4E8E\u5F39\u7A97\u4E2D\u7684\u9009\u533A\u7FFB\u8BD1\uFF0C\u4F8B\u5982 zh-CN\u3001en \u6216 ja").addText(
-      (text) => text.setValue(this.plugin.settings.translation.targetLanguage).onChange(async (value) => {
-        this.plugin.settings.translation.targetLanguage = value.trim() || DEFAULT_SETTINGS.translation.targetLanguage;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian5.Setting(containerEl).setName("\u7FFB\u8BD1\u5206\u5757\u5927\u5C0F\uFF08Unicode \u5B57\u7B26\uFF09").setDesc("\u957F\u9009\u533A\u4F1A\u6309 Unicode \u5B57\u7B26\u6570\u5206\u5757\u53D1\u9001\u3002\u8BF7\u8F93\u5165\u5927\u4E8E 0 \u7684\u6574\u6570\uFF1B\u65E0\u6548\u503C\u6062\u590D\u4E3A 8000\u3002").addText(
-      (text) => text.setValue(String(this.plugin.settings.translation.chunkChars)).onChange(async (value) => {
-        const parsed = Number(value.trim());
-        this.plugin.settings.translation.chunkChars = Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_SETTINGS.translation.chunkChars;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian5.Setting(containerEl).setName("\u7FFB\u8BD1\u9644\u52A0\u8981\u6C42").setDesc("\u53EF\u9009\u3002\u7528\u4E8E\u8865\u5145\u672F\u8BED\u3001\u98CE\u683C\u6216\u9886\u57DF\u7EA6\u5B9A\uFF1B\u539F\u6587\u7531\u72EC\u7ACB\u7FFB\u8BD1\u4EFB\u52A1\u5B89\u5168\u9644\u52A0\u3002").addTextArea((text) => {
-      text.inputEl.rows = 4;
-      text.setValue(this.plugin.settings.translation.additionalInstruction).onChange(async (value) => {
-        this.plugin.settings.translation.additionalInstruction = value;
-        await this.plugin.saveSettings();
-      });
-    });
-  }
-  renderPaperContextSection(containerEl) {
-    containerEl.createEl("h4", { text: "\u5168\u6587\u6458\u8981" });
-    containerEl.createEl("p", {
-      text: "\u5168\u6587\u6458\u8981\u6309\u6587\u4EF6\u8DEF\u5F84\u548C\u4FEE\u6539\u65F6\u95F4\u7F13\u5B58\uFF0C\u53EF\u4F5C\u4E3A\u5F53\u524D\u9009\u533A\u4E4B\u5916\u7684\u7B80\u8981\u80CC\u666F\u3002\u4EC5\u5BF9 PDF \u751F\u6548\u3002",
-      cls: "setting-item-description"
-    });
-    new import_obsidian5.Setting(containerEl).setName("\u6253\u5F00 PDF \u5212\u8BCD\u5F39\u7A97\u65F6\u81EA\u52A8\u9644\u5E26\u5168\u6587\u6458\u8981").setDesc("\u6709\u7F13\u5B58\u65F6\u76F4\u63A5\u4F7F\u7528\uFF1B\u6CA1\u6709\u7F13\u5B58\u65F6\u81EA\u52A8\u751F\u6210\u4E00\u6B21\u3002").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.autoDocSummary).onChange(async (value) => {
-        this.plugin.settings.autoDocSummary = value;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian5.Setting(containerEl).setName("\u6458\u8981\u751F\u6210\u7528\u7684\u6A21\u578B").setDesc("\u5EFA\u8BAE\u9009\u62E9\u901F\u5EA6\u5FEB\u3001\u6210\u672C\u4F4E\u7684\u6A21\u578B\uFF0C\u804A\u5929\u4E3B\u6A21\u578B\u53EF\u4EE5\u4E0D\u540C\u3002").addDropdown((dropdown) => {
-      this.plugin.settings.models.forEach((model) => dropdown.addOption(model.id, model.name));
-      dropdown.setValue(this.plugin.settings.summaryModelId || this.plugin.settings.activeModelId);
-      dropdown.onChange(async (value) => {
-        this.plugin.settings.summaryModelId = value;
-        await this.plugin.saveSettings();
-      });
-    });
-    new import_obsidian5.Setting(containerEl).setName("\u5168\u6587\u622A\u65AD\u5B57\u7B26\u6570\u4E0A\u9650").addText(
-      (text) => text.setValue(String(this.plugin.settings.summaryMaxChars)).onChange(async (value) => {
-        const parsed = parseInt(value, 10);
-        this.plugin.settings.summaryMaxChars = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.summaryMaxChars;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian5.Setting(containerEl).setName("\u6458\u8981\u6700\u5927\u8F93\u51FA token \u6570").addText(
-      (text) => text.setValue(String(this.plugin.settings.summaryMaxTokens)).onChange(async (value) => {
-        const parsed = parseInt(value, 10);
-        this.plugin.settings.summaryMaxTokens = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.summaryMaxTokens;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian5.Setting(containerEl).setName("\u6458\u8981\u751F\u6210\u63D0\u793A\u8BCD").addTextArea((text) => {
-      text.inputEl.rows = 5;
-      text.inputEl.style.width = "100%";
-      text.setValue(this.plugin.settings.summaryPrompt).onChange(async (value) => {
-        this.plugin.settings.summaryPrompt = value;
-        await this.plugin.saveSettings();
-      });
-    });
-    new import_obsidian5.Setting(containerEl).setName("\u6E05\u7A7A\u5DF2\u7F13\u5B58\u7684\u5168\u6587\u6458\u8981").setDesc(`\u5F53\u524D\u5DF2\u7F13\u5B58 ${Object.keys(this.plugin.settings.docSummaries || {}).length} \u7BC7\u6587\u6863\u7684\u6458\u8981`).addButton(
-      (button) => button.setButtonText("\u6E05\u7A7A\u7F13\u5B58").onClick(async () => {
-        this.plugin.settings.docSummaries = {};
-        await this.plugin.saveSettings();
-        this.display();
-      })
-    );
-    containerEl.createEl("h4", { text: "\u5168\u6587\u76F4\u8BFB / RAG \u68C0\u7D22" });
-    containerEl.createEl("p", {
-      text: "\u8F83\u77ED PDF \u76F4\u63A5\u63D0\u4F9B\u5168\u6587\uFF1B\u8D85\u8FC7\u9608\u503C\u65F6\u9000\u56DE\u672C\u5730 BM25 \u68C0\u7D22\u3002\u68C0\u7D22\u4E0E\u6458\u8981\u4E92\u8865\uFF0C\u4E0D\u9700\u8981 embedding \u6A21\u578B\u3002",
-      cls: "setting-item-description"
-    });
-    new import_obsidian5.Setting(containerEl).setName("\u5168\u6587\u76F4\u8BFB\u7684\u5B57\u6570\u9608\u503C").setDesc("\u5168\u6587\u4E0D\u8D85\u8FC7\u6B64\u503C\u65F6\u76F4\u63A5\u4EA4\u7ED9\u6A21\u578B\u56DE\u7B54\uFF1B\u8D85\u8FC7\u65F6\u4F7F\u7528\u5173\u952E\u8BCD\u68C0\u7D22\u3002").addText(
-      (text) => text.setValue(String(this.plugin.settings.ragFullTextThreshold)).onChange(async (value) => {
-        const parsed = parseInt(value, 10);
-        this.plugin.settings.ragFullTextThreshold = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.ragFullTextThreshold;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian5.Setting(containerEl).setName("\u6253\u5F00 PDF \u5212\u8BCD\u5F39\u7A97\u65F6\u81EA\u52A8\u5EFA\u7ACB\u68C0\u7D22\u7D22\u5F15").setDesc("\u7D22\u5F15\u662F\u7EAF\u672C\u5730\u6587\u672C\u5207\u5757\uFF0C\u51E0\u4E4E\u4E0D\u8017\u65F6\u3002").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.autoRag).onChange(async (value) => {
-        this.plugin.settings.autoRag = value;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian5.Setting(containerEl).setName("\u63D0\u95EE\u524D\u5148\u8BA9\u5FEB\u6A21\u578B\u601D\u8003\u68C0\u7D22\u89D2\u5EA6").setDesc("\u751F\u6210\u591A\u7EC4\u4E2D\u82F1\u53CC\u8BED\u68C0\u7D22\u8BCD\u540E\u878D\u5408\u6392\u5E8F\uFF0C\u4EE3\u4EF7\u662F\u6BCF\u6B21\u63D0\u95EE\u591A\u4E00\u6B21\u6A21\u578B\u8C03\u7528\u3002").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.ragQueryTranslate).onChange(async (value) => {
-        this.plugin.settings.ragQueryTranslate = value;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian5.Setting(containerEl).setName("\u68C0\u7D22\u89D2\u5EA6\u89C4\u5212\u63D0\u793A\u8BCD").addTextArea((text) => {
-      text.inputEl.rows = 5;
-      text.inputEl.style.width = "100%";
-      text.setValue(this.plugin.settings.ragQueryPrompt).onChange(async (value) => {
-        this.plugin.settings.ragQueryPrompt = value;
-        await this.plugin.saveSettings();
-      });
-    });
-    new import_obsidian5.Setting(containerEl).setName("\u6BCF\u6B21\u68C0\u7D22\u8FD4\u56DE\u7684\u7247\u6BB5\u6570(Top K)").addText(
-      (text) => text.setValue(String(this.plugin.settings.ragTopK)).onChange(async (value) => {
-        const parsed = parseInt(value, 10);
-        this.plugin.settings.ragTopK = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.ragTopK;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian5.Setting(containerEl).setName("\u5355\u5757\u6700\u5927\u5B57\u7B26\u6570").addText(
-      (text) => text.setValue(String(this.plugin.settings.ragChunkSize)).onChange(async (value) => {
-        const normalized = normalizeRagChunkSettings(
-          Number(value.trim()),
-          this.plugin.settings.ragChunkOverlap
-        );
-        this.plugin.settings.ragChunkSize = normalized.ragChunkSize;
-        this.plugin.settings.ragChunkOverlap = normalized.ragChunkOverlap;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian5.Setting(containerEl).setName("\u5207\u5757\u91CD\u53E0\u5B57\u7B26\u6570").addText(
-      (text) => text.setValue(String(this.plugin.settings.ragChunkOverlap)).onChange(async (value) => {
-        const normalized = normalizeRagChunkSettings(
-          this.plugin.settings.ragChunkSize,
-          Number(value.trim())
-        );
-        this.plugin.settings.ragChunkSize = normalized.ragChunkSize;
-        this.plugin.settings.ragChunkOverlap = normalized.ragChunkOverlap;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian5.Setting(containerEl).setName("\u6E05\u7A7A\u5DF2\u7F13\u5B58\u7684\u68C0\u7D22\u7D22\u5F15").setDesc(`\u5F53\u524D\u5DF2\u4E3A ${Object.keys(this.plugin.settings.docChunks || {}).length} \u7BC7\u6587\u6863\u5EFA\u7ACB\u8FC7\u7D22\u5F15`).addButton(
-      (button) => button.setButtonText("\u6E05\u7A7A\u7F13\u5B58").onClick(async () => {
-        this.plugin.settings.docChunks = {};
-        await this.plugin.saveSettings();
-        this.display();
-      })
-    );
-  }
-  renderAdvancedSection(containerEl) {
-    containerEl.createEl("p", {
-      text: "\u9ED8\u8BA4\u5FEB\u6377\u952E\uFF1ACtrl+Alt+Q \u65B0\u5F00\u5BF9\u8BDD\uFF1BCtrl+Q \u7EE7\u7EED\u4E0A\u6B21\u5BF9\u8BDD\u3002\u53EF\u5728 \u8BBE\u7F6E\u2192\u5FEB\u6377\u952E\u2192\u641C\u7D22\u201CPDF Chat\u201D\u4E2D\u4FEE\u6539\u3002\u5F39\u7A97\u652F\u6301\u62D6\u52A8\u3001\u7F29\u653E\u3001\u8FDE\u7EED\u8FFD\u95EE\u548C\u505C\u6B62\u751F\u6210\u3002",
-      cls: "setting-item-description"
-    });
-    containerEl.createEl("h4", { text: "Codex \u8BBA\u6587\u7EC8\u7AEF" });
-    containerEl.createEl("p", {
-      text: "\u542F\u7528\u540E\uFF0C\u53EF\u5728\u804A\u5929\u6846\u8F93\u5165 /codex \u8FDB\u5165 Codex CLI \u591A\u8F6E\u4F1A\u8BDD\u3002\u666E\u901A\u6A21\u5F0F\u4E0D\u4F1A\u6839\u636E\u5173\u952E\u8BCD\u81EA\u52A8\u5207\u6362\u3002\u9ED8\u8BA4\u53EA\u5411 Codex \u63D0\u4F9B\u7528\u6237\u95EE\u9898\u3001\u6240\u9009 PDF \u7684\u672C\u5730\u8DEF\u5F84\u548C\u53EF\u9009\u7684\u5F53\u524D\u9009\u533A\uFF0C\u4E0D\u4F1A\u4F20\u9012 data.json\u3001API key \u6216\u6A21\u578B endpoint\u3002",
-      cls: "setting-item-description"
-    });
-    new import_obsidian5.Setting(containerEl).setName("\u542F\u7528 Codex CLI \u6DF1\u5EA6\u5206\u6790").setDesc("\u4EC5\u684C\u9762\u7AEF\u53EF\u7528\u3002Codex \u4F7F\u7528\u5B83\u81EA\u5DF1\u7684\u767B\u5F55/\u914D\u7F6E\uFF0C\u4E0D\u4F7F\u7528 PDF Chat \u7684 API key\u3002").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.codexDeepAnalysis.enabled).onChange(async (value) => {
-        this.plugin.settings.codexDeepAnalysis.enabled = value;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian5.Setting(containerEl).setName("Codex \u547D\u4EE4").setDesc("\u9ED8\u8BA4 codex\uFF1B\u5982\u679C\u4E0D\u5728 PATH \u4E2D\uFF0C\u53EF\u586B\u5199 codex \u53EF\u6267\u884C\u6587\u4EF6\u7684\u5B8C\u6574\u8DEF\u5F84\u3002").addText(
-      (text) => text.setValue(this.plugin.settings.codexDeepAnalysis.command).onChange(async (value) => {
-        this.plugin.settings.codexDeepAnalysis.command = value.trim() || DEFAULT_SETTINGS.codexDeepAnalysis.command;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian5.Setting(containerEl).setName("Codex profile").setDesc("\u53EF\u9009\uFF1B\u5BF9\u5E94 codex exec --profile\u3002\u7559\u7A7A\u5219\u4F7F\u7528 Codex \u9ED8\u8BA4\u914D\u7F6E\u3002").addText(
-      (text) => text.setValue(this.plugin.settings.codexDeepAnalysis.profile).onChange(async (value) => {
-        this.plugin.settings.codexDeepAnalysis.profile = value.trim();
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian5.Setting(containerEl).setName("Codex model").setDesc("\u5BF9\u5E94 codex exec --model\u3002\u9ED8\u8BA4 gpt-5.5\uFF1B\u4E5F\u53EF\u4EE5\u5728\u804A\u5929\u6846\u7528 /model \u5207\u6362\u3002").addText(
-      (text) => text.setValue(this.plugin.settings.codexDeepAnalysis.model).onChange(async (value) => {
-        this.plugin.settings.codexDeepAnalysis.model = value.trim() || DEFAULT_SETTINGS.codexDeepAnalysis.model;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian5.Setting(containerEl).setName("Codex reasoning effort").setDesc("\u5BF9\u5E94 -c model_reasoning_effort\u3002\u9ED8\u8BA4 medium\uFF1B\u6DF1\u5EA6\u4EFB\u52A1\u53EF\u5347\u5230 high/xhigh\u3002").addDropdown((dropdown) => {
-      for (const effort of ["minimal", "low", "medium", "high", "xhigh"]) {
-        dropdown.addOption(effort, effort);
-      }
-      dropdown.setValue(this.plugin.settings.codexDeepAnalysis.reasoningEffort).onChange(async (value) => {
-        this.plugin.settings.codexDeepAnalysis.reasoningEffort = value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" ? value : DEFAULT_SETTINGS.codexDeepAnalysis.reasoningEffort;
-        await this.plugin.saveSettings();
-      });
-    });
-    new import_obsidian5.Setting(containerEl).setName("Codex verbosity").setDesc("\u5BF9\u5E94 -c model_verbosity\u3002\u9ED8\u8BA4 medium\uFF0C\u9700\u8981\u66F4\u5145\u5206\u65F6\u53EF\u6539 high\u3002").addDropdown((dropdown) => {
-      for (const verbosity of ["low", "medium", "high"]) dropdown.addOption(verbosity, verbosity);
-      dropdown.setValue(this.plugin.settings.codexDeepAnalysis.verbosity).onChange(async (value) => {
-        this.plugin.settings.codexDeepAnalysis.verbosity = value === "low" || value === "medium" || value === "high" ? value : DEFAULT_SETTINGS.codexDeepAnalysis.verbosity;
-        await this.plugin.saveSettings();
-      });
-    });
-    new import_obsidian5.Setting(containerEl).setName("Codex input mode").setDesc("\u9ED8\u8BA4 PDF-only\uFF1ACodex \u5728\u5F53\u524D PDF \u6587\u4EF6\u5939\u4E2D\u76F4\u63A5\u8BFB\u53D6\u6240\u9009 PDF \u8DEF\u5F84\uFF1BDebug full \u4EC5\u4FDD\u7559\u7ED9\u65E7\u7684\u4E00\u6B21\u6027\u8BCA\u65AD\u6D41\u7A0B\u3002").addDropdown((dropdown) => {
-      dropdown.addOption("pdf-only", "PDF-only");
-      dropdown.addOption("debug-full", "Debug full");
-      dropdown.setValue(this.plugin.settings.codexDeepAnalysis.inputMode || DEFAULT_SETTINGS.codexDeepAnalysis.inputMode);
-      dropdown.onChange(async (value) => {
-        this.plugin.settings.codexDeepAnalysis.inputMode = value === "debug-full" ? value : "pdf-only";
-        await this.plugin.saveSettings();
-      });
-    });
-    new import_obsidian5.Setting(containerEl).setName("Codex output mode").setDesc("\u9ED8\u8BA4 Markdown\uFF1A\u8BA9 Codex \u81EA\u7136\u56DE\u7B54\uFF1BJSON schema \u4EC5\u7528\u4E8E\u7ED3\u6784\u5316\u517C\u5BB9\u6216\u8C03\u8BD5\u3002").addDropdown((dropdown) => {
-      dropdown.addOption("markdown", "Markdown (natural)");
-      dropdown.addOption("json-schema", "JSON schema (structured/debug)");
-      dropdown.setValue(this.plugin.settings.codexDeepAnalysis.outputMode || DEFAULT_SETTINGS.codexDeepAnalysis.outputMode);
-      dropdown.onChange(async (value) => {
-        this.plugin.settings.codexDeepAnalysis.outputMode = value === "json-schema" ? "json-schema" : "markdown";
-        await this.plugin.saveSettings();
-      });
-    });
-    new import_obsidian5.Setting(containerEl).setName("Codex \u9ED8\u8BA4\u9644\u5E26\u9009\u533A\u4E0A\u4E0B\u6587").setDesc("\u5F00\u542F\u540E\uFF0CPDF Chat \u4F1A\u628A\u5F53\u524D\u5212\u9009\u6BB5\u843D\u76F4\u63A5\u9644\u5728\u4E0B\u4E00\u8F6E Codex prompt \u4E2D\uFF1B\u5F39\u7A97\u5185\u4E5F\u53EF\u7528\u201C\u9644\u9009\u533A\u201D\u6309\u94AE\u6216 /context \u4E34\u65F6\u5207\u6362\u3002").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.codexDeepAnalysis.includeSelectionContext).onChange(async (value) => {
-        this.plugin.settings.codexDeepAnalysis.includeSelectionContext = value;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian5.Setting(containerEl).setName("Codex \u8D85\u65F6\u6BEB\u79D2").setDesc("\u9ED8\u8BA4 1800000\uFF0C\u5373 30 \u5206\u949F\uFF1BPDF \u8BFB\u53D6\u6216\u9AD8\u5F3A\u5EA6\u63A8\u7406\u53EF\u80FD\u8F83\u6162\uFF0C\u8D85\u65F6\u540E\u4F1A\u7EC8\u6B62 Codex \u8FDB\u7A0B\u3002").addText(
-      (text) => text.setValue(String(this.plugin.settings.codexDeepAnalysis.timeoutMs)).onChange(async (value) => {
-        const parsed = Number(value.trim());
-        this.plugin.settings.codexDeepAnalysis.timeoutMs = Number.isFinite(parsed) && parsed >= 3e4 ? Math.floor(parsed) : DEFAULT_SETTINGS.codexDeepAnalysis.timeoutMs;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian5.Setting(containerEl).setName("\u4FDD\u7559 Codex \u4E34\u65F6\u5206\u6790\u5305").setDesc("\u4EC5\u5F71\u54CD\u65E7\u7684 Debug full \u4E00\u6B21\u6027\u8BCA\u65AD\u6D41\u7A0B\uFF1B\u5E38\u89C4 /codex \u591A\u8F6E\u4F1A\u8BDD\u4E0D\u4F1A\u521B\u5EFA\u4E34\u65F6\u5206\u6790\u5305\u3002").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.codexDeepAnalysis.keepTempFiles).onChange(async (value) => {
-        this.plugin.settings.codexDeepAnalysis.keepTempFiles = value;
-        await this.plugin.saveSettings();
-      })
-    );
-    containerEl.createEl("h4", { text: "\u9605\u8BFB\u6A21\u5F0F\u9884\u8BBE" });
-    containerEl.createEl("p", {
-      text: "\u5F39\u7A97\u7684\u9605\u8BFB\u6A21\u5F0F\u4F1A\u5217\u51FA\u8FD9\u4E9B\u9884\u8BBE\uFF1B\u5207\u6362\u540E\u66FF\u6362\u7CFB\u7EDF\u63D0\u793A\u8BCD\uFF0C\u9009\u533A\u539F\u6587\u4ECD\u4F1A\u81EA\u52A8\u9644\u52A0\u3002",
-      cls: "setting-item-description"
-    });
-    this.plugin.settings.promptPresets.forEach((preset, index) => {
-      const nameSetting = new import_obsidian5.Setting(containerEl).setName(`\u9884\u8BBE ${index + 1}`);
-      nameSetting.addText(
-        (text) => text.setPlaceholder("\u540D\u79F0").setValue(preset.name).onChange(async (value) => {
-          preset.name = value;
-          await this.plugin.saveSettings();
-        })
-      );
-      nameSetting.addExtraButton((button) => {
-        labelExtraButton(button, "\u5220\u9664\u8FD9\u4E2A\u9884\u8BBE");
-        button.setIcon("trash").onClick(async () => {
-          this.plugin.settings.promptPresets.splice(index, 1);
-          await this.plugin.saveSettings();
-          this.display();
-        });
-      });
-      new import_obsidian5.Setting(containerEl).addTextArea((text) => {
-        text.inputEl.rows = 4;
-        text.inputEl.style.width = "100%";
-        text.setPlaceholder("\u8FD9\u5957\u6A21\u5F0F\u7684\u7CFB\u7EDF\u63D0\u793A\u8BCD/\u6307\u4EE4").setValue(preset.prompt).onChange(async (value) => {
-          preset.prompt = value;
-          await this.plugin.saveSettings();
-        });
-      });
-    });
-    new import_obsidian5.Setting(containerEl).addButton(
-      (button) => button.setButtonText("+ \u6DFB\u52A0\u9884\u8BBE").setCta().onClick(async () => {
-        this.plugin.settings.promptPresets.push({
-          id: "preset-" + Date.now(),
-          name: "\u65B0\u9884\u8BBE",
-          prompt: ""
-        });
-        await this.plugin.saveSettings();
-        this.display();
-      })
-    );
-  }
-};
-
-// src/vault-lifecycle.ts
-function pdfKey(path) {
-  return `pdf:${path}`;
-}
-function replaceExactPath(paths, oldPath, newPath) {
-  return Array.from(new Set(paths.map((path) => path === oldPath ? newPath : path)));
-}
-function chooseNewer(current, candidate) {
-  var _a, _b, _c, _d;
-  if (!candidate) return current;
-  if (!current) return candidate;
-  const currentTime = (_b = (_a = current.updatedAt) != null ? _a : current.generatedAt) != null ? _b : 0;
-  const candidateTime = (_d = (_c = candidate.updatedAt) != null ? _c : candidate.generatedAt) != null ? _d : 0;
-  return candidateTime > currentTime ? candidate : current;
-}
-function sessionUpdatedAt(sessions, id) {
-  return id && sessions[id] ? sessions[id].updatedAt : 0;
-}
-function reconcilePdfRenameState(input, oldPath, newPath) {
-  if (!oldPath || !newPath || oldPath === newPath) return input;
-  const oldKey = pdfKey(oldPath);
-  const newKey = pdfKey(newPath);
-  const conversationSessions = Object.fromEntries(
-    Object.entries(input.conversationSessions).map(([id, session]) => [
-      id,
-      {
-        ...session,
-        conversationKey: session.conversationKey === oldKey ? newKey : session.conversationKey,
-        referencedPdfPaths: replaceExactPath(session.referencedPdfPaths, oldPath, newPath),
-        sourceStatus: session.conversationKey === oldKey ? "available" : session.sourceStatus
-      }
-    ])
-  );
-  const activeConversationSessionIds = { ...input.activeConversationSessionIds };
-  const oldActiveId = activeConversationSessionIds[oldKey];
-  if (oldActiveId) {
-    const currentNewId = activeConversationSessionIds[newKey];
-    if (!currentNewId || sessionUpdatedAt(conversationSessions, oldActiveId) >= sessionUpdatedAt(conversationSessions, currentNewId)) {
-      activeConversationSessionIds[newKey] = oldActiveId;
-    }
-    delete activeConversationSessionIds[oldKey];
-  }
-  const conversationHistories = { ...input.conversationHistories };
-  const migratedHistory = chooseNewer(conversationHistories[newKey], conversationHistories[oldKey]);
-  if (migratedHistory) conversationHistories[newKey] = migratedHistory;
-  delete conversationHistories[oldKey];
-  const docSummaries = { ...input.docSummaries };
-  const migratedSummary = chooseNewer(docSummaries[newPath], docSummaries[oldPath]);
-  if (migratedSummary) docSummaries[newPath] = migratedSummary;
-  delete docSummaries[oldPath];
-  const docChunks = { ...input.docChunks };
-  const migratedChunks = chooseNewer(docChunks[newPath], docChunks[oldPath]);
-  if (migratedChunks) docChunks[newPath] = migratedChunks;
-  delete docChunks[oldPath];
-  return {
-    ...input,
-    conversationSessions,
-    activeConversationSessionIds,
-    conversationHistories,
-    docSummaries,
-    docChunks
-  };
-}
-function reconcilePdfDeleteState(input, path) {
-  if (!path) return input;
-  const key = pdfKey(path);
-  const conversationSessions = Object.fromEntries(
-    Object.entries(input.conversationSessions).map(([id, session]) => [
-      id,
-      session.conversationKey === key ? { ...session, sourceStatus: "missing" } : { ...session }
-    ])
-  );
-  const docSummaries = { ...input.docSummaries };
-  const docChunks = { ...input.docChunks };
-  delete docSummaries[path];
-  delete docChunks[path];
-  return { ...input, conversationSessions, docSummaries, docChunks };
-}
-function isPdfPath(path) {
-  return /\.pdf$/i.test(path);
-}
-var VaultLifecycleService = class {
-  constructor(vault, getSettings, replaceSettings, persist) {
-    this.vault = vault;
-    this.getSettings = getSettings;
-    this.replaceSettings = replaceSettings;
-    this.persist = persist;
-    __publicField(this, "queue", Promise.resolve());
-  }
-  attach(register) {
-    register(
-      this.vault.on("rename", (file, oldPath) => {
-        const newPath = file.path;
-        if (isPdfPath(oldPath) && isPdfPath(newPath)) {
-          this.enqueue(() => reconcilePdfRenameState(this.getSettings(), oldPath, newPath));
-        } else if (isPdfPath(oldPath)) {
-          this.enqueue(() => reconcilePdfDeleteState(this.getSettings(), oldPath));
-        }
-      })
-    );
-    register(
-      this.vault.on("delete", (file) => {
-        if (isPdfPath(file.path)) {
-          this.enqueue(() => reconcilePdfDeleteState(this.getSettings(), file.path));
-        }
-      })
-    );
-  }
-  enqueue(update) {
-    this.queue = this.queue.catch(() => void 0).then(async () => {
-      this.replaceSettings(update());
-      await this.persist();
-    });
-  }
-};
-
 // src/json-store.ts
 var JsonStoreError = class extends Error {
   constructor(message, operation, options) {
@@ -7591,6 +6648,1068 @@ var SessionRepository = class {
   }
 };
 
+// src/reader-data-store.ts
+function clone4(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+function fingerprint(value) {
+  return JSON.stringify(value);
+}
+function isJsonAdapter(value) {
+  if (!value || typeof value !== "object") return false;
+  const adapter = value;
+  return ["exists", "read", "write", "rename", "remove", "mkdir"].every(
+    (method) => typeof adapter[method] === "function"
+  );
+}
+var ReaderDataStore = class {
+  constructor(adapter, root = "reader-data", now = Date.now) {
+    this.adapter = adapter;
+    this.root = root;
+    this.now = now;
+    __publicField(this, "sessions");
+    __publicField(this, "papers");
+    __publicField(this, "active", false);
+    __publicField(this, "sessionFingerprints", /* @__PURE__ */ new Map());
+    __publicField(this, "paperFingerprints", /* @__PURE__ */ new Map());
+    __publicField(this, "syncQueue", Promise.resolve());
+    this.sessions = new SessionRepository(adapter, `${root}/sessions`);
+    this.papers = new PaperAssetRepository(adapter, `${root}/papers`, now);
+  }
+  runtimePapers(settings) {
+    var _a, _b;
+    const assets = {};
+    for (const vaultPath of /* @__PURE__ */ new Set([
+      ...Object.keys(settings.docSummaries || {}),
+      ...Object.keys(settings.docChunks || {})
+    ])) {
+      assets[vaultPath] = {
+        summary: (_a = settings.docSummaries) == null ? void 0 : _a[vaultPath],
+        chunks: (_b = settings.docChunks) == null ? void 0 : _b[vaultPath]
+      };
+    }
+    return assets;
+  }
+  captureBaseline(settings) {
+    this.sessionFingerprints = new Map(
+      Object.entries(normalizeConversationSessions(settings.conversationSessions)).map(([id, session]) => [
+        id,
+        fingerprint(session)
+      ])
+    );
+    this.paperFingerprints = new Map(
+      Object.entries(this.runtimePapers(settings)).map(([vaultPath, asset]) => [
+        vaultPath,
+        fingerprint(asset)
+      ])
+    );
+  }
+  async initialize(settings, commitSettings) {
+    const migrator = new ReaderDataMigrator(
+      this.adapter,
+      this.sessions,
+      this.papers,
+      commitSettings,
+      this.now,
+      this.root
+    );
+    const migration = await migrator.migrate(settings);
+    if (migration.fallback) {
+      this.active = false;
+      return migration;
+    }
+    const storedSessions = await this.sessions.initialize();
+    const storedPapers = await this.papers.initialize();
+    const runtime = clone4(migration.settings);
+    runtime.conversationSessions = storedSessions;
+    runtime.docSummaries = {};
+    runtime.docChunks = {};
+    for (const [vaultPath, asset] of Object.entries(storedPapers)) {
+      if (asset.summary) runtime.docSummaries[vaultPath] = clone4(asset.summary);
+      if (asset.chunks) runtime.docChunks[vaultPath] = clone4(asset.chunks);
+    }
+    this.active = true;
+    this.captureBaseline(runtime);
+    return { ...migration, settings: runtime };
+  }
+  settingsForPersistence(settings) {
+    if (!this.active || settings.readerDataVersion !== 1) return clone4(settings);
+    return {
+      ...clone4(settings),
+      conversationHistories: {},
+      conversationSessions: {},
+      docSummaries: {},
+      docChunks: {}
+    };
+  }
+  synchronize(settings) {
+    if (!this.active) return Promise.resolve();
+    const operation = this.syncQueue.then(() => this.synchronizeNow(settings));
+    this.syncQueue = operation.catch(() => void 0);
+    return operation;
+  }
+  async synchronizeNow(settings) {
+    const desiredSessions = normalizeConversationSessions(settings.conversationSessions);
+    for (const id of this.sessionFingerprints.keys()) {
+      if (!(id in desiredSessions)) await this.sessions.remove(id);
+    }
+    for (const [id, session] of Object.entries(desiredSessions)) {
+      const nextFingerprint = fingerprint(session);
+      if (this.sessionFingerprints.get(id) !== nextFingerprint) await this.sessions.save(session);
+    }
+    const desiredPapers = this.runtimePapers(settings);
+    for (const vaultPath of this.paperFingerprints.keys()) {
+      if (!(vaultPath in desiredPapers)) await this.papers.remove(vaultPath);
+    }
+    for (const [vaultPath, asset] of Object.entries(desiredPapers)) {
+      const nextFingerprint = fingerprint(asset);
+      if (this.paperFingerprints.get(vaultPath) === nextFingerprint) continue;
+      if (this.paperFingerprints.has(vaultPath)) await this.papers.remove(vaultPath);
+      await this.papers.save(vaultPath, asset);
+    }
+    this.captureBaseline(settings);
+  }
+};
+
+// src/quick-translate-marker.ts
+var MARKER_GAP = 8;
+var SELECTION_DEBOUNCE_MS = 150;
+function readSelection(doc) {
+  var _a;
+  const selection = (_a = doc.defaultView) == null ? void 0 : _a.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
+  const text = cleanSelectionText(selection.toString());
+  if (!text) return null;
+  const range = selection.getRangeAt(selection.rangeCount - 1);
+  const rectangles = Array.from(range.getClientRects());
+  const rect = rectangles.length ? rectangles[rectangles.length - 1] : range.getBoundingClientRect();
+  if (!rect) return null;
+  return { selection, snapshot: { text, rect } };
+}
+function clamp(value, minimum, maximum) {
+  return Math.min(Math.max(value, minimum), Math.max(minimum, maximum));
+}
+var QuickTranslateMarker = class {
+  constructor(dependencies) {
+    this.dependencies = dependencies;
+    __publicField(this, "attached", /* @__PURE__ */ new Map());
+    __publicField(this, "markerEl", null);
+    __publicField(this, "markerDocument", null);
+    __publicField(this, "pendingTimer", null);
+    __publicField(this, "setTimer");
+    __publicField(this, "clearTimer");
+    var _a, _b;
+    this.setTimer = (_a = dependencies.setTimer) != null ? _a : ((callback, delay) => setTimeout(callback, delay));
+    this.clearTimer = (_b = dependencies.clearTimer) != null ? _b : ((timer) => clearTimeout(timer));
+  }
+  attach(doc) {
+    if (!doc || this.attached.has(doc)) return;
+    const selectionChange = () => this.scheduleUpdate(doc);
+    const mouseDown = (event) => {
+      const target = event.target;
+      if (this.markerEl && target && this.markerEl.contains(target)) return;
+      this.hide();
+    };
+    const scroll = () => this.hide();
+    const keyDown = (event) => {
+      if (event.key === "Escape") this.hide();
+    };
+    doc.addEventListener("selectionchange", selectionChange);
+    doc.addEventListener("mousedown", mouseDown, true);
+    doc.addEventListener("scroll", scroll, true);
+    doc.addEventListener("keydown", keyDown);
+    this.attached.set(doc, { selectionChange, mouseDown, scroll, keyDown });
+  }
+  hide() {
+    this.cancelPendingUpdate();
+    if (this.markerEl) this.markerEl.hidden = true;
+  }
+  detach(doc) {
+    var _a;
+    const listeners = this.attached.get(doc);
+    if (!listeners) return;
+    doc.removeEventListener("selectionchange", listeners.selectionChange);
+    doc.removeEventListener("mousedown", listeners.mouseDown, true);
+    doc.removeEventListener("scroll", listeners.scroll, true);
+    doc.removeEventListener("keydown", listeners.keyDown);
+    this.attached.delete(doc);
+    if (this.markerDocument === doc) {
+      this.cancelPendingUpdate();
+      (_a = this.markerEl) == null ? void 0 : _a.remove();
+      this.markerEl = null;
+      this.markerDocument = null;
+    }
+  }
+  destroy() {
+    var _a;
+    this.cancelPendingUpdate();
+    for (const doc of Array.from(this.attached.keys())) this.detach(doc);
+    (_a = this.markerEl) == null ? void 0 : _a.remove();
+    this.markerEl = null;
+    this.markerDocument = null;
+  }
+  scheduleUpdate(doc) {
+    this.cancelPendingUpdate();
+    this.pendingTimer = this.setTimer(() => {
+      this.pendingTimer = null;
+      this.updateFromSelection(doc);
+    }, SELECTION_DEBOUNCE_MS);
+  }
+  cancelPendingUpdate() {
+    if (this.pendingTimer === null) return;
+    this.clearTimer(this.pendingTimer);
+    this.pendingTimer = null;
+  }
+  updateFromSelection(doc) {
+    if (!this.dependencies.isEnabled() || !this.dependencies.getActivePdfFile()) {
+      this.hide();
+      return;
+    }
+    const selectionState = readSelection(doc);
+    if (!selectionState || this.dependencies.isSelectionInsideActivePdf && !this.dependencies.isSelectionInsideActivePdf(selectionState.selection, doc)) {
+      this.hide();
+      return;
+    }
+    const marker = this.ensureMarker(doc);
+    marker.hidden = false;
+    this.position(marker, doc, selectionState.snapshot.rect);
+  }
+  ensureMarker(doc) {
+    var _a;
+    if (this.markerEl && this.markerDocument === doc) return this.markerEl;
+    (_a = this.markerEl) == null ? void 0 : _a.remove();
+    const marker = doc.createElement("button");
+    marker.type = "button";
+    marker.className = "pdf-chat-quick-translate-marker";
+    marker.textContent = "\u8BD1";
+    marker.setAttribute("aria-label", "\u7FFB\u8BD1\u5F53\u524D PDF \u9009\u533A");
+    marker.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    marker.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.openCurrentSelection(doc);
+    });
+    doc.body.appendChild(marker);
+    this.markerEl = marker;
+    this.markerDocument = doc;
+    return marker;
+  }
+  openCurrentSelection(doc) {
+    const selectionState = readSelection(doc);
+    const file = this.dependencies.getActivePdfFile();
+    if (!this.dependencies.isEnabled() || !selectionState || !file || this.dependencies.isSelectionInsideActivePdf && !this.dependencies.isSelectionInsideActivePdf(selectionState.selection, doc)) {
+      this.hide();
+      return;
+    }
+    this.hide();
+    this.dependencies.openModal({
+      file,
+      selectedText: selectionState.snapshot.text,
+      startFresh: true,
+      autoTranslateOnOpen: true
+    });
+  }
+  position(marker, doc, selectionRect) {
+    var _a, _b, _c, _d;
+    const viewportWidth = (_b = (_a = doc.defaultView) == null ? void 0 : _a.innerWidth) != null ? _b : doc.documentElement.clientWidth;
+    const viewportHeight = (_d = (_c = doc.defaultView) == null ? void 0 : _c.innerHeight) != null ? _d : doc.documentElement.clientHeight;
+    const markerRect = marker.getBoundingClientRect();
+    const width = markerRect.width || 32;
+    const height = markerRect.height || 32;
+    let left = selectionRect.right + MARKER_GAP;
+    if (left + width + MARKER_GAP > viewportWidth) {
+      left = selectionRect.left - width - MARKER_GAP;
+    }
+    let top = selectionRect.top - height - MARKER_GAP;
+    if (top < MARKER_GAP) top = selectionRect.bottom + MARKER_GAP;
+    marker.style.left = `${clamp(left, MARKER_GAP, viewportWidth - width - MARKER_GAP)}px`;
+    marker.style.top = `${clamp(top, MARKER_GAP, viewportHeight - height - MARKER_GAP)}px`;
+  }
+};
+
+// src/settings.ts
+function normalizePromptHistory(value) {
+  if (!Array.isArray(value)) return [];
+  const result = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const text = item.trim();
+    if (!text || result[result.length - 1] === text) continue;
+    result.push(text);
+  }
+  return result.slice(-100);
+}
+function normalizeActiveSessionIds(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const normalized = {};
+  for (const [key, id] of Object.entries(value)) {
+    if (typeof id === "string" && key.trim() && id.trim()) normalized[key] = id.trim();
+  }
+  return normalized;
+}
+function normalizeReasoningEffort2(value) {
+  return value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" ? value : DEFAULT_SETTINGS.codexDeepAnalysis.reasoningEffort;
+}
+function normalizeVerbosity(value) {
+  return value === "low" || value === "medium" || value === "high" ? value : DEFAULT_SETTINGS.codexDeepAnalysis.verbosity;
+}
+function normalizeCodexInputMode(value) {
+  if (value === "debug-full" || value === "text-fallback") return "debug-full";
+  return value === "pdf-only" ? "pdf-only" : DEFAULT_SETTINGS.codexDeepAnalysis.inputMode;
+}
+function normalizeCodexOutputMode(value) {
+  return value === "json-schema" ? "json-schema" : DEFAULT_SETTINGS.codexDeepAnalysis.outputMode;
+}
+var LEGACY_CODEX_TIMEOUT_MS = 6e5;
+function legacySessionFromHistory(key, history) {
+  const messages = normalizeConversationMessages(history.messages);
+  if (!messages.length) return null;
+  const id = `legacy-${stableConversationHash(key)}`;
+  const timestamp = typeof history.updatedAt === "number" && Number.isFinite(history.updatedAt) ? history.updatedAt : 0;
+  return {
+    version: 2,
+    id,
+    conversationKey: key,
+    title: key.replace(/^pdf:/, ""),
+    mode: "chat",
+    messages,
+    referencedPdfPaths: [],
+    includeCurrentPdfInCodex: true,
+    createdAt: timestamp,
+    updatedAt: timestamp
+  };
+}
+function normalizePositiveInteger(value, fallback) {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
+}
+function normalizeContextBudget(value) {
+  const candidate = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const contextBudget = {
+    maxInputChars: normalizePositiveInteger(
+      candidate.maxInputChars,
+      DEFAULT_SETTINGS.contextBudget.maxInputChars
+    ),
+    minRecentTurns: normalizePositiveInteger(
+      candidate.minRecentTurns,
+      DEFAULT_SETTINGS.contextBudget.minRecentTurns
+    ),
+    maxSelectionChars: normalizePositiveInteger(
+      candidate.maxSelectionChars,
+      DEFAULT_SETTINGS.contextBudget.maxSelectionChars
+    )
+  };
+  return {
+    contextBudget,
+    changed: candidate.maxInputChars !== contextBudget.maxInputChars || candidate.minRecentTurns !== contextBudget.minRecentTurns || candidate.maxSelectionChars !== contextBudget.maxSelectionChars
+  };
+}
+function normalizeRagChunkSettings(chunkSize, chunkOverlap) {
+  const ragChunkSize = typeof chunkSize === "number" && Number.isInteger(chunkSize) && chunkSize > 0 ? chunkSize : DEFAULT_SETTINGS.ragChunkSize;
+  const fallbackOverlap = Math.min(DEFAULT_SETTINGS.ragChunkOverlap, ragChunkSize - 1);
+  const ragChunkOverlap = typeof chunkOverlap === "number" && Number.isInteger(chunkOverlap) && chunkOverlap >= 0 && chunkOverlap < ragChunkSize ? chunkOverlap : fallbackOverlap;
+  return {
+    ragChunkSize,
+    ragChunkOverlap,
+    changed: chunkSize !== ragChunkSize || chunkOverlap !== ragChunkOverlap
+  };
+}
+function migrateSettings(savedValue, now = Date.now) {
+  var _a, _b, _c;
+  const saved = savedValue && typeof savedValue === "object" && !Array.isArray(savedValue) ? savedValue : null;
+  const settings = Object.assign({}, DEFAULT_SETTINGS, saved);
+  let needsSave = false;
+  settings.readerDataVersion = (saved == null ? void 0 : saved.readerDataVersion) === 1 ? 1 : 0;
+  if (saved && saved.readerDataVersion !== settings.readerDataVersion) needsSave = true;
+  settings.models = saved && Array.isArray(saved.models) && saved.models.length ? saved.models.map((model) => ({ ...model })) : DEFAULT_SETTINGS.models.map((model) => ({ ...model }));
+  settings.promptPresets = saved && Array.isArray(saved.promptPresets) && saved.promptPresets.length ? saved.promptPresets.map((preset) => ({ ...preset })) : DEFAULT_SETTINGS.promptPresets.map((preset) => ({ ...preset }));
+  settings.docSummaries = saved && saved.docSummaries && typeof saved.docSummaries === "object" ? { ...saved.docSummaries } : {};
+  settings.docChunks = saved && saved.docChunks && typeof saved.docChunks === "object" ? { ...saved.docChunks } : {};
+  settings.conversationHistories = normalizeConversationHistories(saved && saved.conversationHistories);
+  settings.conversationSessions = normalizeConversationSessions(saved && saved.conversationSessions);
+  settings.activeConversationSessionIds = normalizeActiveSessionIds(saved && saved.activeConversationSessionIds);
+  settings.promptHistory = normalizePromptHistory(saved && saved.promptHistory);
+  const normalizedContextBudget = normalizeContextBudget(saved == null ? void 0 : saved.contextBudget);
+  settings.contextBudget = normalizedContextBudget.contextBudget;
+  if (saved && normalizedContextBudget.changed) needsSave = true;
+  for (const session of Object.values(settings.conversationSessions)) {
+    if (((_a = session.pendingTurn) == null ? void 0 : _a.status) !== "running") continue;
+    session.pendingTurn = {
+      ...session.pendingTurn,
+      status: "interrupted",
+      progress: session.pendingTurn.progress || "Obsidian \u6216 PDF Chat \u5728\u4EFB\u52A1\u5B8C\u6210\u524D\u9000\u51FA"
+    };
+    needsSave = true;
+  }
+  for (const [key, history] of Object.entries(settings.conversationHistories)) {
+    const hasSession = Object.values(settings.conversationSessions).some((session2) => session2.conversationKey === key);
+    if (hasSession) continue;
+    const session = legacySessionFromHistory(key, history);
+    if (!session) continue;
+    settings.conversationSessions[session.id] = session;
+    settings.activeConversationSessionIds[key] = session.id;
+    needsSave = true;
+  }
+  const normalizedRag = normalizeRagChunkSettings(settings.ragChunkSize, settings.ragChunkOverlap);
+  settings.ragChunkSize = normalizedRag.ragChunkSize;
+  settings.ragChunkOverlap = normalizedRag.ragChunkOverlap;
+  if (normalizedRag.changed) needsSave = true;
+  const hasTranslationObject = Boolean(
+    saved && saved.translation && typeof saved.translation === "object" && !Array.isArray(saved.translation)
+  );
+  const nestedChunkChars = (_b = saved == null ? void 0 : saved.translation) == null ? void 0 : _b.chunkChars;
+  const validNestedChunkChars = typeof nestedChunkChars === "number" && Number.isInteger(nestedChunkChars) && nestedChunkChars > 0 ? nestedChunkChars : null;
+  const legacyChunkChars = saved == null ? void 0 : saved.translateChunkMaxChars;
+  const validLegacyChunkChars = typeof legacyChunkChars === "number" && Number.isInteger(legacyChunkChars) && legacyChunkChars > 0 ? legacyChunkChars : null;
+  if (nestedChunkChars !== void 0 && validNestedChunkChars === null) needsSave = true;
+  if (hasTranslationObject) {
+    settings.translation = {
+      ...DEFAULT_SETTINGS.translation,
+      ...saved.translation,
+      chunkChars: (_c = validNestedChunkChars != null ? validNestedChunkChars : validLegacyChunkChars) != null ? _c : DEFAULT_SETTINGS.translation.chunkChars
+    };
+  } else {
+    const legacyInstruction = typeof (saved == null ? void 0 : saved.translatePrompt) === "string" ? saved.translatePrompt : "";
+    settings.translation = {
+      ...DEFAULT_SETTINGS.translation,
+      additionalInstruction: legacyInstruction.trim() && legacyInstruction !== LEGACY_0_4_0_TRANSLATE_PROMPT ? legacyInstruction : "",
+      chunkChars: validLegacyChunkChars != null ? validLegacyChunkChars : DEFAULT_SETTINGS.translation.chunkChars
+    };
+    needsSave = true;
+  }
+  const savedCodex = saved && saved.codexDeepAnalysis && typeof saved.codexDeepAnalysis === "object" && !Array.isArray(saved.codexDeepAnalysis) ? saved.codexDeepAnalysis : {};
+  const savedCodexTimeout = typeof savedCodex.timeoutMs === "number" && Number.isFinite(savedCodex.timeoutMs) && savedCodex.timeoutMs >= 3e4 ? Math.floor(savedCodex.timeoutMs) : null;
+  const normalizedCodexTimeout = savedCodexTimeout === null || savedCodexTimeout === LEGACY_CODEX_TIMEOUT_MS ? DEFAULT_SETTINGS.codexDeepAnalysis.timeoutMs : savedCodexTimeout;
+  if (savedCodexTimeout !== normalizedCodexTimeout) needsSave = true;
+  settings.codexDeepAnalysis = {
+    ...DEFAULT_SETTINGS.codexDeepAnalysis,
+    ...savedCodex,
+    enabled: savedCodex.enabled === true,
+    command: typeof savedCodex.command === "string" && savedCodex.command.trim() ? savedCodex.command.trim() : DEFAULT_SETTINGS.codexDeepAnalysis.command,
+    profile: typeof savedCodex.profile === "string" ? savedCodex.profile.trim() : "",
+    model: typeof savedCodex.model === "string" && savedCodex.model.trim() ? savedCodex.model.trim() : DEFAULT_SETTINGS.codexDeepAnalysis.model,
+    reasoningEffort: normalizeReasoningEffort2(savedCodex.reasoningEffort),
+    verbosity: normalizeVerbosity(savedCodex.verbosity),
+    inputMode: normalizeCodexInputMode(savedCodex.inputMode),
+    outputMode: normalizeCodexOutputMode(savedCodex.outputMode),
+    modelPresets: Array.isArray(savedCodex.modelPresets) && savedCodex.modelPresets.length ? savedCodex.modelPresets.filter(
+      (preset) => !!preset && typeof preset === "object" && typeof preset.model === "string" && !!preset.model.trim()
+    ).map((preset) => ({
+      model: preset.model.trim(),
+      reasoningEffort: normalizeReasoningEffort2(preset.reasoningEffort),
+      label: typeof preset.label === "string" && preset.label.trim() ? preset.label.trim() : `${preset.model.trim()} \xB7 ${normalizeReasoningEffort2(preset.reasoningEffort)}`
+    })) : DEFAULT_SETTINGS.codexDeepAnalysis.modelPresets.map((preset) => ({ ...preset })),
+    timeoutMs: normalizedCodexTimeout,
+    keepTempFiles: savedCodex.keepTempFiles === true,
+    includeSelectionContext: typeof savedCodex.includeSelectionContext === "boolean" ? savedCodex.includeSelectionContext : DEFAULT_SETTINGS.codexDeepAnalysis.includeSelectionContext
+  };
+  if (saved && (saved.endpoint || saved.apiKey || saved.model) && !(saved.models && saved.models.length)) {
+    const migrated = {
+      id: "migrated-" + now(),
+      name: "\u8FC1\u79FB\u81EA\u65E7\u8BBE\u7F6E",
+      endpoint: saved.endpoint || DEFAULT_SETTINGS.models[0].endpoint,
+      apiKey: saved.apiKey || DEFAULT_SETTINGS.models[0].apiKey,
+      model: saved.model || DEFAULT_SETTINGS.models[0].model
+    };
+    settings.models = [migrated, ...DEFAULT_SETTINGS.models.map((model) => ({ ...model }))];
+    settings.activeModelId = migrated.id;
+    needsSave = true;
+  }
+  if (!settings.models.length) {
+    settings.models = DEFAULT_SETTINGS.models.map((model) => ({ ...model }));
+    needsSave = true;
+  }
+  if (!settings.models.find((model) => model.id === settings.activeModelId)) {
+    settings.activeModelId = settings.models[0].id;
+    needsSave = true;
+  }
+  if (settings.endpoint !== void 0 || settings.apiKey !== void 0 || settings.model !== void 0) {
+    delete settings.endpoint;
+    delete settings.apiKey;
+    delete settings.model;
+    needsSave = true;
+  }
+  if (settings.translatePrompt !== void 0) {
+    delete settings.translatePrompt;
+    needsSave = true;
+  }
+  if (settings.translateChunkMaxChars !== void 0) {
+    delete settings.translateChunkMaxChars;
+    needsSave = true;
+  }
+  return { settings, needsSave };
+}
+
+// src/settings-tab.ts
+var import_obsidian5 = require("obsidian");
+
+// src/settings-ui.ts
+function createSettingsSection(parent, title) {
+  const section = parent.createEl("section", {
+    cls: "pdf-chat-settings-section",
+    attr: { "aria-labelledby": `pdf-chat-settings-${title}` }
+  });
+  const compatibleSection = section;
+  if (typeof compatibleSection.createEl !== "function") return parent;
+  section.createEl("h3", {
+    text: title,
+    attr: { id: `pdf-chat-settings-${title}` }
+  });
+  return section;
+}
+
+// src/settings-tab.ts
+function labelExtraButton(button, label) {
+  if (!button.extraSettingsEl) return;
+  button.extraSettingsEl.setAttr("aria-label", label);
+}
+var PDFChatSettingTab = class extends import_obsidian5.PluginSettingTab {
+  constructor(app, plugin) {
+    super(app, plugin);
+    __publicField(this, "plugin");
+    this.plugin = plugin;
+  }
+  display() {
+    const { containerEl } = this;
+    containerEl.empty();
+    containerEl.createEl("h2", { text: "PDF Chat \u8BBE\u7F6E" });
+    this.renderModelSection(createSettingsSection(containerEl, "\u6A21\u578B"));
+    this.renderChatSection(createSettingsSection(containerEl, "\u804A\u5929"));
+    this.renderTranslationSection(createSettingsSection(containerEl, "\u7FFB\u8BD1"));
+    this.renderPaperContextSection(createSettingsSection(containerEl, "\u8BBA\u6587\u4E0A\u4E0B\u6587"));
+    this.renderAdvancedSection(createSettingsSection(containerEl, "\u9AD8\u7EA7"));
+  }
+  renderModelSection(containerEl) {
+    containerEl.createEl("p", {
+      text: "\u65E5\u5E38\u53EA\u9700\u8981\u7EF4\u62A4\u4E3B\u8981 API \u6A21\u578B\uFF1B\u591A\u6A21\u578B\u914D\u7F6E\u4ECD\u7136\u4FDD\u7559\u5728\u4E0B\u65B9\u9AD8\u7EA7\u6298\u53E0\u533A\u3002",
+      cls: "setting-item-description"
+    });
+    const renderModelConfig = (targetEl, model, index) => {
+      const isActive = model.id === this.plugin.settings.activeModelId;
+      const header = new import_obsidian5.Setting(targetEl).setName(`\u6A21\u578B ${index + 1}${isActive ? " \xB7 \u9ED8\u8BA4" : ""}`);
+      header.addText(
+        (text) => text.setPlaceholder("\u540D\u79F0").setValue(model.name).onChange(async (value) => {
+          model.name = value;
+          await this.plugin.saveSettings();
+        })
+      );
+      if (!isActive) {
+        header.addExtraButton((button) => {
+          labelExtraButton(button, "\u8BBE\u4E3A\u9ED8\u8BA4");
+          button.setIcon("star").onClick(async () => {
+            this.plugin.settings.activeModelId = model.id;
+            await this.plugin.saveSettings();
+            this.display();
+          });
+        });
+      }
+      header.addExtraButton((button) => {
+        labelExtraButton(button, "\u5220\u9664\u8FD9\u4E2A\u6A21\u578B");
+        button.setIcon("trash").onClick(async () => {
+          if (this.plugin.settings.models.length <= 1) {
+            new import_obsidian5.Notice("\u81F3\u5C11\u8981\u4FDD\u7559\u4E00\u4E2A\u6A21\u578B\u914D\u7F6E");
+            return;
+          }
+          this.plugin.settings.models.splice(index, 1);
+          if (this.plugin.settings.activeModelId === model.id) {
+            this.plugin.settings.activeModelId = this.plugin.settings.models[0].id;
+          }
+          await this.plugin.saveSettings();
+          this.display();
+        });
+      });
+      new import_obsidian5.Setting(targetEl).setName("Endpoint").addText(
+        (text) => text.setPlaceholder("OpenAI \u517C\u5BB9\u7684 chat/completions \u63A5\u53E3\u5730\u5740").setValue(model.endpoint).onChange(async (value) => {
+          model.endpoint = value.trim();
+          await this.plugin.saveSettings();
+        })
+      );
+      new import_obsidian5.Setting(targetEl).setName("API Key").addText((text) => {
+        text.inputEl.type = "password";
+        text.setValue(model.apiKey).onChange(async (value) => {
+          model.apiKey = value.trim();
+          await this.plugin.saveSettings();
+        });
+      });
+      new import_obsidian5.Setting(targetEl).setName("\u6A21\u578B\u540D(model \u5B57\u6BB5)").addText(
+        (text) => text.setValue(model.model).onChange(async (value) => {
+          model.model = value.trim();
+          await this.plugin.saveSettings();
+        })
+      );
+      targetEl.createEl("hr");
+    };
+    const activeIndex = Math.max(
+      0,
+      this.plugin.settings.models.findIndex((model) => model.id === this.plugin.settings.activeModelId)
+    );
+    const activeModel = this.plugin.settings.models[activeIndex] || this.plugin.settings.models[0];
+    if (activeModel) renderModelConfig(containerEl, activeModel, activeIndex);
+    const maybeAdvancedEl = containerEl.createEl("details", { cls: "pdf-chat-settings-advanced-models" });
+    const advancedEl = maybeAdvancedEl && typeof maybeAdvancedEl.createEl === "function" ? maybeAdvancedEl : containerEl;
+    if (advancedEl !== containerEl) {
+      advancedEl.createEl("summary", { text: "\u9AD8\u7EA7\u6A21\u578B\u914D\u7F6E" });
+    }
+    this.plugin.settings.models.forEach((model, index) => {
+      if (index === activeIndex) return;
+      renderModelConfig(advancedEl, model, index);
+    });
+    new import_obsidian5.Setting(advancedEl).addButton(
+      (button) => button.setButtonText("+ \u6DFB\u52A0\u6A21\u578B").setCta().onClick(async () => {
+        this.plugin.settings.models.push({
+          id: "model-" + Date.now(),
+          name: "\u65B0\u6A21\u578B",
+          endpoint: "",
+          apiKey: "",
+          model: ""
+        });
+        await this.plugin.saveSettings();
+        this.display();
+      })
+    );
+  }
+  renderChatSection(containerEl) {
+    new import_obsidian5.Setting(containerEl).setName("\u6D41\u5F0F\u8F93\u51FA").setDesc("\u5F00\u542F\u540E\u7B54\u6848\u4F1A\u4E00\u8FB9\u751F\u6210\u4E00\u8FB9\u663E\u793A\uFF1B\u5173\u95ED\u5219\u7B49\u751F\u6210\u5B8C\u518D\u4E00\u6B21\u6027\u663E\u793A").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.stream).onChange(async (value) => {
+        this.plugin.settings.stream = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("Temperature").addText(
+      (text) => text.setValue(String(this.plugin.settings.temperature)).onChange(async (value) => {
+        const parsed = parseFloat(value);
+        this.plugin.settings.temperature = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.temperature;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("Max Tokens").addText(
+      (text) => text.setValue(String(this.plugin.settings.maxTokens)).onChange(async (value) => {
+        const parsed = parseInt(value, 10);
+        this.plugin.settings.maxTokens = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.maxTokens;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("\u7EE7\u7EED\u5BF9\u8BDD\u4F7F\u7528\u7684\u6A21\u578B").setDesc("\u7559\u7A7A\u65F6\u4F18\u5148\u9009\u62E9 id\u3001\u6A21\u578B\u540D\u6216\u663E\u793A\u540D\u79F0\u4E2D\u5305\u542B GLM \u7684\u6A21\u578B\uFF0C\u7136\u540E\u56DE\u9000\u5230\u9ED8\u8BA4\u6A21\u578B\u3002").addDropdown((dropdown) => {
+      dropdown.addOption("", "\u81EA\u52A8\uFF08\u4F18\u5148 GLM\uFF09");
+      this.plugin.settings.models.forEach((model) => dropdown.addOption(model.id, model.name));
+      dropdown.setValue(this.plugin.settings.continueModelId);
+      dropdown.onChange(async (value) => {
+        this.plugin.settings.continueModelId = value;
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian5.Setting(containerEl).setName("\u7CFB\u7EDF\u63D0\u793A\u8BCD").setDesc("\u4F1A\u81EA\u52A8\u9644\u52A0\u9009\u4E2D\u7684\u539F\u6587\u7247\u6BB5\u5728\u5176\u540E").addTextArea((text) => {
+      text.inputEl.rows = 6;
+      text.setValue(this.plugin.settings.systemPrompt).onChange(async (value) => {
+        this.plugin.settings.systemPrompt = value;
+        await this.plugin.saveSettings();
+      });
+    });
+  }
+  renderTranslationSection(containerEl) {
+    new import_obsidian5.Setting(containerEl).setName("\u7FFB\u8BD1\u4F7F\u7528\u7684\u6A21\u578B").setDesc("\u7559\u7A7A\u65F6\u4F18\u5148\u9009\u62E9 id\u3001\u6A21\u578B\u540D\u6216\u663E\u793A\u540D\u79F0\u4E2D\u5305\u542B DeepSeek \u7684\u6A21\u578B\uFF0C\u7136\u540E\u56DE\u9000\u5230\u9ED8\u8BA4\u6A21\u578B\u3002").addDropdown((dropdown) => {
+      dropdown.addOption("", "\u81EA\u52A8\uFF08\u4F18\u5148 DeepSeek\uFF09");
+      this.plugin.settings.models.forEach((model) => dropdown.addOption(model.id, model.name));
+      dropdown.setValue(this.plugin.settings.translateModelId);
+      dropdown.onChange(async (value) => {
+        this.plugin.settings.translateModelId = value;
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian5.Setting(containerEl).setName("\u5212\u8BCD\u540E\u81EA\u52A8\u51FA\u73B0\u300C\u8BD1\u300D\u60AC\u6D6E\u56FE\u6807").setDesc("\u4EC5\u5728\u6D3B\u52A8\u89C6\u56FE\u662F PDF \u4E14\u9009\u533A\u975E\u7A7A\u65F6\u663E\u793A\uFF1B\u70B9\u51FB\u540E\u6253\u5F00\u65B0\u5F39\u7A97\u5E76\u81EA\u52A8\u7FFB\u8BD1\u3002").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.quickTranslateMarkerEnabled).onChange(async (value) => {
+        this.plugin.settings.quickTranslateMarkerEnabled = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("\u7FFB\u8BD1\u76EE\u6807\u8BED\u8A00").setDesc("\u7528\u4E8E\u5F39\u7A97\u4E2D\u7684\u9009\u533A\u7FFB\u8BD1\uFF0C\u4F8B\u5982 zh-CN\u3001en \u6216 ja").addText(
+      (text) => text.setValue(this.plugin.settings.translation.targetLanguage).onChange(async (value) => {
+        this.plugin.settings.translation.targetLanguage = value.trim() || DEFAULT_SETTINGS.translation.targetLanguage;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("\u7FFB\u8BD1\u5206\u5757\u5927\u5C0F\uFF08Unicode \u5B57\u7B26\uFF09").setDesc("\u957F\u9009\u533A\u4F1A\u6309 Unicode \u5B57\u7B26\u6570\u5206\u5757\u53D1\u9001\u3002\u8BF7\u8F93\u5165\u5927\u4E8E 0 \u7684\u6574\u6570\uFF1B\u65E0\u6548\u503C\u6062\u590D\u4E3A 8000\u3002").addText(
+      (text) => text.setValue(String(this.plugin.settings.translation.chunkChars)).onChange(async (value) => {
+        const parsed = Number(value.trim());
+        this.plugin.settings.translation.chunkChars = Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_SETTINGS.translation.chunkChars;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("\u7FFB\u8BD1\u9644\u52A0\u8981\u6C42").setDesc("\u53EF\u9009\u3002\u7528\u4E8E\u8865\u5145\u672F\u8BED\u3001\u98CE\u683C\u6216\u9886\u57DF\u7EA6\u5B9A\uFF1B\u539F\u6587\u7531\u72EC\u7ACB\u7FFB\u8BD1\u4EFB\u52A1\u5B89\u5168\u9644\u52A0\u3002").addTextArea((text) => {
+      text.inputEl.rows = 4;
+      text.setValue(this.plugin.settings.translation.additionalInstruction).onChange(async (value) => {
+        this.plugin.settings.translation.additionalInstruction = value;
+        await this.plugin.saveSettings();
+      });
+    });
+  }
+  renderPaperContextSection(containerEl) {
+    containerEl.createEl("h4", { text: "\u5168\u6587\u6458\u8981" });
+    containerEl.createEl("p", {
+      text: "\u5168\u6587\u6458\u8981\u6309\u6587\u4EF6\u8DEF\u5F84\u548C\u4FEE\u6539\u65F6\u95F4\u7F13\u5B58\uFF0C\u53EF\u4F5C\u4E3A\u5F53\u524D\u9009\u533A\u4E4B\u5916\u7684\u7B80\u8981\u80CC\u666F\u3002\u4EC5\u5BF9 PDF \u751F\u6548\u3002",
+      cls: "setting-item-description"
+    });
+    new import_obsidian5.Setting(containerEl).setName("\u6253\u5F00 PDF \u5212\u8BCD\u5F39\u7A97\u65F6\u81EA\u52A8\u9644\u5E26\u5168\u6587\u6458\u8981").setDesc("\u6709\u7F13\u5B58\u65F6\u76F4\u63A5\u4F7F\u7528\uFF1B\u6CA1\u6709\u7F13\u5B58\u65F6\u81EA\u52A8\u751F\u6210\u4E00\u6B21\u3002").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.autoDocSummary).onChange(async (value) => {
+        this.plugin.settings.autoDocSummary = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("\u6458\u8981\u751F\u6210\u7528\u7684\u6A21\u578B").setDesc("\u5EFA\u8BAE\u9009\u62E9\u901F\u5EA6\u5FEB\u3001\u6210\u672C\u4F4E\u7684\u6A21\u578B\uFF0C\u804A\u5929\u4E3B\u6A21\u578B\u53EF\u4EE5\u4E0D\u540C\u3002").addDropdown((dropdown) => {
+      this.plugin.settings.models.forEach((model) => dropdown.addOption(model.id, model.name));
+      dropdown.setValue(this.plugin.settings.summaryModelId || this.plugin.settings.activeModelId);
+      dropdown.onChange(async (value) => {
+        this.plugin.settings.summaryModelId = value;
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian5.Setting(containerEl).setName("\u5168\u6587\u622A\u65AD\u5B57\u7B26\u6570\u4E0A\u9650").addText(
+      (text) => text.setValue(String(this.plugin.settings.summaryMaxChars)).onChange(async (value) => {
+        const parsed = parseInt(value, 10);
+        this.plugin.settings.summaryMaxChars = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.summaryMaxChars;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("\u6458\u8981\u6700\u5927\u8F93\u51FA token \u6570").addText(
+      (text) => text.setValue(String(this.plugin.settings.summaryMaxTokens)).onChange(async (value) => {
+        const parsed = parseInt(value, 10);
+        this.plugin.settings.summaryMaxTokens = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.summaryMaxTokens;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("\u6458\u8981\u751F\u6210\u63D0\u793A\u8BCD").addTextArea((text) => {
+      text.inputEl.rows = 5;
+      text.inputEl.style.width = "100%";
+      text.setValue(this.plugin.settings.summaryPrompt).onChange(async (value) => {
+        this.plugin.settings.summaryPrompt = value;
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian5.Setting(containerEl).setName("\u6E05\u7A7A\u5DF2\u7F13\u5B58\u7684\u5168\u6587\u6458\u8981").setDesc(`\u5F53\u524D\u5DF2\u7F13\u5B58 ${Object.keys(this.plugin.settings.docSummaries || {}).length} \u7BC7\u6587\u6863\u7684\u6458\u8981`).addButton(
+      (button) => button.setButtonText("\u6E05\u7A7A\u7F13\u5B58").onClick(async () => {
+        this.plugin.settings.docSummaries = {};
+        await this.plugin.saveSettings();
+        this.display();
+      })
+    );
+    containerEl.createEl("h4", { text: "\u5168\u6587\u76F4\u8BFB / RAG \u68C0\u7D22" });
+    containerEl.createEl("p", {
+      text: "\u8F83\u77ED PDF \u76F4\u63A5\u63D0\u4F9B\u5168\u6587\uFF1B\u8D85\u8FC7\u9608\u503C\u65F6\u9000\u56DE\u672C\u5730 BM25 \u68C0\u7D22\u3002\u68C0\u7D22\u4E0E\u6458\u8981\u4E92\u8865\uFF0C\u4E0D\u9700\u8981 embedding \u6A21\u578B\u3002",
+      cls: "setting-item-description"
+    });
+    new import_obsidian5.Setting(containerEl).setName("\u5168\u6587\u76F4\u8BFB\u7684\u5B57\u6570\u9608\u503C").setDesc("\u5168\u6587\u4E0D\u8D85\u8FC7\u6B64\u503C\u65F6\u76F4\u63A5\u4EA4\u7ED9\u6A21\u578B\u56DE\u7B54\uFF1B\u8D85\u8FC7\u65F6\u4F7F\u7528\u5173\u952E\u8BCD\u68C0\u7D22\u3002").addText(
+      (text) => text.setValue(String(this.plugin.settings.ragFullTextThreshold)).onChange(async (value) => {
+        const parsed = parseInt(value, 10);
+        this.plugin.settings.ragFullTextThreshold = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.ragFullTextThreshold;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("\u6253\u5F00 PDF \u5212\u8BCD\u5F39\u7A97\u65F6\u81EA\u52A8\u5EFA\u7ACB\u68C0\u7D22\u7D22\u5F15").setDesc("\u7D22\u5F15\u662F\u7EAF\u672C\u5730\u6587\u672C\u5207\u5757\uFF0C\u51E0\u4E4E\u4E0D\u8017\u65F6\u3002").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.autoRag).onChange(async (value) => {
+        this.plugin.settings.autoRag = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("\u63D0\u95EE\u524D\u5148\u8BA9\u5FEB\u6A21\u578B\u601D\u8003\u68C0\u7D22\u89D2\u5EA6").setDesc("\u751F\u6210\u591A\u7EC4\u4E2D\u82F1\u53CC\u8BED\u68C0\u7D22\u8BCD\u540E\u878D\u5408\u6392\u5E8F\uFF0C\u4EE3\u4EF7\u662F\u6BCF\u6B21\u63D0\u95EE\u591A\u4E00\u6B21\u6A21\u578B\u8C03\u7528\u3002").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.ragQueryTranslate).onChange(async (value) => {
+        this.plugin.settings.ragQueryTranslate = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("\u68C0\u7D22\u89D2\u5EA6\u89C4\u5212\u63D0\u793A\u8BCD").addTextArea((text) => {
+      text.inputEl.rows = 5;
+      text.inputEl.style.width = "100%";
+      text.setValue(this.plugin.settings.ragQueryPrompt).onChange(async (value) => {
+        this.plugin.settings.ragQueryPrompt = value;
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian5.Setting(containerEl).setName("\u6BCF\u6B21\u68C0\u7D22\u8FD4\u56DE\u7684\u7247\u6BB5\u6570(Top K)").addText(
+      (text) => text.setValue(String(this.plugin.settings.ragTopK)).onChange(async (value) => {
+        const parsed = parseInt(value, 10);
+        this.plugin.settings.ragTopK = Number.isFinite(parsed) ? parsed : DEFAULT_SETTINGS.ragTopK;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("\u5355\u5757\u6700\u5927\u5B57\u7B26\u6570").addText(
+      (text) => text.setValue(String(this.plugin.settings.ragChunkSize)).onChange(async (value) => {
+        const normalized = normalizeRagChunkSettings(
+          Number(value.trim()),
+          this.plugin.settings.ragChunkOverlap
+        );
+        this.plugin.settings.ragChunkSize = normalized.ragChunkSize;
+        this.plugin.settings.ragChunkOverlap = normalized.ragChunkOverlap;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("\u5207\u5757\u91CD\u53E0\u5B57\u7B26\u6570").addText(
+      (text) => text.setValue(String(this.plugin.settings.ragChunkOverlap)).onChange(async (value) => {
+        const normalized = normalizeRagChunkSettings(
+          this.plugin.settings.ragChunkSize,
+          Number(value.trim())
+        );
+        this.plugin.settings.ragChunkSize = normalized.ragChunkSize;
+        this.plugin.settings.ragChunkOverlap = normalized.ragChunkOverlap;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("\u6E05\u7A7A\u5DF2\u7F13\u5B58\u7684\u68C0\u7D22\u7D22\u5F15").setDesc(`\u5F53\u524D\u5DF2\u4E3A ${Object.keys(this.plugin.settings.docChunks || {}).length} \u7BC7\u6587\u6863\u5EFA\u7ACB\u8FC7\u7D22\u5F15`).addButton(
+      (button) => button.setButtonText("\u6E05\u7A7A\u7F13\u5B58").onClick(async () => {
+        this.plugin.settings.docChunks = {};
+        await this.plugin.saveSettings();
+        this.display();
+      })
+    );
+  }
+  renderAdvancedSection(containerEl) {
+    containerEl.createEl("p", {
+      text: "\u9ED8\u8BA4\u5FEB\u6377\u952E\uFF1ACtrl+Alt+Q \u65B0\u5F00\u5BF9\u8BDD\uFF1BCtrl+Q \u7EE7\u7EED\u4E0A\u6B21\u5BF9\u8BDD\u3002\u53EF\u5728 \u8BBE\u7F6E\u2192\u5FEB\u6377\u952E\u2192\u641C\u7D22\u201CPDF Chat\u201D\u4E2D\u4FEE\u6539\u3002\u5F39\u7A97\u652F\u6301\u62D6\u52A8\u3001\u7F29\u653E\u3001\u8FDE\u7EED\u8FFD\u95EE\u548C\u505C\u6B62\u751F\u6210\u3002",
+      cls: "setting-item-description"
+    });
+    containerEl.createEl("h4", { text: "Codex \u8BBA\u6587\u7EC8\u7AEF" });
+    containerEl.createEl("p", {
+      text: "\u542F\u7528\u540E\uFF0C\u53EF\u5728\u804A\u5929\u6846\u8F93\u5165 /codex \u8FDB\u5165 Codex CLI \u591A\u8F6E\u4F1A\u8BDD\u3002\u666E\u901A\u6A21\u5F0F\u4E0D\u4F1A\u6839\u636E\u5173\u952E\u8BCD\u81EA\u52A8\u5207\u6362\u3002\u9ED8\u8BA4\u53EA\u5411 Codex \u63D0\u4F9B\u7528\u6237\u95EE\u9898\u3001\u6240\u9009 PDF \u7684\u672C\u5730\u8DEF\u5F84\u548C\u53EF\u9009\u7684\u5F53\u524D\u9009\u533A\uFF0C\u4E0D\u4F1A\u4F20\u9012 data.json\u3001API key \u6216\u6A21\u578B endpoint\u3002",
+      cls: "setting-item-description"
+    });
+    new import_obsidian5.Setting(containerEl).setName("\u542F\u7528 Codex CLI \u6DF1\u5EA6\u5206\u6790").setDesc("\u4EC5\u684C\u9762\u7AEF\u53EF\u7528\u3002Codex \u4F7F\u7528\u5B83\u81EA\u5DF1\u7684\u767B\u5F55/\u914D\u7F6E\uFF0C\u4E0D\u4F7F\u7528 PDF Chat \u7684 API key\u3002").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.codexDeepAnalysis.enabled).onChange(async (value) => {
+        this.plugin.settings.codexDeepAnalysis.enabled = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("Codex \u547D\u4EE4").setDesc("\u9ED8\u8BA4 codex\uFF1B\u5982\u679C\u4E0D\u5728 PATH \u4E2D\uFF0C\u53EF\u586B\u5199 codex \u53EF\u6267\u884C\u6587\u4EF6\u7684\u5B8C\u6574\u8DEF\u5F84\u3002").addText(
+      (text) => text.setValue(this.plugin.settings.codexDeepAnalysis.command).onChange(async (value) => {
+        this.plugin.settings.codexDeepAnalysis.command = value.trim() || DEFAULT_SETTINGS.codexDeepAnalysis.command;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("Codex profile").setDesc("\u53EF\u9009\uFF1B\u5BF9\u5E94 codex exec --profile\u3002\u7559\u7A7A\u5219\u4F7F\u7528 Codex \u9ED8\u8BA4\u914D\u7F6E\u3002").addText(
+      (text) => text.setValue(this.plugin.settings.codexDeepAnalysis.profile).onChange(async (value) => {
+        this.plugin.settings.codexDeepAnalysis.profile = value.trim();
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("Codex model").setDesc("\u5BF9\u5E94 codex exec --model\u3002\u9ED8\u8BA4 gpt-5.5\uFF1B\u4E5F\u53EF\u4EE5\u5728\u804A\u5929\u6846\u7528 /model \u5207\u6362\u3002").addText(
+      (text) => text.setValue(this.plugin.settings.codexDeepAnalysis.model).onChange(async (value) => {
+        this.plugin.settings.codexDeepAnalysis.model = value.trim() || DEFAULT_SETTINGS.codexDeepAnalysis.model;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("Codex reasoning effort").setDesc("\u5BF9\u5E94 -c model_reasoning_effort\u3002\u9ED8\u8BA4 medium\uFF1B\u6DF1\u5EA6\u4EFB\u52A1\u53EF\u5347\u5230 high/xhigh\u3002").addDropdown((dropdown) => {
+      for (const effort of ["minimal", "low", "medium", "high", "xhigh"]) {
+        dropdown.addOption(effort, effort);
+      }
+      dropdown.setValue(this.plugin.settings.codexDeepAnalysis.reasoningEffort).onChange(async (value) => {
+        this.plugin.settings.codexDeepAnalysis.reasoningEffort = value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" ? value : DEFAULT_SETTINGS.codexDeepAnalysis.reasoningEffort;
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian5.Setting(containerEl).setName("Codex verbosity").setDesc("\u5BF9\u5E94 -c model_verbosity\u3002\u9ED8\u8BA4 medium\uFF0C\u9700\u8981\u66F4\u5145\u5206\u65F6\u53EF\u6539 high\u3002").addDropdown((dropdown) => {
+      for (const verbosity of ["low", "medium", "high"]) dropdown.addOption(verbosity, verbosity);
+      dropdown.setValue(this.plugin.settings.codexDeepAnalysis.verbosity).onChange(async (value) => {
+        this.plugin.settings.codexDeepAnalysis.verbosity = value === "low" || value === "medium" || value === "high" ? value : DEFAULT_SETTINGS.codexDeepAnalysis.verbosity;
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian5.Setting(containerEl).setName("Codex input mode").setDesc("\u9ED8\u8BA4 PDF-only\uFF1ACodex \u5728\u5F53\u524D PDF \u6587\u4EF6\u5939\u4E2D\u76F4\u63A5\u8BFB\u53D6\u6240\u9009 PDF \u8DEF\u5F84\uFF1BDebug full \u4EC5\u4FDD\u7559\u7ED9\u65E7\u7684\u4E00\u6B21\u6027\u8BCA\u65AD\u6D41\u7A0B\u3002").addDropdown((dropdown) => {
+      dropdown.addOption("pdf-only", "PDF-only");
+      dropdown.addOption("debug-full", "Debug full");
+      dropdown.setValue(this.plugin.settings.codexDeepAnalysis.inputMode || DEFAULT_SETTINGS.codexDeepAnalysis.inputMode);
+      dropdown.onChange(async (value) => {
+        this.plugin.settings.codexDeepAnalysis.inputMode = value === "debug-full" ? value : "pdf-only";
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian5.Setting(containerEl).setName("Codex output mode").setDesc("\u9ED8\u8BA4 Markdown\uFF1A\u8BA9 Codex \u81EA\u7136\u56DE\u7B54\uFF1BJSON schema \u4EC5\u7528\u4E8E\u7ED3\u6784\u5316\u517C\u5BB9\u6216\u8C03\u8BD5\u3002").addDropdown((dropdown) => {
+      dropdown.addOption("markdown", "Markdown (natural)");
+      dropdown.addOption("json-schema", "JSON schema (structured/debug)");
+      dropdown.setValue(this.plugin.settings.codexDeepAnalysis.outputMode || DEFAULT_SETTINGS.codexDeepAnalysis.outputMode);
+      dropdown.onChange(async (value) => {
+        this.plugin.settings.codexDeepAnalysis.outputMode = value === "json-schema" ? "json-schema" : "markdown";
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian5.Setting(containerEl).setName("Codex \u9ED8\u8BA4\u9644\u5E26\u9009\u533A\u4E0A\u4E0B\u6587").setDesc("\u5F00\u542F\u540E\uFF0CPDF Chat \u4F1A\u628A\u5F53\u524D\u5212\u9009\u6BB5\u843D\u76F4\u63A5\u9644\u5728\u4E0B\u4E00\u8F6E Codex prompt \u4E2D\uFF1B\u5F39\u7A97\u5185\u4E5F\u53EF\u7528\u201C\u9644\u9009\u533A\u201D\u6309\u94AE\u6216 /context \u4E34\u65F6\u5207\u6362\u3002").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.codexDeepAnalysis.includeSelectionContext).onChange(async (value) => {
+        this.plugin.settings.codexDeepAnalysis.includeSelectionContext = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("Codex \u8D85\u65F6\u6BEB\u79D2").setDesc("\u9ED8\u8BA4 1800000\uFF0C\u5373 30 \u5206\u949F\uFF1BPDF \u8BFB\u53D6\u6216\u9AD8\u5F3A\u5EA6\u63A8\u7406\u53EF\u80FD\u8F83\u6162\uFF0C\u8D85\u65F6\u540E\u4F1A\u7EC8\u6B62 Codex \u8FDB\u7A0B\u3002").addText(
+      (text) => text.setValue(String(this.plugin.settings.codexDeepAnalysis.timeoutMs)).onChange(async (value) => {
+        const parsed = Number(value.trim());
+        this.plugin.settings.codexDeepAnalysis.timeoutMs = Number.isFinite(parsed) && parsed >= 3e4 ? Math.floor(parsed) : DEFAULT_SETTINGS.codexDeepAnalysis.timeoutMs;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("\u4FDD\u7559 Codex \u4E34\u65F6\u5206\u6790\u5305").setDesc("\u4EC5\u5F71\u54CD\u65E7\u7684 Debug full \u4E00\u6B21\u6027\u8BCA\u65AD\u6D41\u7A0B\uFF1B\u5E38\u89C4 /codex \u591A\u8F6E\u4F1A\u8BDD\u4E0D\u4F1A\u521B\u5EFA\u4E34\u65F6\u5206\u6790\u5305\u3002").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.codexDeepAnalysis.keepTempFiles).onChange(async (value) => {
+        this.plugin.settings.codexDeepAnalysis.keepTempFiles = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    containerEl.createEl("h4", { text: "\u9605\u8BFB\u6A21\u5F0F\u9884\u8BBE" });
+    containerEl.createEl("p", {
+      text: "\u5F39\u7A97\u7684\u9605\u8BFB\u6A21\u5F0F\u4F1A\u5217\u51FA\u8FD9\u4E9B\u9884\u8BBE\uFF1B\u5207\u6362\u540E\u66FF\u6362\u7CFB\u7EDF\u63D0\u793A\u8BCD\uFF0C\u9009\u533A\u539F\u6587\u4ECD\u4F1A\u81EA\u52A8\u9644\u52A0\u3002",
+      cls: "setting-item-description"
+    });
+    this.plugin.settings.promptPresets.forEach((preset, index) => {
+      const nameSetting = new import_obsidian5.Setting(containerEl).setName(`\u9884\u8BBE ${index + 1}`);
+      nameSetting.addText(
+        (text) => text.setPlaceholder("\u540D\u79F0").setValue(preset.name).onChange(async (value) => {
+          preset.name = value;
+          await this.plugin.saveSettings();
+        })
+      );
+      nameSetting.addExtraButton((button) => {
+        labelExtraButton(button, "\u5220\u9664\u8FD9\u4E2A\u9884\u8BBE");
+        button.setIcon("trash").onClick(async () => {
+          this.plugin.settings.promptPresets.splice(index, 1);
+          await this.plugin.saveSettings();
+          this.display();
+        });
+      });
+      new import_obsidian5.Setting(containerEl).addTextArea((text) => {
+        text.inputEl.rows = 4;
+        text.inputEl.style.width = "100%";
+        text.setPlaceholder("\u8FD9\u5957\u6A21\u5F0F\u7684\u7CFB\u7EDF\u63D0\u793A\u8BCD/\u6307\u4EE4").setValue(preset.prompt).onChange(async (value) => {
+          preset.prompt = value;
+          await this.plugin.saveSettings();
+        });
+      });
+    });
+    new import_obsidian5.Setting(containerEl).addButton(
+      (button) => button.setButtonText("+ \u6DFB\u52A0\u9884\u8BBE").setCta().onClick(async () => {
+        this.plugin.settings.promptPresets.push({
+          id: "preset-" + Date.now(),
+          name: "\u65B0\u9884\u8BBE",
+          prompt: ""
+        });
+        await this.plugin.saveSettings();
+        this.display();
+      })
+    );
+  }
+};
+
+// src/vault-lifecycle.ts
+function pdfKey(path) {
+  return `pdf:${path}`;
+}
+function replaceExactPath(paths, oldPath, newPath) {
+  return Array.from(new Set(paths.map((path) => path === oldPath ? newPath : path)));
+}
+function chooseNewer(current, candidate) {
+  var _a, _b, _c, _d;
+  if (!candidate) return current;
+  if (!current) return candidate;
+  const currentTime = (_b = (_a = current.updatedAt) != null ? _a : current.generatedAt) != null ? _b : 0;
+  const candidateTime = (_d = (_c = candidate.updatedAt) != null ? _c : candidate.generatedAt) != null ? _d : 0;
+  return candidateTime > currentTime ? candidate : current;
+}
+function sessionUpdatedAt(sessions, id) {
+  return id && sessions[id] ? sessions[id].updatedAt : 0;
+}
+function reconcilePdfRenameState(input, oldPath, newPath) {
+  if (!oldPath || !newPath || oldPath === newPath) return input;
+  const oldKey = pdfKey(oldPath);
+  const newKey = pdfKey(newPath);
+  const conversationSessions = Object.fromEntries(
+    Object.entries(input.conversationSessions).map(([id, session]) => [
+      id,
+      {
+        ...session,
+        conversationKey: session.conversationKey === oldKey ? newKey : session.conversationKey,
+        referencedPdfPaths: replaceExactPath(session.referencedPdfPaths, oldPath, newPath),
+        sourceStatus: session.conversationKey === oldKey ? "available" : session.sourceStatus
+      }
+    ])
+  );
+  const activeConversationSessionIds = { ...input.activeConversationSessionIds };
+  const oldActiveId = activeConversationSessionIds[oldKey];
+  if (oldActiveId) {
+    const currentNewId = activeConversationSessionIds[newKey];
+    if (!currentNewId || sessionUpdatedAt(conversationSessions, oldActiveId) >= sessionUpdatedAt(conversationSessions, currentNewId)) {
+      activeConversationSessionIds[newKey] = oldActiveId;
+    }
+    delete activeConversationSessionIds[oldKey];
+  }
+  const conversationHistories = { ...input.conversationHistories };
+  const migratedHistory = chooseNewer(conversationHistories[newKey], conversationHistories[oldKey]);
+  if (migratedHistory) conversationHistories[newKey] = migratedHistory;
+  delete conversationHistories[oldKey];
+  const docSummaries = { ...input.docSummaries };
+  const migratedSummary = chooseNewer(docSummaries[newPath], docSummaries[oldPath]);
+  if (migratedSummary) docSummaries[newPath] = migratedSummary;
+  delete docSummaries[oldPath];
+  const docChunks = { ...input.docChunks };
+  const migratedChunks = chooseNewer(docChunks[newPath], docChunks[oldPath]);
+  if (migratedChunks) docChunks[newPath] = migratedChunks;
+  delete docChunks[oldPath];
+  return {
+    ...input,
+    conversationSessions,
+    activeConversationSessionIds,
+    conversationHistories,
+    docSummaries,
+    docChunks
+  };
+}
+function reconcilePdfDeleteState(input, path) {
+  if (!path) return input;
+  const key = pdfKey(path);
+  const conversationSessions = Object.fromEntries(
+    Object.entries(input.conversationSessions).map(([id, session]) => [
+      id,
+      session.conversationKey === key ? { ...session, sourceStatus: "missing" } : { ...session }
+    ])
+  );
+  const docSummaries = { ...input.docSummaries };
+  const docChunks = { ...input.docChunks };
+  delete docSummaries[path];
+  delete docChunks[path];
+  return { ...input, conversationSessions, docSummaries, docChunks };
+}
+function isPdfPath(path) {
+  return /\.pdf$/i.test(path);
+}
+var VaultLifecycleService = class {
+  constructor(vault, getSettings, replaceSettings, persist) {
+    this.vault = vault;
+    this.getSettings = getSettings;
+    this.replaceSettings = replaceSettings;
+    this.persist = persist;
+    __publicField(this, "queue", Promise.resolve());
+  }
+  attach(register) {
+    register(
+      this.vault.on("rename", (file, oldPath) => {
+        const newPath = file.path;
+        if (isPdfPath(oldPath) && isPdfPath(newPath)) {
+          this.enqueue(() => reconcilePdfRenameState(this.getSettings(), oldPath, newPath));
+        } else if (isPdfPath(oldPath)) {
+          this.enqueue(() => reconcilePdfDeleteState(this.getSettings(), oldPath));
+        }
+      })
+    );
+    register(
+      this.vault.on("delete", (file) => {
+        if (isPdfPath(file.path)) {
+          this.enqueue(() => reconcilePdfDeleteState(this.getSettings(), file.path));
+        }
+      })
+    );
+  }
+  enqueue(update) {
+    this.queue = this.queue.catch(() => void 0).then(async () => {
+      this.replaceSettings(update());
+      await this.persist();
+    });
+  }
+};
+
 // src/main.ts
 function nodeInsideElement(container, node) {
   if (!node) return false;
@@ -7632,6 +7751,7 @@ var PDFChatPlugin = class extends import_obsidian6.Plugin {
     __publicField(this, "quickTranslateMarker");
     __publicField(this, "codexSessionManager");
     __publicField(this, "vaultLifecycleService");
+    __publicField(this, "readerDataStore");
     __publicField(this, "codexGlobalUnsubscribe");
     __publicField(this, "codexRunningSessionIds", /* @__PURE__ */ new Set());
   }
@@ -7820,12 +7940,46 @@ var PDFChatPlugin = class extends import_obsidian6.Plugin {
     ).open();
   }
   async loadSettings() {
+    var _a, _b, _c;
     const { settings, needsSave } = migrateSettings(await this.loadData());
     this.settings = settings;
+    const adapter = (_b = (_a = this.app) == null ? void 0 : _a.vault) == null ? void 0 : _b.adapter;
+    if (isJsonAdapter(adapter)) {
+      const pluginId = ((_c = this.manifest) == null ? void 0 : _c.id) || "pdf-chat";
+      const root = `.obsidian/plugins/${pluginId}/reader-data`;
+      const readerDataStore = new ReaderDataStore(adapter, root);
+      const initialized = await readerDataStore.initialize(
+        this.settings,
+        (persistedSettings) => this.enqueueRawDataSave(persistedSettings)
+      );
+      this.settings = initialized.settings;
+      if (initialized.fallback) {
+        this.readerDataStore = void 0;
+        new import_obsidian6.Notice("\u9605\u8BFB\u6570\u636E\u8FC1\u79FB\u5C1A\u672A\u5B8C\u6210\uFF0C\u5F53\u524D\u7EE7\u7EED\u4F7F\u7528\u517C\u5BB9\u5B58\u50A8\uFF1B\u4F60\u7684\u539F\u6709\u6570\u636E\u672A\u88AB\u5220\u9664\u3002");
+      } else {
+        this.readerDataStore = readerDataStore;
+      }
+    }
     if (needsSave) await this.saveSettings();
   }
+  enqueueRawDataSave(data) {
+    const snapshot = JSON.parse(JSON.stringify(data));
+    const previousSave = this._saveQueue || Promise.resolve();
+    const nextSave = previousSave.catch(() => void 0).then(() => this.saveData(snapshot));
+    this._saveQueue = nextSave;
+    return nextSave;
+  }
   async saveSettings() {
-    return enqueueSettingsSave(this);
+    const snapshot = JSON.parse(JSON.stringify(this.settings));
+    const previousSave = this._saveQueue || Promise.resolve();
+    const nextSave = previousSave.catch(() => void 0).then(async () => {
+      var _a;
+      await ((_a = this.readerDataStore) == null ? void 0 : _a.synchronize(snapshot));
+      const persisted = this.readerDataStore ? this.readerDataStore.settingsForPersistence(snapshot) : snapshot;
+      await this.saveData(persisted);
+    });
+    this._saveQueue = nextSave;
+    return nextSave;
   }
   getConversationKey(pdfFile, contextText, kind = "chat") {
     return getConversationKey(pdfFile, contextText, kind);
