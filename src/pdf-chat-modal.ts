@@ -962,6 +962,7 @@ export class PDFChatModal extends Modal {
         new Notice("这段会话对应的 PDF 已移动或不存在；聊天记录仍保留。");
         return;
       }
+      await this.plugin.saveSettings();
       await this.app.workspace.getLeaf(false).openFile(targetFile);
       this.codexCloseIntent = "suspend";
       this.close();

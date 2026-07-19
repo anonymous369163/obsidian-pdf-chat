@@ -409,6 +409,7 @@ function createModalHarness({
   settingsPatch = {},
   conversations = {},
   codex,
+  saveSettings,
 } = {}) {
   const { bundle, fuzzyModals } = loadBundle({ markdownRenderer, confirm });
   const settings = JSON.parse(JSON.stringify(bundle.DEFAULT_SETTINGS));
@@ -417,7 +418,7 @@ function createModalHarness({
   Object.assign(settings, settingsPatch);
   const plugin = {
     settings,
-    saveSettings: async () => {},
+    saveSettings: saveSettings || (async () => {}),
   };
   const services = {
     conversations: {
@@ -1477,7 +1478,7 @@ test("/new in Codex mode starts a plugin session without inheriting the old nati
 test("resuming a session from another PDF opens that PDF before creating its modal", async () => {
   const current = { name: "demo.pdf", path: "papers/demo.pdf", extension: "pdf", stat: { mtime: 1 } };
   const target = { name: "other.pdf", path: "papers/other.pdf", extension: "pdf", stat: { mtime: 2 } };
-  const opened = [];
+  const events = [];
   const targetSession = {
     version: 1,
     id: "other-session",
@@ -1499,13 +1500,16 @@ test("resuming a session from another PDF opens that PDF before creating its mod
     workspace: {
       getLeaf: () => ({
         async openFile(file) {
-          opened.push(file.path);
+          events.push(`opened:${file.path}`);
         },
       }),
     },
   };
   const { modal } = createModalHarness({
     app,
+    saveSettings: async () => {
+      events.push("saved");
+    },
     conversations: {
       getActiveSession: (key) => (key === targetSession.conversationKey ? targetSession : null),
       getSession: () => targetSession,
@@ -1516,9 +1520,10 @@ test("resuming a session from another PDF opens that PDF before creating its mod
     },
   });
 
+  events.length = 0;
   await modal.resumeConversationSession("other-session");
 
-  assert.deepEqual(opened, ["papers/other.pdf"]);
+  assert.ok(events.indexOf("saved") < events.indexOf("opened:papers/other.pdf"));
   assert.equal(modal.closed, true);
 });
 

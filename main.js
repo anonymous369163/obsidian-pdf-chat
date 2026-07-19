@@ -3785,6 +3785,7 @@ ${this.contextText}`;
         new import_obsidian3.Notice("\u8FD9\u6BB5\u4F1A\u8BDD\u5BF9\u5E94\u7684 PDF \u5DF2\u79FB\u52A8\u6216\u4E0D\u5B58\u5728\uFF1B\u804A\u5929\u8BB0\u5F55\u4ECD\u4FDD\u7559\u3002");
         return;
       }
+      await this.plugin.saveSettings();
       await this.app.workspace.getLeaf(false).openFile(targetFile);
       this.codexCloseIntent = "suspend";
       this.close();
