@@ -74,6 +74,7 @@ export { openPdfEvidence, parseResearchEvidence } from "./evidence";
 export { AtomicJsonStore, JsonStoreError } from "./json-store";
 export { PaperAssetRepository } from "./paper-asset-repository";
 export { ReaderDataMigrator } from "./reader-data-migration";
+export { ResearchNoteService, sanitizeResearchArtifact } from "./research-notes";
 export { isJsonAdapter, ReaderDataStore } from "./reader-data-store";
 export { SessionRepository } from "./session-repository";
 export {

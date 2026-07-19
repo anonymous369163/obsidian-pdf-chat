@@ -13,10 +13,11 @@ import type {
   CodexVerbosity,
   ConversationSession,
   PDFChatSettings,
+  ResearchNoteSettings,
   TranslationSettings,
 } from "./types";
 
-interface LegacySettings extends Omit<Partial<PDFChatSettings>, "codexDeepAnalysis" | "translation"> {
+interface LegacySettings extends Omit<Partial<PDFChatSettings>, "codexDeepAnalysis" | "translation" | "researchNotes"> {
   endpoint?: string;
   apiKey?: string;
   model?: string;
@@ -24,6 +25,17 @@ interface LegacySettings extends Omit<Partial<PDFChatSettings>, "codexDeepAnalys
   translateChunkMaxChars?: number;
   codexDeepAnalysis?: Partial<CodexDeepAnalysisSettings>;
   translation?: Partial<TranslationSettings>;
+  researchNotes?: Partial<ResearchNoteSettings>;
+}
+
+function normalizeVaultFolder(value: unknown, fallback: string): string {
+  if (typeof value !== "string") return fallback;
+  const parts = value
+    .trim()
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter((part) => part && part !== "." && part !== "..");
+  return parts.join("/") || fallback;
 }
 
 function normalizePromptHistory(value: unknown): string[] {
@@ -213,6 +225,29 @@ export function migrateSettings(savedValue: unknown, now: () => number = Date.no
   settings.conversationSessions = normalizeConversationSessions(saved && saved.conversationSessions);
   settings.activeConversationSessionIds = normalizeActiveSessionIds(saved && saved.activeConversationSessionIds);
   settings.promptHistory = normalizePromptHistory(saved && saved.promptHistory);
+  const savedResearchNotes =
+    saved?.researchNotes && typeof saved.researchNotes === "object" && !Array.isArray(saved.researchNotes)
+      ? saved.researchNotes
+      : {};
+  settings.researchNotes = {
+    folder: normalizeVaultFolder(
+      savedResearchNotes.folder,
+      DEFAULT_SETTINGS.researchNotes.folder
+    ),
+    exportFolder: normalizeVaultFolder(
+      savedResearchNotes.exportFolder,
+      DEFAULT_SETTINGS.researchNotes.exportFolder
+    ),
+    includeSelectionText: savedResearchNotes.includeSelectionText === true,
+  };
+  if (
+    !saved?.researchNotes ||
+    savedResearchNotes.folder !== settings.researchNotes.folder ||
+    savedResearchNotes.exportFolder !== settings.researchNotes.exportFolder ||
+    savedResearchNotes.includeSelectionText !== settings.researchNotes.includeSelectionText
+  ) {
+    needsSave = true;
+  }
   const normalizedContextBudget = normalizeContextBudget(saved?.contextBudget);
   settings.contextBudget = normalizedContextBudget.contextBudget;
   if (saved && normalizedContextBudget.changed) needsSave = true;

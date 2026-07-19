@@ -39,6 +39,7 @@ __export(main_exports, {
   ReaderDataMigrator: () => ReaderDataMigrator,
   ReaderDataStore: () => ReaderDataStore,
   ResearchActionRegistry: () => ResearchActionRegistry,
+  ResearchNoteService: () => ResearchNoteService,
   SelectionLimitModal: () => SelectionLimitModal,
   SessionRepository: () => SessionRepository,
   TranslationService: () => TranslationService,
@@ -97,6 +98,7 @@ __export(main_exports, {
   runCodexThreadDoctor: () => runCodexThreadDoctor,
   runCodexThreadTurn: () => runCodexThreadTurn,
   runCodexVersionCheck: () => runCodexVersionCheck,
+  sanitizeResearchArtifact: () => sanitizeResearchArtifact,
   searchPdfFiles: () => searchPdfFiles,
   splitTranslationChunks: () => splitTranslationChunks,
   stableConversationHash: () => stableConversationHash,
@@ -2269,6 +2271,11 @@ var DEFAULT_SETTINGS = {
     maxTokens: 4e3,
     chunkChars: 8e3,
     additionalInstruction: ""
+  },
+  researchNotes: {
+    folder: "PDF Chat/Reading Notes",
+    exportFolder: "PDF Chat/Exports",
+    includeSelectionText: false
   },
   codexDeepAnalysis: {
     enabled: false,
@@ -7045,6 +7052,11 @@ var QuickTranslateMarker = class {
 };
 
 // src/settings.ts
+function normalizeVaultFolder(value, fallback) {
+  if (typeof value !== "string") return fallback;
+  const parts = value.trim().replace(/\\/g, "/").split("/").filter((part) => part && part !== "." && part !== "..");
+  return parts.join("/") || fallback;
+}
 function normalizePromptHistory(value) {
   if (!Array.isArray(value)) return [];
   const result = [];
@@ -7166,6 +7178,21 @@ function migrateSettings(savedValue, now = Date.now) {
   settings.conversationSessions = normalizeConversationSessions(saved && saved.conversationSessions);
   settings.activeConversationSessionIds = normalizeActiveSessionIds(saved && saved.activeConversationSessionIds);
   settings.promptHistory = normalizePromptHistory(saved && saved.promptHistory);
+  const savedResearchNotes = (saved == null ? void 0 : saved.researchNotes) && typeof saved.researchNotes === "object" && !Array.isArray(saved.researchNotes) ? saved.researchNotes : {};
+  settings.researchNotes = {
+    folder: normalizeVaultFolder(
+      savedResearchNotes.folder,
+      DEFAULT_SETTINGS.researchNotes.folder
+    ),
+    exportFolder: normalizeVaultFolder(
+      savedResearchNotes.exportFolder,
+      DEFAULT_SETTINGS.researchNotes.exportFolder
+    ),
+    includeSelectionText: savedResearchNotes.includeSelectionText === true
+  };
+  if (!(saved == null ? void 0 : saved.researchNotes) || savedResearchNotes.folder !== settings.researchNotes.folder || savedResearchNotes.exportFolder !== settings.researchNotes.exportFolder || savedResearchNotes.includeSelectionText !== settings.researchNotes.includeSelectionText) {
+    needsSave = true;
+  }
   const normalizedContextBudget = normalizeContextBudget(saved == null ? void 0 : saved.contextBudget);
   settings.contextBudget = normalizedContextBudget.contextBudget;
   if (saved && normalizedContextBudget.changed) needsSave = true;
@@ -7317,7 +7344,32 @@ var PDFChatSettingTab = class extends import_obsidian5.PluginSettingTab {
     this.renderChatSection(createSettingsSection(containerEl, "\u804A\u5929"));
     this.renderTranslationSection(createSettingsSection(containerEl, "\u7FFB\u8BD1"));
     this.renderPaperContextSection(createSettingsSection(containerEl, "\u8BBA\u6587\u4E0A\u4E0B\u6587"));
+    this.renderResearchNotesSection(createSettingsSection(containerEl, "\u7814\u7A76\u7B14\u8BB0"));
     this.renderAdvancedSection(createSettingsSection(containerEl, "\u9AD8\u7EA7"));
+  }
+  renderResearchNotesSection(containerEl) {
+    containerEl.createEl("p", {
+      text: "\u628A\u53EF\u89C1\u95EE\u7B54\u548C\u5DF2\u9A8C\u8BC1\u7684\u8BBA\u6587\u9875\u7801\u4FDD\u5B58\u4E3A Obsidian Markdown\u3002\u7B14\u8BB0\u4E0D\u4F1A\u5305\u542B API Key\u3001\u9690\u85CF\u63D0\u793A\u8BCD\u3001RAG \u5305\u88C5\u6216\u672C\u673A\u7EDD\u5BF9\u8DEF\u5F84\u3002",
+      cls: "setting-item-description"
+    });
+    new import_obsidian5.Setting(containerEl).setName("\u9605\u8BFB\u7B14\u8BB0\u6587\u4EF6\u5939").setDesc("\u5355\u7BC7\u8BBA\u6587\u5199\u5165\u4EE5\u8BBA\u6587\u547D\u540D\u7684\u7B14\u8BB0\uFF1B\u5F15\u7528\u591A\u7BC7\u8BBA\u6587\u7684\u8BA8\u8BBA\u5199\u5165 Synthesis.md\u3002").addText(
+      (text) => text.setValue(this.plugin.settings.researchNotes.folder).onChange(async (value) => {
+        this.plugin.settings.researchNotes.folder = value.trim() || DEFAULT_SETTINGS.researchNotes.folder;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("\u4F1A\u8BDD\u5BFC\u51FA\u6587\u4EF6\u5939").setDesc("\u4F1A\u8BDD\u8D44\u6599\u5E93\u5BFC\u51FA Markdown \u65F6\u4F7F\u7528\u7684\u9ED8\u8BA4\u4F4D\u7F6E\u3002").addText(
+      (text) => text.setValue(this.plugin.settings.researchNotes.exportFolder).onChange(async (value) => {
+        this.plugin.settings.researchNotes.exportFolder = value.trim() || DEFAULT_SETTINGS.researchNotes.exportFolder;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("\u4FDD\u5B58\u9009\u533A\u539F\u6587").setDesc("\u9ED8\u8BA4\u5173\u95ED\u3002\u5173\u95ED\u65F6\u7B14\u8BB0\u53EA\u4FDD\u5B58\u9009\u533A\u5B57\u6570\u4E0E\u54C8\u5E0C\uFF1B\u5F00\u542F\u540E\u624D\u4FDD\u5B58\u9009\u533A\u6B63\u6587\u3002").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.researchNotes.includeSelectionText).onChange(async (value) => {
+        this.plugin.settings.researchNotes.includeSelectionText = value;
+        await this.plugin.saveSettings();
+      })
+    );
   }
   renderModelSection(containerEl) {
     containerEl.createEl("p", {
@@ -7993,6 +8045,173 @@ async function openPdfEvidence(app, evidence) {
   await app.workspace.openLinkText(`${paperPath}#page=${evidence.page}`, "", false);
   return true;
 }
+
+// src/research-notes.ts
+var HIDDEN_CONTEXT_LINE = /^(?:【(?:论文全文|全文背景摘要|从全文中按关键词检索到的可能相关片段|我当前选中并想讨论的原文片段)】|\[(?:RAG|SYSTEM|HIDDEN)[^\]]*\]).*$/gim;
+function stableTextHash(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+function sanitizeResearchArtifact(value) {
+  if (typeof value !== "string") return "";
+  return value.replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/gi, "[REDACTED PRIVATE KEY]").replace(/\b(api[_-]?key|authorization)\s*[:=]\s*[^\s\n]+/gi, "$1: [REDACTED]").replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]").replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "sk-[REDACTED]").replace(/\b[A-Za-z]:\\[^\s\n]+/g, "[\u672C\u5730\u8DEF\u5F84\u5DF2\u9690\u85CF]").replace(/\/(?:Users|home)\/[^\s\n]+/g, "[\u672C\u5730\u8DEF\u5F84\u5DF2\u9690\u85CF]").replace(HIDDEN_CONTEXT_LINE, "[\u9690\u85CF\u4E0A\u4E0B\u6587\u5DF2\u7701\u7565]").replace(/\n{3,}/g, "\n\n").trim();
+}
+function normalizeFolder(value, fallback) {
+  const parts = (value || fallback).replace(/\\/g, "/").split("/").filter((part) => part && part !== "." && part !== "..");
+  return parts.join("/") || fallback;
+}
+function safeFileName(value, fallback) {
+  const normalized = (value || fallback).replace(/[<>:"/\\|?*\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().replace(/[. ]+$/g, "").slice(0, 120);
+  return normalized || fallback;
+}
+function primaryPaperPath(session) {
+  if (!session.conversationKey.startsWith("pdf:")) return void 0;
+  const path = session.conversationKey.slice("pdf:".length).trim();
+  return path || void 0;
+}
+function paperBaseName(path) {
+  const name = path.replace(/\\/g, "/").split("/").pop() || "Paper";
+  return name.replace(/\.pdf$/i, "") || "Paper";
+}
+function evidenceMarkdown(evidence) {
+  const items = Array.isArray(evidence) ? evidence : [];
+  if (!items.length) return "";
+  const lines = items.map((item) => {
+    const claim = sanitizeResearchArtifact(item.claim || item.raw || "\u8BBA\u6587\u8BC1\u636E");
+    if (item.verification === "located" && item.paperPath && Number.isInteger(item.page) && Number(item.page) > 0) {
+      const path = item.paperPath.replace(/\\/g, "/");
+      const name = path.split("/").pop() || path;
+      return `- ${claim} \u2014 [[${path}#page=${item.page}|${name} p.${item.page}]]`;
+    }
+    return `- ${claim} \u2014 \u672A\u9A8C\u8BC1\u6765\u6E90 ${item.raw || ""}`.trimEnd();
+  });
+  return `
+#### \u8BBA\u6587\u8BC1\u636E
+
+${lines.join("\n")}`;
+}
+function selectionMarkdown(selection, includeText) {
+  const text = (selection == null ? void 0 : selection.text) || "";
+  if (!text) return "";
+  const metadata = `\u9009\u533A\uFF1A${text.length} \u5B57 \xB7 hash:${stableTextHash(text)}`;
+  if (!includeText) return `
+> ${metadata}`;
+  return `
+> ${metadata}
+>
+${sanitizeResearchArtifact(text).split("\n").map((line) => `> ${line}`).join("\n")}`;
+}
+function buildResearchTurnMarkdown(request, timestamp) {
+  const user = sanitizeResearchArtifact(request.userMessage.content);
+  const assistant = sanitizeResearchArtifact(request.assistantMessage.content);
+  const date = new Date(timestamp).toISOString();
+  return [
+    `## ${date} \xB7 ${safeFileName(request.session.title, "\u9605\u8BFB\u8BA8\u8BBA")}`,
+    selectionMarkdown(request.selection, request.includeSelectionText),
+    "### \u95EE\u9898",
+    user,
+    "### \u56DE\u7B54",
+    assistant,
+    evidenceMarkdown(request.assistantMessage.evidence)
+  ].filter((section) => section !== "").join("\n\n").trim();
+}
+function exportSessionMarkdown(session) {
+  const lines = [
+    `# ${safeFileName(session.title, "PDF Chat \u4F1A\u8BDD")}`,
+    "",
+    `- \u6A21\u5F0F\uFF1A${session.mode === "codex" ? "Codex CLI" : "PDF Chat API"}`,
+    `- \u521B\u5EFA\uFF1A${new Date(session.createdAt).toISOString()}`,
+    `- \u66F4\u65B0\uFF1A${new Date(session.updatedAt).toISOString()}`
+  ];
+  const paperPath = primaryPaperPath(session);
+  if (paperPath) lines.push(`- \u5F53\u524D\u8BBA\u6587\uFF1A[[${paperPath}]]`);
+  for (const reference of session.referencedPdfPaths || []) lines.push(`- \u5F15\u7528\u8BBA\u6587\uFF1A[[${reference}]]`);
+  lines.push("");
+  for (const message of session.messages || []) {
+    lines.push(message.role === "user" ? "## \u7528\u6237" : "## \u52A9\u624B", "");
+    lines.push(sanitizeResearchArtifact(message.content), "");
+    const evidence = evidenceMarkdown(message.evidence);
+    if (evidence) lines.push(evidence.trim(), "");
+  }
+  return lines.join("\n").trim() + "\n";
+}
+var ResearchNoteService = class {
+  constructor(vault, getSettings, now = Date.now) {
+    this.vault = vault;
+    this.getSettings = getSettings;
+    this.now = now;
+    __publicField(this, "queues", /* @__PURE__ */ new Map());
+  }
+  async appendTurn(request) {
+    const settings = this.getSettings();
+    const paperPath = primaryPaperPath(request.session);
+    const isSynthesis = !paperPath || (request.session.referencedPdfPaths || []).length > 0;
+    const fileName = isSynthesis ? "Synthesis.md" : `${safeFileName(paperBaseName(paperPath), "Paper")}.md`;
+    const path = `${normalizeFolder(settings.folder, "PDF Chat/Reading Notes")}/${fileName}`;
+    const block = buildResearchTurnMarkdown(
+      { ...request, includeSelectionText: request.includeSelectionText === true },
+      this.now()
+    );
+    return this.enqueue(path, async () => {
+      const existing = this.vault.getAbstractFileByPath(path);
+      if (existing) {
+        const previous = await this.vault.read(existing);
+        await this.vault.modify(existing, `${previous.trimEnd()}
+
+---
+
+${block}
+`);
+        return { path, created: false };
+      }
+      await this.ensureParentFolder(path);
+      const title = isSynthesis ? "# PDF Chat \u7EFC\u5408\u7814\u7A76\u7B14\u8BB0" : `# ${paperBaseName(paperPath)} \u9605\u8BFB\u7B14\u8BB0`;
+      await this.vault.create(path, `${title}
+
+${block}
+`);
+      return { path, created: true };
+    });
+  }
+  async exportSessionMarkdown(session, targetPath) {
+    const settings = this.getSettings();
+    const fallbackName = `${safeFileName(session.title, "PDF Chat \u4F1A\u8BDD")}.md`;
+    const path = targetPath ? normalizeFolder(targetPath, fallbackName) : `${normalizeFolder(settings.exportFolder, "PDF Chat/Exports")}/${fallbackName}`;
+    const markdown = exportSessionMarkdown(session);
+    return this.enqueue(path, async () => {
+      const existing = this.vault.getAbstractFileByPath(path);
+      if (existing) {
+        await this.vault.modify(existing, markdown);
+        return { path, created: false };
+      }
+      await this.ensureParentFolder(path);
+      await this.vault.create(path, markdown);
+      return { path, created: true };
+    });
+  }
+  enqueue(path, task) {
+    const previous = this.queues.get(path) || Promise.resolve({ path, created: false });
+    const next = previous.catch(() => ({ path, created: false })).then(task);
+    this.queues.set(path, next);
+    const clean = () => {
+      if (this.queues.get(path) === next) this.queues.delete(path);
+    };
+    next.then(clean, clean);
+    return next;
+  }
+  async ensureParentFolder(path) {
+    const parts = path.split("/").slice(0, -1);
+    let current = "";
+    for (const part of parts) {
+      current = current ? `${current}/${part}` : part;
+      if (!this.vault.getAbstractFileByPath(current)) await this.vault.createFolder(current);
+    }
+  }
+};
 
 // src/main.ts
 function nodeInsideElement(container, node) {

@@ -207,6 +207,12 @@ export interface TranslationSettings {
   additionalInstruction: string;
 }
 
+export interface ResearchNoteSettings {
+  folder: string;
+  exportFolder: string;
+  includeSelectionText: boolean;
+}
+
 export interface CodexDeepAnalysisSettings {
   enabled: boolean;
   command: string;
@@ -265,6 +271,7 @@ export interface PDFChatSettings {
   continueModelId: string;
   systemPrompt: string;
   translation: TranslationSettings;
+  researchNotes: ResearchNoteSettings;
   codexDeepAnalysis: CodexDeepAnalysisSettings;
   contextBudget: ContextBudgetSettings;
   summaryModelId: string;

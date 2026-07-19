@@ -1808,7 +1808,7 @@ test("settings preserve every legacy control in the correct ordered section and 
   const sections = byClass(settingTab.containerEl, "pdf-chat-settings-section");
   assert.deepEqual(
     sections.map((section) => byTag(section, "h3")[0].textContent),
-    ["模型", "聊天", "翻译", "论文上下文", "高级"]
+    ["模型", "聊天", "翻译", "论文上下文", "研究笔记", "高级"]
   );
   assert.ok(sections.every((section) => section.tagName === "SECTION"));
 
@@ -1856,6 +1856,7 @@ test("settings preserve every legacy control in the correct ordered section and 
       "清空所有可重建论文缓存",
       "删除迁移备份",
     ],
+    ["阅读笔记文件夹", "会话导出文件夹", "保存选区原文"],
     [
       "启用 Codex CLI 深度分析",
       "Codex 命令",
@@ -1913,12 +1914,12 @@ test("settings preserve every legacy control in the correct ordered section and 
 
   const buttonTexts = (section) => byTag(section, "button").map((button) => button.textContent);
   assert.ok(buttonTexts(sections[0]).includes("+ 添加模型"));
-  assert.ok(buttonTexts(sections[4]).includes("+ 添加预设"));
+  assert.ok(buttonTexts(sections[5]).includes("+ 添加预设"));
   assert.equal(byTag(sections[1], "textarea").length, 1);
   assert.equal(byTag(sections[2], "textarea").length, 1);
   assert.equal(byTag(sections[3], "textarea").length, 2);
-  assert.equal(byTag(sections[4], "textarea").length, plugin.settings.promptPresets.length);
-  assert.match(descendants(sections[4]).map((element) => element.textContent).join(" "), /Ctrl\+Alt\+Q/);
+  assert.equal(byTag(sections[5], "textarea").length, plugin.settings.promptPresets.length);
+  assert.match(descendants(sections[5]).map((element) => element.textContent).join(" "), /Ctrl\+Alt\+Q/);
 
   const controlFor = (section, name, tagName) => {
     const setting = byClass(section, "setting-item").find(
@@ -1979,16 +1980,16 @@ test("settings preserve every legacy control in the correct ordered section and 
   const cacheMib = controlFor(sections[3], "论文缓存上限（MiB）", "input");
   cacheMib.value = "64";
   cacheMib.dispatch("change");
-  const codexCommand = controlFor(sections[4], "Codex 命令", "input");
+  const codexCommand = controlFor(sections[5], "Codex 命令", "input");
   codexCommand.value = "  C:/Tools/codex.exe  ";
   codexCommand.dispatch("change");
-  const codexInputMode = controlFor(sections[4], "Codex input mode", "select");
+  const codexInputMode = controlFor(sections[5], "Codex input mode", "select");
   codexInputMode.value = "debug-full";
   codexInputMode.dispatch("change");
-  const codexTimeout = controlFor(sections[4], "Codex 超时毫秒", "input");
+  const codexTimeout = controlFor(sections[5], "Codex 超时毫秒", "input");
   codexTimeout.value = "120000";
   codexTimeout.dispatch("change");
-  const firstPreset = controlFor(sections[4], "预设 1", "input");
+  const firstPreset = controlFor(sections[5], "预设 1", "input");
   firstPreset.value = "Updated preset";
   firstPreset.dispatch("change");
   await new Promise((resolve) => setImmediate(resolve));

@@ -25,7 +25,46 @@ export class PDFChatSettingTab extends PluginSettingTab {
     this.renderChatSection(createSettingsSection(containerEl, "聊天"));
     this.renderTranslationSection(createSettingsSection(containerEl, "翻译"));
     this.renderPaperContextSection(createSettingsSection(containerEl, "论文上下文"));
+    this.renderResearchNotesSection(createSettingsSection(containerEl, "研究笔记"));
     this.renderAdvancedSection(createSettingsSection(containerEl, "高级"));
+  }
+
+  private renderResearchNotesSection(containerEl: HTMLElement): void {
+    containerEl.createEl("p", {
+      text: "把可见问答和已验证的论文页码保存为 Obsidian Markdown。笔记不会包含 API Key、隐藏提示词、RAG 包装或本机绝对路径。",
+      cls: "setting-item-description",
+    });
+    new Setting(containerEl)
+      .setName("阅读笔记文件夹")
+      .setDesc("单篇论文写入以论文命名的笔记；引用多篇论文的讨论写入 Synthesis.md。")
+      .addText((text) =>
+        text.setValue(this.plugin.settings.researchNotes.folder).onChange(async (value) => {
+          this.plugin.settings.researchNotes.folder =
+            value.trim() || DEFAULT_SETTINGS.researchNotes.folder;
+          await this.plugin.saveSettings();
+        })
+      );
+    new Setting(containerEl)
+      .setName("会话导出文件夹")
+      .setDesc("会话资料库导出 Markdown 时使用的默认位置。")
+      .addText((text) =>
+        text.setValue(this.plugin.settings.researchNotes.exportFolder).onChange(async (value) => {
+          this.plugin.settings.researchNotes.exportFolder =
+            value.trim() || DEFAULT_SETTINGS.researchNotes.exportFolder;
+          await this.plugin.saveSettings();
+        })
+      );
+    new Setting(containerEl)
+      .setName("保存选区原文")
+      .setDesc("默认关闭。关闭时笔记只保存选区字数与哈希；开启后才保存选区正文。")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.researchNotes.includeSelectionText)
+          .onChange(async (value) => {
+            this.plugin.settings.researchNotes.includeSelectionText = value;
+            await this.plugin.saveSettings();
+          })
+      );
   }
 
   private renderModelSection(containerEl: HTMLElement): void {

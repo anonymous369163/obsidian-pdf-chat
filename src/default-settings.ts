@@ -46,6 +46,11 @@ export const DEFAULT_SETTINGS = {
     chunkChars: 8000,
     additionalInstruction: "",
   },
+  researchNotes: {
+    folder: "PDF Chat/Reading Notes",
+    exportFolder: "PDF Chat/Exports",
+    includeSelectionText: false,
+  },
   codexDeepAnalysis: {
     enabled: false,
     command: "codex",
