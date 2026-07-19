@@ -926,6 +926,28 @@
   background: var(--background-secondary);
 }
 
+.pdf-chat-selection-limit-modal {
+  max-width: 520px;
+}
+
+.pdf-chat-selection-limit-modal > p {
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+.pdf-chat-selection-limit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--pdf-chat-space-small);
+  margin-top: var(--pdf-chat-space);
+}
+
+.pdf-chat-selection-limit-actions button {
+  min-height: 36px;
+  border-radius: var(--pdf-chat-radius-md);
+}
+
 .pdf-chat-settings-section > h3 {
   margin-top: 0;
 }

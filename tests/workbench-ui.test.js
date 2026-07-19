@@ -1705,6 +1705,61 @@ test("long API conversations summarize only omitted visible turns before the bou
   assert.equal(requests[1].messages.at(-1).content, "current question");
 });
 
+test("oversized selection cancellation prevents API and Codex turns", async () => {
+  let apiCalls = 0;
+  let codexCalls = 0;
+  const { modal } = createModalHarness({
+    settingsPatch: {
+      contextBudget: { maxInputChars: 60000, minRecentTurns: 6, maxSelectionChars: 5 },
+    },
+    llmChat: async () => {
+      apiCalls += 1;
+      return "Unexpected";
+    },
+    codex: {
+      getSnapshot: () => ({ status: "idle" }),
+      listSnapshots: () => [],
+      subscribe: () => () => {},
+      startTurn: async () => {
+        codexCalls += 1;
+      },
+      stopTurn: () => false,
+      closeSession: async () => {},
+      reactivateSession: () => {},
+    },
+  });
+  modal.requestSelectionDecision = async () => "cancel";
+  modal.inputEl.value = "question";
+  await modal.handleSubmit();
+  modal.runtimeMode = "codex";
+  modal.inputEl.value = "codex question";
+  await modal.handleSubmit();
+
+  assert.equal(apiCalls, 0);
+  assert.equal(codexCalls, 0);
+  assert.equal(modal.transcript.length, 0);
+});
+
+test("oversized selection prefix is the only selected passage sent to the API", async () => {
+  let request;
+  const { modal } = createModalHarness({
+    settingsPatch: {
+      contextBudget: { maxInputChars: 60000, minRecentTurns: 6, maxSelectionChars: 8 },
+    },
+    llmChat: async (value) => {
+      request = value;
+      return "Answer";
+    },
+  });
+  modal.requestSelectionDecision = async () => "prefix";
+  modal.inputEl.value = "question";
+
+  await modal.handleSubmit();
+
+  assert.match(request.messages[0].content, /Selected/);
+  assert.doesNotMatch(request.messages[0].content, /Selected source/);
+});
+
 test("settings preserve every legacy control in the correct ordered section and callbacks", async () => {
   const { bundle, settingTabs } = loadBundle();
   const PluginClass = bundle.default || bundle;
@@ -1943,6 +1998,8 @@ test("CSS defines the scoped responsive, readable, selectable workbench contract
     css.match(/\.pdf-chat-composer-mention-option\s*\{([^}]*)\}/s)?.[1] || "";
   const pdfSearchNameRule = css.match(/\.pdf-chat-pdf-search-name\s*\{([^}]*)\}/s)?.[1] || "";
   const pdfSearchPathRule = css.match(/\.pdf-chat-pdf-search-path\s*\{([^}]*)\}/s)?.[1] || "";
+  const selectionLimitActionsRule =
+    css.match(/\.pdf-chat-selection-limit-actions\s*\{([^}]*)\}/s)?.[1] || "";
   assert.match(contextPanelRule, /display:\s*flex/);
   assert.match(contextPanelRule, /flex-direction:\s*column/);
   assert.match(contextPanelRule, /flex:\s*0\s+0\s+auto/);
@@ -1967,6 +2024,8 @@ test("CSS defines the scoped responsive, readable, selectable workbench contract
   assert.match(pdfSearchNameRule, /line-height:\s*1\.25/);
   assert.match(pdfSearchPathRule, /display:\s*block/);
   assert.match(pdfSearchPathRule, /line-height:\s*1\.25/);
+  assert.match(selectionLimitActionsRule, /display:\s*flex/);
+  assert.match(selectionLimitActionsRule, /flex-wrap:\s*wrap/);
   assert.match(assistantRule, /box-shadow:/);
   assert.match(userRule, /border-inline-end:\s*0/);
   assert.match(

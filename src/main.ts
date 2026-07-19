@@ -68,6 +68,11 @@ export {
 } from "./codex-cli";
 export { CodexSessionManager } from "./codex-session-manager";
 export { composeBoundedContext, summarizeSessionMemory } from "./context-composer";
+export {
+  requestSelectionLimitDecision,
+  resolveSelectionForTurn,
+  SelectionLimitModal,
+} from "./selection-limit-modal";
 export { DEFAULT_SETTINGS, LEGACY_0_4_0_TRANSLATE_PROMPT } from "./default-settings";
 export { OpenAICompatibleTransport } from "./llm-transport";
 export { resolveContinueModelId, resolveTranslateModelId } from "./model-routing";

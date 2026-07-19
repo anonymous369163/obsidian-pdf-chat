@@ -23,6 +23,12 @@ import {
 } from "./context-composer";
 import { createPDFChatModalServices } from "./modal-services";
 import {
+  requestSelectionLimitDecision,
+  resolveSelectionForTurn,
+  type SelectionChoice,
+  type SelectionDecision,
+} from "./selection-limit-modal";
+import {
   buildCodexMarkdownPrompt,
   buildCodexPdfOnlyPrompt,
   buildCodexDebugFullMarkdownPrompt,
@@ -382,7 +388,7 @@ export class PDFChatModal extends Modal {
     ];
   }
 
-  buildSystemMessage(): LlmMessage {
+  buildSystemMessage(selectionContext = this.contextText): LlmMessage {
     const preset =
       this.currentPresetId === "__default__"
         ? null
@@ -395,7 +401,7 @@ export class PDFChatModal extends Modal {
         "\n\n【全文背景摘要】(由快速模型浓缩整篇 PDF 得到,仅供理解背景,不是我当前问题的具体内容):\n" +
         this.docSummaryEntry.summary;
     }
-    content += `\n\n【我当前选中并想讨论的原文片段】:\n${this.contextText}`;
+    content += `\n\n【我当前选中并想讨论的原文片段】:\n${selectionContext}`;
     return { role: "system", content };
   }
 
@@ -2142,18 +2148,40 @@ export class PDFChatModal extends Modal {
     ].join("\n");
   }
 
-  private async composeApiContext(question: string, currentContext: string): Promise<ContextComposition> {
+  private requestSelectionDecision(request: { textLength: number; limit: number }): Promise<SelectionChoice> {
+    return requestSelectionLimitDecision(this.app, request.textLength, request.limit);
+  }
+
+  private async resolveTurnSelection(): Promise<SelectionDecision> {
+    const budget = this.plugin.settings.contextBudget || DEFAULT_SETTINGS.contextBudget;
+    return resolveSelectionForTurn(
+      this.contextText,
+      budget.maxSelectionChars,
+      (request) => this.requestSelectionDecision(request)
+    );
+  }
+
+  private async composeApiContext(
+    question: string,
+    currentContext: string,
+    selection: SelectionDecision
+  ): Promise<ContextComposition> {
     const budget = this.plugin.settings.contextBudget || DEFAULT_SETTINGS.contextBudget;
     const session = this.currentSessionId
       ? this.services.conversations.getSession?.(this.currentSessionId)
       : this.services.conversations.getActiveSession?.(this.conversationKey);
+    const system = this.buildSystemMessage(selection.text).content;
+    const maxInputChars =
+      selection.kind === "all" && selection.oversized
+        ? Math.max(budget.maxInputChars, system.length + question.length + 2)
+        : budget.maxInputChars;
     const compose = (memory?: string) => composeBoundedContext({
-      system: this.buildSystemMessage().content,
+      system,
       transcript: this.transcript,
       currentUser: question,
       currentContext,
       memory,
-      maxInputChars: budget.maxInputChars,
+      maxInputChars,
       minRecentTurns: budget.minRecentTurns,
     });
     const initial = compose();
@@ -2188,13 +2216,16 @@ export class PDFChatModal extends Modal {
   private async completeApiMultiPaperAnswer(
     question: string,
     userLabel: string,
-    bubble: HTMLDivElement
+    bubble: HTMLDivElement,
+    selectionOverride?: SelectionDecision
   ): Promise<void> {
     const currentContext = await this.buildApiMultiPaperContext(question, (message) => {
       this.multiPaperStatusEl?.setText(message);
       setBubbleText(bubble, message);
     });
-    const composition = await this.composeApiContext(question, currentContext);
+    const selection = selectionOverride || (await this.resolveTurnSelection());
+    if (selection.kind === "cancel") return;
+    const composition = await this.composeApiContext(question, currentContext, selection);
     let fullText = "";
     let firstChunkArrived = false;
     fullText = await this.services.llm.chat({
@@ -2276,8 +2307,13 @@ export class PDFChatModal extends Modal {
       return;
     }
     if (this.isSending) return;
+    const question = (questionOverride && questionOverride.trim()) || this.getMultiPaperQuestion();
+    const selection: SelectionDecision = this.shouldAttachSelectionContext()
+      ? await this.resolveTurnSelection()
+      : { kind: "all", text: "", oversized: false };
+    if (selection.kind === "cancel") return;
     if (this.getCodexInputMode() === "debug-full") {
-      await this.runLegacyCodexDebugAnalysis(questionOverride);
+      await this.runLegacyCodexDebugAnalysis(question, selection);
       return;
     }
     const runtime = this.services.codex;
@@ -2286,7 +2322,6 @@ export class PDFChatModal extends Modal {
       return;
     }
 
-    const question = (questionOverride && questionOverride.trim()) || this.getMultiPaperQuestion();
     this.enterCodexMode();
     const session = this.ensureCurrentSessionForWrite();
     this.currentSessionId = session?.id || this.currentSessionId;
@@ -2311,7 +2346,7 @@ export class PDFChatModal extends Modal {
     };
     const workingDirectory =
       currentLocation?.workingDirectory || adapter?.getBasePath?.() || ".";
-    const selectedContext = this.shouldAttachSelectionContext() ? this.contextText : "";
+    const selectedContext = selection.text;
     const prompt = buildCodexTurnPrompt({ question, papers, selectedContext });
 
     this.activeComposerKind = "chat";
@@ -2346,7 +2381,10 @@ export class PDFChatModal extends Modal {
       });
   }
 
-  private async runLegacyCodexDebugAnalysis(questionOverride?: string): Promise<void> {
+  private async runLegacyCodexDebugAnalysis(
+    questionOverride?: string,
+    selectionOverride?: SelectionDecision
+  ): Promise<void> {
     if (!this.pdfFile) {
       new Notice("Codex 深度分析需要从 PDF 视图打开。");
       return;
@@ -2412,7 +2450,7 @@ export class PDFChatModal extends Modal {
         createdAt: new Date().toISOString(),
         question,
         papers,
-        selectedContext: this.shouldAttachSelectionContext() ? this.contextText : "",
+        selectedContext: selectionOverride?.text || "",
       };
       let selectedContextPath: string | undefined;
       if (inputMode === "debug-full") {
@@ -2480,7 +2518,7 @@ export class PDFChatModal extends Modal {
         setBubbleText(loadingBubble, "Codex CLI 不可用，正在改用当前模型基于多论文上下文回答…");
         this.multiPaperStatusEl?.setText("Codex 不可用，改用当前模型回答。");
         try {
-          await this.completeApiMultiPaperAnswer(question, userLabel, loadingBubble);
+          await this.completeApiMultiPaperAnswer(question, userLabel, loadingBubble, selectionOverride);
         } catch (fallbackError) {
           loadingBubble.removeClass("is-loading");
           loadingBubble.addClass("is-error");
@@ -2861,6 +2899,9 @@ export class PDFChatModal extends Modal {
       return;
     }
 
+    const selection = await this.resolveTurnSelection();
+    if (selection.kind === "cancel") return;
+
     this.activeComposerKind = "chat";
     this.hideFollowupSuggestions();
     this.addBubble("user", question);
@@ -2937,7 +2978,7 @@ export class PDFChatModal extends Modal {
       setBubbleText(loadingBubble, "思考中…");
     }
 
-    const composition = await this.composeApiContext(question, currentContext);
+    const composition = await this.composeApiContext(question, currentContext, selection);
     if (composition.currentInputTruncated) {
       new Notice("本轮论文上下文超过输入预算，已保留问题并截取可发送的上下文。");
     }
