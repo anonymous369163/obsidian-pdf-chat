@@ -388,6 +388,7 @@ export interface AssistantMessageFooterOptions {
   evidence: ResearchEvidence[];
   onOpenEvidence(evidence: ResearchEvidence): Promise<void> | void;
   onSave(): Promise<void>;
+  onExport?: () => Promise<void>;
   onCopy(): Promise<void>;
 }
 
@@ -395,6 +396,7 @@ export interface AssistantMessageFooterElements {
   root: HTMLElement;
   evidenceToggle?: HTMLButtonElement;
   evidenceList?: HTMLElement;
+  exportButton?: HTMLButtonElement;
   saveButton: HTMLButtonElement;
   copyButton: HTMLButtonElement;
 }
@@ -463,6 +465,13 @@ export function buildAssistantMessageFooter(
   }
 
   const actionGroup = root.createDiv({ cls: "pdf-chat-message-footer-actions" });
+  const exportButton = options.onExport
+    ? actionGroup.createEl("button", {
+        text: "导出 Markdown",
+        cls: "pdf-chat-footer-action pdf-chat-export-answer",
+        attr: { type: "button" },
+      })
+    : null;
   const saveButton = actionGroup.createEl("button", {
     text: "保存回答",
     cls: "pdf-chat-footer-action pdf-chat-save-answer",
@@ -491,6 +500,32 @@ export function buildAssistantMessageFooter(
       }
     );
   });
+  if (exportButton) {
+    setElementLabel(exportButton, "导出该条回答为单独 Markdown 文件");
+    exportButton.addEventListener("click", () => {
+      const originalText = exportButton.textContent || "导出 Markdown";
+      exportButton.disabled = true;
+      exportButton.setText("导出中…");
+      void options.onExport?.().then(
+        () => {
+          exportButton.setText("导出完成");
+          setElementLabel(exportButton, "该条回答已导出为 Markdown");
+          exportButton.disabled = false;
+          setTimeout(() => {
+            if (exportButton && !exportButton.disabled) {
+              exportButton.setText(originalText);
+              setElementLabel(exportButton, "导出该条回答为单独 Markdown 文件");
+            }
+          }, 1200);
+        },
+        () => {
+          exportButton.disabled = false;
+          exportButton.setText(originalText);
+          setElementLabel(exportButton, "导出失败，请重试");
+        }
+      );
+    });
+  }
   copyButton.addEventListener("click", () => {
     copyButton.disabled = true;
     void options.onCopy().then(

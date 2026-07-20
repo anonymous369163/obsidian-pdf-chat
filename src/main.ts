@@ -247,6 +247,7 @@ export default class PDFChatPlugin extends Plugin implements PDFChatPluginApi {
         appendTurn: (request) => researchNoteService.appendTurn(request),
         exportSessionMarkdown: (session, targetPath) =>
           researchNoteService.exportSessionMarkdown(session, targetPath),
+        exportTurnAsMarkdown: (request) => researchNoteService.exportTurnAsMarkdown(request),
         openEvidence: (evidence) => openPdfEvidence(this.app, evidence),
       };
     }

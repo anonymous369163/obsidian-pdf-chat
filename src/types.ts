@@ -222,6 +222,11 @@ export interface SaveResearchTurnRequest {
   selection?: { text: string; paperPath?: string };
 }
 
+export interface SaveResearchTurnMarkdownRequest extends SaveResearchTurnRequest {
+  title?: string;
+  includeEvidence?: boolean;
+}
+
 export interface ResearchArtifactWriteResult {
   path: string;
   created: boolean;
@@ -229,6 +234,7 @@ export interface ResearchArtifactWriteResult {
 
 export interface ResearchArtifactOperations {
   appendTurn(request: SaveResearchTurnRequest): Promise<ResearchArtifactWriteResult>;
+  exportTurnAsMarkdown?: (request: SaveResearchTurnMarkdownRequest) => Promise<ResearchArtifactWriteResult>;
   exportSessionMarkdown(
     session: ConversationSession,
     targetPath?: string

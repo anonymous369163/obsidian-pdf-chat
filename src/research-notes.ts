@@ -5,6 +5,7 @@ import type {
   ResearchArtifactWriteResult,
   ResearchNoteSettings,
   SaveResearchTurnRequest,
+  SaveResearchTurnMarkdownRequest,
 } from "./types";
 
 interface VaultFileLike {
@@ -88,7 +89,8 @@ function evidenceMarkdown(evidence: ResearchEvidence[] | undefined): string {
       const name = path.split("/").pop() || path;
       return `- ${claim} — [[${path}#page=${item.page}|${name} p.${item.page}]]`;
     }
-    return `- ${claim} — 未验证来源 ${item.raw || ""}`.trimEnd();
+    const raw = sanitizeResearchArtifact(item.raw || "");
+    return `- ${claim} — 未验证来源 ${raw}`.trimEnd();
   });
   return `\n#### 论文证据\n\n${lines.join("\n")}`;
 }
@@ -105,6 +107,61 @@ function selectionMarkdown(
     .split("\n")
     .map((line) => `> ${line}`)
     .join("\n")}`;
+}
+
+function buildTurnArtifactMarkdown(
+  request: SaveResearchTurnMarkdownRequest,
+  timestamp: number
+): string {
+  const { userMessage, assistantMessage, session } = request;
+  const includeSelectionText = request.includeSelectionText === true;
+  const date = new Date(timestamp).toISOString();
+  const headers = [
+    `# ${safeFileName(request.title || session.title || "PDF Chat 回答", "PDF Chat 回答")}`,
+    `- 时间：${date}`,
+    `- 会话：${safeFileName(session.title || "PDF Chat 回答", "PDF Chat 回答")}`,
+    `- 模式：${session.mode === "codex" ? "Codex CLI" : "PDF Chat API"}`,
+  ];
+  const paperPath = primaryPaperPath(session);
+  if (paperPath) {
+    headers.push(`- 当前论文：[[${paperPath}]]`);
+  }
+  for (const reference of session.referencedPdfPaths || []) {
+    headers.push(`- 引用论文：[[${reference}]]`);
+  }
+  if (includeSelectionText && request.selection?.text) {
+    headers.push(`- 选区长度：${request.selection.text.length} 字`);
+  }
+  const evidenceSection =
+    request.includeEvidence === true ? evidenceMarkdown(assistantMessage.evidence) : "";
+  return [
+    headers.join("\n"),
+    "",
+    "## 用户问题",
+    sanitizeResearchArtifact(userMessage.content),
+    "## 助手回答",
+    sanitizeResearchArtifact(assistantMessage.content),
+    evidenceSection,
+    selectionMarkdown(request.selection, includeSelectionText),
+  ]
+    .filter((section) => section !== "")
+    .join("\n\n")
+    .trim();
+}
+
+function turnExportPath(
+  session: ConversationSession,
+  title: string,
+  timestamp: number
+): string {
+  const safeTitle = safeFileName(title || session.title || "PDF Chat 回答", "PDF Chat 回答");
+  const folderName = safeFileName(safeTitle, "PDF Chat");
+  const date = new Date(timestamp)
+    .toISOString()
+    .replace(/[:.]/g, "-")
+    .replace(/T/g, "-")
+    .replace(/Z/g, "");
+  return `${folderName}/回答-${date}.md`;
 }
 
 export function buildResearchTurnMarkdown(
@@ -180,6 +237,31 @@ export class ResearchNoteService {
       await this.ensureParentFolder(path);
       const title = isSynthesis ? "# PDF Chat 综合研究笔记" : `# ${paperBaseName(paperPath!)} 阅读笔记`;
       await this.vault.create(path, `${title}\n\n${block}\n`);
+      return { path, created: true };
+    });
+  }
+
+  async exportTurnAsMarkdown(
+    request: SaveResearchTurnMarkdownRequest
+  ): Promise<ResearchArtifactWriteResult> {
+    const settings = this.getSettings();
+    const timestamp = this.now();
+    const title = safeFileName(request.title || request.session.title || "PDF Chat 回答", "PDF Chat 回答");
+    const relativePath = turnExportPath(request.session, title, timestamp);
+    const path = `${normalizeFolder(settings.exportFolder, "PDF Chat/Exports")}/${relativePath}`;
+    const markdown = buildTurnArtifactMarkdown(
+      { ...request, includeSelectionText: request.includeSelectionText === true },
+      timestamp
+    );
+    return this.enqueue(path, async () => {
+      const existing = this.vault.getAbstractFileByPath(path) as VaultFileLike | null;
+      if (existing) {
+        const previous = await this.vault.read(existing);
+        await this.vault.modify(existing, `${previous.trimEnd()}\n\n---\n\n${markdown}\n`);
+        return { path, created: false };
+      }
+      await this.ensureParentFolder(path);
+      await this.vault.create(path, markdown);
       return { path, created: true };
     });
   }

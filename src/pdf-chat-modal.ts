@@ -2283,6 +2283,26 @@ export class PDFChatModal extends Modal {
           throw error;
         }
       },
+      onExport: async () => {
+        const session = this.currentSessionId
+          ? this.services.conversations.getSession?.(this.currentSessionId)
+          : this.services.conversations.getActiveSession?.(this.conversationKey);
+        if (!session || !this.services.artifacts?.exportTurnAsMarkdown) {
+          new Notice("Markdown 导出服务不可用");
+          throw new Error("Markdown export service is unavailable");
+        }
+        const result = await this.services.artifacts.exportTurnAsMarkdown({
+          session,
+          userMessage,
+          assistantMessage,
+          includeSelectionText: this.plugin.settings.researchNotes.includeSelectionText,
+          selection: this.contextText
+            ? { text: this.contextText, paperPath: this.pdfFile?.path }
+            : undefined,
+          includeEvidence: true,
+        });
+        new Notice(`已导出回答到 ${result.path}`);
+      },
       onCopy: async () => {
         try {
           await navigator.clipboard.writeText(assistantMessage.content);

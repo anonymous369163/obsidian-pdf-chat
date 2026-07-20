@@ -1965,6 +1965,7 @@ test("assistant plain text is lightly split only for display", async () => {
 test("stable assistant answers expose collapsed evidence, page, save, and copy actions", async () => {
   const opened = [];
   const saved = [];
+  const exported = [];
   const copied = [];
   let saveAttempts = 0;
   const activeSession = {
@@ -1999,6 +2000,10 @@ test("stable assistant answers expose collapsed evidence, page, save, and copy a
         if (saveAttempts === 1) throw new Error("write failed");
         saved.push(request);
         return { path: "PDF Chat/Reading Notes/demo.md", created: false };
+      },
+      exportTurnAsMarkdown: async (request) => {
+        exported.push(request);
+        return { path: "PDF Chat/Exports/answer.md", created: true };
       },
     },
     conversations: {
@@ -2041,6 +2046,14 @@ test("stable assistant answers expose collapsed evidence, page, save, and copy a
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(saved.length, 1);
   assert.match(saveButton.textContent, /已保存/);
+
+  const exportButton = byClass(footer, "pdf-chat-export-answer")[0];
+  exportButton.dispatch("click");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(exported.length, 1);
+  assert.equal(exported[0].includeSelectionText, false);
+  assert.equal(exportButton.disabled, false);
+  assert.match(exportButton.textContent, /导出完成/);
 
   byClass(footer, "pdf-chat-copy-answer")[0].dispatch("click");
   await new Promise((resolve) => setImmediate(resolve));
@@ -2454,6 +2467,11 @@ test("CSS defines the scoped responsive, readable, selectable workbench contract
   const composerRule = css.match(/\.pdf-chat-composer\s*\{([^}]*)\}/s)?.[1] || "";
   const assistantRule = css.match(/\.pdf-chat-bubble\.assistant\s*\{([^}]*)\}/s)?.[1] || "";
   const userRule = css.match(/\.pdf-chat-bubble\.user\s*\{([^}]*)\}/s)?.[1] || "";
+  const bubbleRule = css.match(/\.pdf-chat-bubble\s*\{([^}]*)\}/s)?.[1] || "";
+  const messageContentRule =
+    css.match(/\.pdf-chat-message-content\s*\{([^}]*)\}/s)?.[1] || "";
+  const footerActionsRule =
+    css.match(/\.pdf-chat-message-footer-actions\s*\{([^}]*)\}/s)?.[1] || "";
   const composerCardRule = css.match(/\.pdf-chat-composer-card\s*\{([^}]*)\}/s)?.[1] || "";
   const mentionOptionRule =
     css.match(/\.pdf-chat-composer-mention-option\s*\{([^}]*)\}/s)?.[1] || "";
@@ -2489,6 +2507,11 @@ test("CSS defines the scoped responsive, readable, selectable workbench contract
   assert.match(selectionLimitActionsRule, /flex-wrap:\s*wrap/);
   assert.match(assistantRule, /box-shadow:/);
   assert.match(userRule, /border-inline-end:\s*0/);
+  assert.match(bubbleRule, /min-width:\s*0/);
+  assert.match(messageContentRule, /min-width:\s*0/);
+  assert.match(messageContentRule, /overflow-wrap:\s*anywhere/);
+  assert.match(footerActionsRule, /flex-wrap:\s*wrap/);
+  assert.match(footerActionsRule, /max-width:\s*100%/);
   assert.match(
     css,
     /@container\s+pdf-chat-workbench\s*\(max-width:\s*620px\)[\s\S]*?\.pdf-chat-context-panel\.is-expanded\s*\{[^}]*flex-basis:\s*160px[^}]*max-height:\s*160px/

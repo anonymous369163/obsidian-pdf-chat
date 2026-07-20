@@ -3874,6 +3874,11 @@ function buildAssistantMessageFooter(parent, options) {
     });
   }
   const actionGroup = root.createDiv({ cls: "pdf-chat-message-footer-actions" });
+  const exportButton = options.onExport ? actionGroup.createEl("button", {
+    text: "\u5BFC\u51FA Markdown",
+    cls: "pdf-chat-footer-action pdf-chat-export-answer",
+    attr: { type: "button" }
+  }) : null;
   const saveButton = actionGroup.createEl("button", {
     text: "\u4FDD\u5B58\u56DE\u7B54",
     cls: "pdf-chat-footer-action pdf-chat-save-answer",
@@ -3901,6 +3906,33 @@ function buildAssistantMessageFooter(parent, options) {
       }
     );
   });
+  if (exportButton) {
+    setElementLabel(exportButton, "\u5BFC\u51FA\u8BE5\u6761\u56DE\u7B54\u4E3A\u5355\u72EC Markdown \u6587\u4EF6");
+    exportButton.addEventListener("click", () => {
+      var _a;
+      const originalText = exportButton.textContent || "\u5BFC\u51FA Markdown";
+      exportButton.disabled = true;
+      exportButton.setText("\u5BFC\u51FA\u4E2D\u2026");
+      void ((_a = options.onExport) == null ? void 0 : _a.call(options).then(
+        () => {
+          exportButton.setText("\u5BFC\u51FA\u5B8C\u6210");
+          setElementLabel(exportButton, "\u8BE5\u6761\u56DE\u7B54\u5DF2\u5BFC\u51FA\u4E3A Markdown");
+          exportButton.disabled = false;
+          setTimeout(() => {
+            if (exportButton && !exportButton.disabled) {
+              exportButton.setText(originalText);
+              setElementLabel(exportButton, "\u5BFC\u51FA\u8BE5\u6761\u56DE\u7B54\u4E3A\u5355\u72EC Markdown \u6587\u4EF6");
+            }
+          }, 1200);
+        },
+        () => {
+          exportButton.disabled = false;
+          exportButton.setText(originalText);
+          setElementLabel(exportButton, "\u5BFC\u51FA\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5");
+        }
+      ));
+    });
+  }
   copyButton.addEventListener("click", () => {
     copyButton.disabled = true;
     void options.onCopy().then(
@@ -6098,6 +6130,23 @@ ${selectionContext}`;
           throw error;
         }
       },
+      onExport: async () => {
+        var _a2, _b2, _c2, _d, _e, _f;
+        const session = this.currentSessionId ? (_b2 = (_a2 = this.services.conversations).getSession) == null ? void 0 : _b2.call(_a2, this.currentSessionId) : (_d = (_c2 = this.services.conversations).getActiveSession) == null ? void 0 : _d.call(_c2, this.conversationKey);
+        if (!session || !((_e = this.services.artifacts) == null ? void 0 : _e.exportTurnAsMarkdown)) {
+          new import_obsidian6.Notice("Markdown \u5BFC\u51FA\u670D\u52A1\u4E0D\u53EF\u7528");
+          throw new Error("Markdown export service is unavailable");
+        }
+        const result = await this.services.artifacts.exportTurnAsMarkdown({
+          session,
+          userMessage,
+          assistantMessage,
+          includeSelectionText: this.plugin.settings.researchNotes.includeSelectionText,
+          selection: this.contextText ? { text: this.contextText, paperPath: (_f = this.pdfFile) == null ? void 0 : _f.path } : void 0,
+          includeEvidence: true
+        });
+        new import_obsidian6.Notice(`\u5DF2\u5BFC\u51FA\u56DE\u7B54\u5230 ${result.path}`);
+      },
       onCopy: async () => {
         try {
           await navigator.clipboard.writeText(assistantMessage.content);
@@ -7115,7 +7164,8 @@ function evidenceMarkdown(evidence) {
       const name = path.split("/").pop() || path;
       return `- ${claim} \u2014 [[${path}#page=${item.page}|${name} p.${item.page}]]`;
     }
-    return `- ${claim} \u2014 \u672A\u9A8C\u8BC1\u6765\u6E90 ${item.raw || ""}`.trimEnd();
+    const raw = sanitizeResearchArtifact(item.raw || "");
+    return `- ${claim} \u2014 \u672A\u9A8C\u8BC1\u6765\u6E90 ${raw}`.trimEnd();
   });
   return `
 #### \u8BBA\u6587\u8BC1\u636E
@@ -7132,6 +7182,45 @@ function selectionMarkdown(selection, includeText) {
 > ${metadata}
 >
 ${sanitizeResearchArtifact(text).split("\n").map((line) => `> ${line}`).join("\n")}`;
+}
+function buildTurnArtifactMarkdown(request, timestamp) {
+  var _a;
+  const { userMessage, assistantMessage, session } = request;
+  const includeSelectionText = request.includeSelectionText === true;
+  const date = new Date(timestamp).toISOString();
+  const headers = [
+    `# ${safeFileName(request.title || session.title || "PDF Chat \u56DE\u7B54", "PDF Chat \u56DE\u7B54")}`,
+    `- \u65F6\u95F4\uFF1A${date}`,
+    `- \u4F1A\u8BDD\uFF1A${safeFileName(session.title || "PDF Chat \u56DE\u7B54", "PDF Chat \u56DE\u7B54")}`,
+    `- \u6A21\u5F0F\uFF1A${session.mode === "codex" ? "Codex CLI" : "PDF Chat API"}`
+  ];
+  const paperPath = primaryPaperPath(session);
+  if (paperPath) {
+    headers.push(`- \u5F53\u524D\u8BBA\u6587\uFF1A[[${paperPath}]]`);
+  }
+  for (const reference of session.referencedPdfPaths || []) {
+    headers.push(`- \u5F15\u7528\u8BBA\u6587\uFF1A[[${reference}]]`);
+  }
+  if (includeSelectionText && ((_a = request.selection) == null ? void 0 : _a.text)) {
+    headers.push(`- \u9009\u533A\u957F\u5EA6\uFF1A${request.selection.text.length} \u5B57`);
+  }
+  const evidenceSection = request.includeEvidence === true ? evidenceMarkdown(assistantMessage.evidence) : "";
+  return [
+    headers.join("\n"),
+    "",
+    "## \u7528\u6237\u95EE\u9898",
+    sanitizeResearchArtifact(userMessage.content),
+    "## \u52A9\u624B\u56DE\u7B54",
+    sanitizeResearchArtifact(assistantMessage.content),
+    evidenceSection,
+    selectionMarkdown(request.selection, includeSelectionText)
+  ].filter((section) => section !== "").join("\n\n").trim();
+}
+function turnExportPath(session, title, timestamp) {
+  const safeTitle = safeFileName(title || session.title || "PDF Chat \u56DE\u7B54", "PDF Chat \u56DE\u7B54");
+  const folderName = safeFileName(safeTitle, "PDF Chat");
+  const date = new Date(timestamp).toISOString().replace(/[:.]/g, "-").replace(/T/g, "-").replace(/Z/g, "");
+  return `${folderName}/\u56DE\u7B54-${date}.md`;
 }
 function buildResearchTurnMarkdown(request, timestamp) {
   const user = sanitizeResearchArtifact(request.userMessage.content);
@@ -7202,6 +7291,33 @@ ${block}
 
 ${block}
 `);
+      return { path, created: true };
+    });
+  }
+  async exportTurnAsMarkdown(request) {
+    const settings = this.getSettings();
+    const timestamp = this.now();
+    const title = safeFileName(request.title || request.session.title || "PDF Chat \u56DE\u7B54", "PDF Chat \u56DE\u7B54");
+    const relativePath = turnExportPath(request.session, title, timestamp);
+    const path = `${normalizeFolder(settings.exportFolder, "PDF Chat/Exports")}/${relativePath}`;
+    const markdown = buildTurnArtifactMarkdown(
+      { ...request, includeSelectionText: request.includeSelectionText === true },
+      timestamp
+    );
+    return this.enqueue(path, async () => {
+      const existing = this.vault.getAbstractFileByPath(path);
+      if (existing) {
+        const previous = await this.vault.read(existing);
+        await this.vault.modify(existing, `${previous.trimEnd()}
+
+---
+
+${markdown}
+`);
+        return { path, created: false };
+      }
+      await this.ensureParentFolder(path);
+      await this.vault.create(path, markdown);
       return { path, created: true };
     });
   }
@@ -9401,6 +9517,7 @@ var PDFChatPlugin = class extends import_obsidian8.Plugin {
       this.researchArtifacts = {
         appendTurn: (request) => researchNoteService.appendTurn(request),
         exportSessionMarkdown: (session, targetPath) => researchNoteService.exportSessionMarkdown(session, targetPath),
+        exportTurnAsMarkdown: (request) => researchNoteService.exportTurnAsMarkdown(request),
         openEvidence: (evidence) => openPdfEvidence(this.app, evidence)
       };
     }

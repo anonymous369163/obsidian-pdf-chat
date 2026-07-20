@@ -416,6 +416,7 @@
 
 .pdf-chat-bubble {
   box-sizing: border-box;
+  min-width: 0;
   width: min(100%, var(--pdf-chat-readable-width));
   max-width: min(100%, var(--pdf-chat-readable-width));
   border-radius: var(--pdf-chat-radius-lg);
@@ -518,6 +519,26 @@
 .pdf-chat-message-content {
   white-space: pre-wrap;
   line-height: 1.75;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  hyphens: auto;
+}
+
+.pdf-chat-message-content * {
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.pdf-chat-message-content pre {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre-wrap;
 }
 
 .pdf-chat-bubble.is-rendered .pdf-chat-message-content {
@@ -530,6 +551,12 @@
 
 .pdf-chat-bubble.is-rendered .pdf-chat-message-content > *:last-child {
   margin-bottom: 0;
+}
+
+.pdf-chat-bubble pre,
+.pdf-chat-message-content code {
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 .pdf-chat-message-content p {
@@ -550,8 +577,11 @@
 
 .pdf-chat-message-footer-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 4px;
+  max-width: 100%;
   margin-left: auto;
 }
 
@@ -779,9 +809,21 @@
   user-select: text;
 }
 
+.pdf-chat-message-content img,
+.pdf-chat-message-content video,
+.pdf-chat-message-content iframe,
+.pdf-chat-message-content svg,
+.pdf-chat-message-content canvas {
+  max-width: 100%;
+  width: auto;
+  height: auto;
+  display: block;
+}
+
 .pdf-chat-message-content table {
   display: block;
-  width: max-content;
+  width: 100%;
+  max-width: 100%;
 }
 
 .pdf-chat-message-content mjx-container[display="true"] {

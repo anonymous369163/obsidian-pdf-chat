@@ -190,6 +190,95 @@ test("selection text is opt-in while count and hash remain available", async () 
   assert.match(vault.files.get(pathName), /private selected paragraph/);
 });
 
+test("export turn markdown creates per-turn files and can append when path exists", async () => {
+  const { ResearchNoteService } = loadBundle();
+  const vault = new MemoryVault();
+  const service = new ResearchNoteService(vault, () => ({
+    folder: "PDF Chat/Reading Notes",
+    exportFolder: "PDF Chat/Exports",
+    includeSelectionText: false,
+  }), () => 1700000000000);
+
+  const req = {
+    session: session({ title: "Deep Dive on Methods" }),
+    ...turn(),
+    includeSelectionText: false,
+  };
+
+  const first = await service.exportTurnAsMarkdown(req);
+  assert.equal(first.created, true);
+  assert.match(first.path, /^PDF Chat\/Exports\/Deep Dive on Methods\/回答-/);
+  const firstContent = vault.files.get(first.path);
+  assert.match(firstContent, /# Deep Dive on Methods/);
+  assert.match(firstContent, /## 用户问题/);
+  assert.match(firstContent, /## 助手回答/);
+
+  const secondReq = {
+    ...req,
+    includeSelectionText: true,
+    selection: { text: "method note excerpt" },
+  };
+  const second = await service.exportTurnAsMarkdown(secondReq);
+  assert.equal(second.created, false);
+  assert.equal(second.path, first.path);
+  const secondContent = vault.files.get(second.path);
+  assert.equal(firstContent === secondContent, false);
+  assert.match(secondContent, /method note excerpt/);
+});
+
+test("turn export identifies the model path and linked paper context", async () => {
+  const { ResearchNoteService } = loadBundle();
+  const vault = new MemoryVault();
+  const service = new ResearchNoteService(vault, () => ({
+    folder: "PDF Chat/Reading Notes",
+    exportFolder: "PDF Chat/Exports",
+    includeSelectionText: false,
+  }), () => 1700000000000);
+  const request = {
+    session: session({
+      mode: "codex",
+      referencedPdfPaths: ["papers/Related Work.pdf"],
+    }),
+    ...turn(),
+    includeSelectionText: false,
+  };
+
+  const result = await service.exportTurnAsMarkdown(request);
+  const content = vault.files.get(result.path);
+
+  assert.match(content, /- 模式：Codex CLI/);
+  assert.match(content, /- 当前论文：\[\[papers\/A Study\.pdf\]\]/);
+  assert.match(content, /- 引用论文：\[\[papers\/Related Work\.pdf\]\]/);
+});
+
+test("turn export sanitizes unverified evidence details", async () => {
+  const { ResearchNoteService } = loadBundle();
+  const vault = new MemoryVault();
+  const service = new ResearchNoteService(vault, () => ({
+    folder: "PDF Chat/Reading Notes",
+    exportFolder: "PDF Chat/Exports",
+    includeSelectionText: false,
+  }), () => 1700000000000);
+  const unsafeTurn = turn();
+  unsafeTurn.assistantMessage.evidence = [{
+    id: "unsafe-evidence",
+    claim: "Unverified source",
+    verification: "unverified",
+    raw: "api" + "Key: secret-value D:\\private\\paper.pdf",
+  }];
+
+  const result = await service.exportTurnAsMarkdown({
+    session: session(),
+    ...unsafeTurn,
+    includeSelectionText: false,
+    includeEvidence: true,
+  });
+  const content = vault.files.get(result.path);
+
+  assert.doesNotMatch(content, /secret-value|D:\\private/);
+  assert.match(content, /REDACTED|已隐藏/);
+});
+
 test("same-path writes are serialized and a failed append can be retried safely", async () => {
   const { ResearchNoteService } = loadBundle();
   const vault = new MemoryVault();
